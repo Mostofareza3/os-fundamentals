@@ -1,0 +1,2527 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Operating Systems — ভিতর থেকে | A Software Engineer's Mental Model</title>
+<style>
+:root{
+  /* dark (default) */
+  --bg:#0E1319; --bg-soft:#121820; --panel:#18212B; --panel-2:#1E2833;
+  --text:#CBD5E0; --muted:#8494A5; --heading:#F2F6FA;
+  --user:#7FB4E6; --user-dim:rgba(127,180,230,.11); --user-glow:rgba(127,180,230,.22);
+  --kernel:#E8AC64; --kernel-dim:rgba(232,172,100,.11);
+  --ok:#8FCB92; --ok-dim:rgba(143,203,146,.10);
+  --danger:#E58F8F; --danger-dim:rgba(229,143,143,.10);
+  --border:#28323E; --border-soft:#1F2833;
+  --code-bg:#0A0F14; --shadow:rgba(0,0,0,.45);
+  --sidebar-w:302px; --rail-w:220px;
+  --radius:12px; --radius-sm:8px;
+  --font-bn:"Kohinoor Bangla","Noto Sans Bengali","Nirmala UI","Bangla MN",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,"Courier New",monospace;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+html[data-theme="light"]{
+  --bg:#FBFCFD; --bg-soft:#F3F6F9; --panel:#FFFFFF; --panel-2:#F5F8FA;
+  --text:#33414E; --muted:#66788A; --heading:#111A23;
+  --user:#2A6CA8; --user-dim:rgba(42,108,168,.08); --user-glow:rgba(42,108,168,.16);
+  --kernel:#9C5D14; --kernel-dim:rgba(156,93,20,.09);
+  --ok:#37743F; --ok-dim:rgba(55,116,63,.08);
+  --danger:#A94545; --danger-dim:rgba(169,69,69,.07);
+  --border:#DCE3EA; --border-soft:#E8EDF2;
+  --code-bg:#141C25; --shadow:rgba(30,45,60,.10);
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html{scroll-behavior:smooth; scroll-padding-top:80px;}
+body{
+  font-family:var(--font-bn);
+  background:var(--bg); color:var(--text);
+  font-size:17px; line-height:1.85;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+::selection{background:var(--user-glow); color:var(--heading);}
+:focus-visible{outline:2px solid var(--user); outline-offset:2px; border-radius:4px;}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:9px; height:9px;}
+*::-webkit-scrollbar-track{background:transparent;}
+*::-webkit-scrollbar-thumb{background:var(--border); border-radius:5px; border:2px solid transparent; background-clip:padding-box;}
+*::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box;}
+
+/* ---------- progress bar ---------- */
+#progress{position:fixed; top:0; left:0; height:2px; width:0;
+  background:linear-gradient(90deg,var(--user),var(--kernel)); z-index:60; transition:width .12s linear;}
+
+/* ---------- top bar ---------- */
+header.topbar{
+  position:fixed; top:0; left:0; right:0; height:58px; z-index:50;
+  background:color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter:saturate(180%) blur(14px); -webkit-backdrop-filter:saturate(180%) blur(14px);
+  border-bottom:1px solid var(--border-soft);
+  display:flex; align-items:center; gap:10px; padding:0 16px;
+}
+.brand{display:flex; align-items:baseline; gap:8px; min-width:0;
+  font-weight:700; color:var(--heading); font-size:14.5px; letter-spacing:.1px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.brand .k{color:var(--kernel);} .brand .u{color:var(--user);}
+.brand .sep{color:var(--border); font-weight:400;}
+.brand .full{color:var(--muted); font-weight:600;}
+@media(max-width:860px){ .brand .full, .brand .sep{display:none;} }
+.topbar .spacer{flex:1;}
+.book-pct{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;
+  padding:4px 9px; border:1px solid var(--border-soft); border-radius:999px; white-space:nowrap;}
+@media(max-width:640px){ .book-pct{display:none;} }
+.iconbtn{
+  background:var(--panel); border:1px solid var(--border); color:var(--text);
+  border-radius:var(--radius-sm); height:34px; min-width:34px; padding:0 10px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  cursor:pointer; font-size:13.5px; font-family:inherit;
+  transition:border-color .15s var(--ease), background .15s var(--ease), color .15s var(--ease);
+}
+.iconbtn:hover{border-color:var(--user); color:var(--heading); background:var(--panel-2);}
+.iconbtn:active{transform:translateY(1px);}
+#menuBtn{display:none;}
+@media(max-width:1040px){ #menuBtn{display:inline-flex;} }
+#searchBtn{padding-right:8px;}
+#searchBtn .hint{color:var(--muted); font-size:11px; border:1px solid var(--border);
+  border-radius:5px; padding:1px 6px; font-family:var(--font-mono);}
+@media(max-width:720px){ #searchBtn .hint{display:none;} }
+
+/* ---------- layout ---------- */
+.layout{display:flex; padding-top:58px; min-height:100vh;}
+nav.sidebar{
+  width:var(--sidebar-w); flex-shrink:0;
+  position:fixed; top:58px; bottom:0; left:0; overflow-y:auto; overscroll-behavior:contain;
+  background:var(--bg-soft); border-right:1px solid var(--border-soft);
+  padding:14px 12px 60px; z-index:40;
+}
+.toc-filter-wrap{position:sticky; top:0; z-index:2; background:var(--bg-soft);
+  padding:0 2px 10px; margin-bottom:2px;}
+#tocFilter{
+  width:100%; background:var(--panel); border:1px solid var(--border); color:var(--text);
+  border-radius:var(--radius-sm); padding:7px 11px; font-size:13px; font-family:inherit; outline:none;
+  transition:border-color .15s var(--ease);
+}
+#tocFilter:focus{border-color:var(--user);}
+#tocFilter::placeholder{color:var(--muted);}
+
+.toc-part{
+  display:flex; align-items:center; gap:8px; width:100%;
+  margin:14px 0 4px; font-size:11.5px; font-weight:700; color:var(--muted);
+  letter-spacing:.6px; text-transform:uppercase; padding:5px 8px;
+  background:none; border:none; font-family:inherit; cursor:pointer; text-align:left;
+  border-radius:6px; transition:color .15s var(--ease), background .15s var(--ease);
+}
+.toc-part:hover{color:var(--heading); background:var(--panel);}
+.toc-part:first-of-type{margin-top:0;}
+.toc-part .caret{font-size:9px; transition:transform .18s var(--ease); flex-shrink:0; opacity:.7;}
+.toc-part.collapsed .caret{transform:rotate(-90deg);}
+.toc-part .ptext{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;}
+.toc-part .pcount{font-size:10.5px; opacity:.6; font-variant-numeric:tabular-nums;}
+.toc-group{overflow:hidden;}
+.toc-group.collapsed{display:none;}
+
+.toc-link{
+  display:flex; gap:9px; align-items:baseline; position:relative;
+  padding:6px 9px; border-radius:7px; color:var(--text);
+  text-decoration:none; font-size:13.5px; line-height:1.5;
+  transition:background .13s var(--ease), color .13s var(--ease);
+}
+.toc-link .num{color:var(--muted); font-size:11.5px; min-width:19px; flex-shrink:0;
+  font-variant-numeric:tabular-nums; font-family:var(--font-mono);}
+.toc-link .ttl{min-width:0;}
+.toc-link:hover{background:var(--panel); color:var(--heading);}
+.toc-link.active{background:var(--user-dim); color:var(--heading); font-weight:600;}
+.toc-link.active::before{content:""; position:absolute; left:0; top:6px; bottom:6px;
+  width:2.5px; border-radius:2px; background:var(--user);}
+.toc-link.active .num{color:var(--user);}
+.toc-link.read .num::after{content:"✓"; color:var(--ok); font-size:9px; margin-left:2px;}
+.toc-link.hide{display:none;}
+.toc-empty{padding:20px 10px; color:var(--muted); font-size:13px; text-align:center;}
+
+main{
+  margin-left:var(--sidebar-w); flex:1; min-width:0;
+  display:flex; justify-content:center; padding:44px 32px 100px; gap:36px;
+}
+.page{max-width:740px; width:100%; min-width:0;}
+
+/* ---------- right rail (on this page) ---------- */
+aside.rail{
+  width:var(--rail-w); flex-shrink:0; position:sticky; top:90px; align-self:flex-start;
+  max-height:calc(100vh - 130px); overflow-y:auto; padding-bottom:20px;
+}
+.rail-title{font-size:11px; font-weight:700; letter-spacing:.7px; text-transform:uppercase;
+  color:var(--muted); margin-bottom:10px; padding-left:11px;}
+.rail a{
+  display:block; padding:5px 11px; font-size:12.5px; line-height:1.5;
+  color:var(--muted); text-decoration:none; border-left:2px solid var(--border-soft);
+  transition:color .14s var(--ease), border-color .14s var(--ease);
+}
+.rail a:hover{color:var(--heading); border-left-color:var(--muted);}
+.rail a.active{color:var(--user); border-left-color:var(--user); font-weight:600;}
+.rail.empty{display:none;}
+@media(max-width:1280px){ aside.rail{display:none;} }
+
+@media(max-width:1040px){
+  nav.sidebar{transform:translateX(-100%); transition:transform .24s var(--ease);
+    box-shadow:10px 0 40px var(--shadow); width:min(330px,88vw);}
+  nav.sidebar.open{transform:translateX(0);}
+  main{margin-left:0; padding:30px 20px 90px;}
+  body{font-size:16.5px;}
+}
+@media(max-width:520px){
+  main{padding:24px 16px 80px;}
+  body{font-size:16px; line-height:1.8;}
+}
+#scrim{position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:35;
+  opacity:0; pointer-events:none; transition:opacity .22s var(--ease);}
+#scrim.show{opacity:1; pointer-events:auto;}
+
+/* ---------- chapters ---------- */
+section.chapter{display:none;}
+section.chapter.active{display:block; animation:fadeIn .22s var(--ease);}
+@keyframes fadeIn{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto;}
+  *,*::before,*::after{animation-duration:.01ms !important; transition-duration:.01ms !important;}
+}
+.part-label{font-size:11.5px; font-weight:700; color:var(--kernel); letter-spacing:.9px;
+  text-transform:uppercase; margin-bottom:12px;}
+h2{font-size:clamp(26px,3.4vw,32px); line-height:1.3; color:var(--heading);
+  margin-bottom:8px; font-weight:800; letter-spacing:-.3px;}
+.chap-sub{color:var(--muted); font-size:15.5px; line-height:1.7; margin-bottom:14px; max-width:62ch;}
+h2 + .chap-sub{padding-bottom:26px; margin-bottom:12px; border-bottom:1px solid var(--border-soft);}
+h3{font-size:20.5px; color:var(--heading); margin:44px 0 14px; font-weight:700;
+  letter-spacing:-.2px; scroll-margin-top:80px; position:relative;}
+h3::after{content:""; display:block; width:34px; height:2px; border-radius:2px;
+  background:var(--user); opacity:.55; margin-top:9px;}
+h4{font-size:16.5px; color:var(--heading); margin:28px 0 8px; font-weight:700;}
+p{margin:0 0 17px; max-width:68ch;}
+ul,ol{margin:0 0 17px 22px; max-width:66ch;}
+li{margin-bottom:7px;}
+li::marker{color:var(--muted);}
+strong{color:var(--heading); font-weight:700;}
+a{color:var(--user); text-decoration-color:color-mix(in srgb, var(--user) 40%, transparent);
+  text-underline-offset:3px;}
+a:hover{text-decoration-color:var(--user);}
+hr{border:none; border-top:1px solid var(--border-soft); margin:38px 0;}
+kbd{font-family:var(--font-mono); font-size:.82em; background:var(--panel-2);
+  border:1px solid var(--border); border-bottom-width:2px; border-radius:5px;
+  padding:1px 6px; color:var(--heading);}
+.inline-code, code{font-family:var(--font-mono); font-size:.85em;}
+p code, li code, td code, .box code{
+  background:var(--panel-2); border:1px solid var(--border-soft);
+  padding:1.5px 6px; border-radius:5px; color:var(--kernel); white-space:nowrap;
+}
+.table-wrap{overflow-x:auto; margin:0 0 20px; border:1px solid var(--border);
+  border-radius:var(--radius); background:var(--panel);}
+table{width:100%; border-collapse:collapse; font-size:14.5px;}
+.table-wrap table{margin:0;}
+th,td{border-bottom:1px solid var(--border-soft); padding:10px 14px;
+  text-align:left; vertical-align:top; line-height:1.65;}
+th{background:var(--panel-2); color:var(--heading); font-weight:700; font-size:13.5px;
+  letter-spacing:.2px; white-space:nowrap;}
+tr:last-child td{border-bottom:none;}
+tbody tr:hover td, table tr:hover td{background:color-mix(in srgb, var(--user) 4%, transparent);}
+
+/* ---------- code + diagrams ---------- */
+.codewrap{position:relative; margin:0 0 20px;}
+pre{
+  background:var(--code-bg); color:#D3DCE6;
+  border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; overflow-x:auto; line-height:1.7;
+  font-family:var(--font-mono); font-size:13px;
+  tab-size:2;
+}
+pre code{background:none; border:none; padding:0; color:inherit; white-space:pre; font-size:inherit;}
+pre.diagram{
+  background:linear-gradient(180deg, var(--panel), var(--panel-2));
+  color:var(--text); border:1px solid var(--border);
+  line-height:1.6; font-size:12.5px; text-align:left; padding:18px 20px;
+}
+pre.diagram .u{color:var(--user); font-weight:600;}
+pre.diagram .k{color:var(--kernel); font-weight:600;}
+pre.diagram .dim{color:var(--muted);}
+.copybtn{
+  position:absolute; top:9px; right:9px;
+  background:color-mix(in srgb, var(--panel) 90%, transparent);
+  backdrop-filter:blur(6px);
+  color:var(--muted); border:1px solid var(--border);
+  font-size:11.5px; border-radius:6px; padding:3px 9px; cursor:pointer; font-family:inherit;
+  opacity:0; transition:opacity .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+}
+.codewrap:hover .copybtn, .copybtn:focus-visible{opacity:1;}
+.copybtn:hover{color:var(--heading); border-color:var(--user);}
+.copybtn.done{color:var(--ok); border-color:var(--ok); opacity:1;}
+@media(hover:none){ .copybtn{opacity:1;} }
+.diagram-caption{font-size:13px; color:var(--muted); margin:-12px 0 22px; text-align:center; line-height:1.6;}
+
+/* ---------- boxes ---------- */
+.box{border:1px solid var(--border); border-left:3px solid var(--border);
+  border-radius:0 var(--radius) var(--radius) 0; padding:15px 19px; margin:0 0 22px;
+  background:var(--panel); max-width:70ch;}
+.box .box-title{font-size:11.5px; font-weight:800; letter-spacing:.8px;
+  text-transform:uppercase; margin-bottom:8px; display:flex; align-items:center; gap:7px;}
+.box .box-title::before{font-size:12px; letter-spacing:0;}
+.box p:last-child, .box ul:last-child, .box ol:last-child{margin-bottom:0;}
+.box p, .box ul, .box ol{max-width:none;}
+.box.concept{border-left-color:var(--user); background:var(--user-dim);}
+.box.concept .box-title{color:var(--user);}
+.box.concept .box-title::before{content:"◆";}
+.box.warn{border-left-color:var(--danger); background:var(--danger-dim);}
+.box.warn .box-title{color:var(--danger);}
+.box.warn .box-title::before{content:"▲";}
+.box.lab{border-left-color:var(--ok); background:var(--ok-dim);}
+.box.lab .box-title{color:var(--ok);}
+.box.lab .box-title::before{content:"›_"; font-family:var(--font-mono); font-weight:700;}
+.box.kern{border-left-color:var(--kernel); background:var(--kernel-dim);}
+.box.kern .box-title{color:var(--kernel);}
+.box.kern .box-title::before{content:"⚙";}
+.box.quiz{border-left-color:var(--kernel); background:var(--panel);}
+.box.quiz .box-title{color:var(--kernel);}
+.box.quiz .box-title::before{content:"?"; font-weight:800;}
+.box.quiz ul{list-style:none; margin-left:0;}
+.box.quiz li{padding-left:24px; position:relative;}
+.box.quiz li::before{content:"?"; position:absolute; left:3px; color:var(--kernel); font-weight:700; opacity:.75;}
+.box pre{margin-bottom:0;}
+.box .codewrap{margin-bottom:0;}
+
+details{border:1px solid var(--border); border-radius:var(--radius); margin:0 0 20px;
+  background:var(--panel); max-width:70ch; overflow:hidden;}
+details summary{cursor:pointer; padding:12px 16px; font-weight:600; color:var(--heading);
+  font-size:14.5px; list-style:none; display:flex; align-items:baseline; gap:9px;
+  transition:background .14s var(--ease);}
+details summary::-webkit-details-marker{display:none;}
+details summary:hover{background:var(--panel-2);}
+details summary::before{content:"▸"; color:var(--user); font-size:11px; transition:transform .18s var(--ease);}
+details[open] summary::before{transform:rotate(90deg);}
+details[open] summary{border-bottom:1px solid var(--border-soft);}
+details .d-body{padding:14px 16px;}
+details .d-body > :last-child{margin-bottom:0;}
+
+/* ---------- prev/next ---------- */
+.chapnav{display:flex; gap:14px; margin-top:56px; padding-top:28px; border-top:1px solid var(--border-soft);}
+.chapnav a{
+  flex:1; text-decoration:none; border:1px solid var(--border); border-radius:var(--radius);
+  padding:13px 17px; background:var(--panel); color:var(--text); min-width:0;
+  transition:border-color .15s var(--ease), background .15s var(--ease), transform .15s var(--ease);
+}
+.chapnav a:hover{border-color:var(--user); background:var(--panel-2); transform:translateY(-1px);}
+.chapnav .dir{font-size:11.5px; color:var(--muted); display:block; letter-spacing:.3px; margin-bottom:2px;}
+.chapnav .t{font-weight:600; color:var(--heading); font-size:14px; display:block;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.chapnav a.next{text-align:right;}
+.chapnav a.hidden{visibility:hidden;}
+@media(max-width:520px){ .chapnav{flex-direction:column;} }
+
+/* ---------- search ---------- */
+#searchOverlay{position:fixed; inset:0; background:rgba(4,8,13,.62);
+  backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+  z-index:70; display:none; padding:10vh 16px 0; justify-content:center;}
+#searchOverlay.show{display:flex; animation:fadeIn .16s var(--ease);}
+.search-panel{width:100%; max-width:620px; height:fit-content; max-height:72vh;
+  background:var(--panel); border:1px solid var(--border); border-radius:16px;
+  display:flex; flex-direction:column; overflow:hidden; box-shadow:0 24px 70px var(--shadow);}
+.search-head{display:flex; align-items:center; gap:10px; padding:0 18px;
+  border-bottom:1px solid var(--border-soft);}
+.search-head .ic{color:var(--muted); font-size:14px;}
+#searchInput{background:transparent; border:none; flex:1;
+  padding:16px 0; font-size:15.5px; color:var(--heading); font-family:inherit; outline:none;}
+#searchInput::placeholder{color:var(--muted);}
+#searchResults{overflow-y:auto; padding:8px; overscroll-behavior:contain;}
+.sr-item{display:block; padding:9px 13px; border-radius:var(--radius-sm);
+  text-decoration:none; color:var(--text); cursor:pointer;}
+.sr-item:hover, .sr-item.sel{background:var(--user-dim);}
+.sr-item .sr-ch{font-size:11.5px; color:var(--kernel); font-weight:600; letter-spacing:.2px;}
+.sr-item .sr-t{font-weight:600; color:var(--heading); font-size:14px; line-height:1.5;}
+.sr-item .sr-t mark{background:var(--user-glow); color:var(--heading); border-radius:3px; padding:0 2px;}
+.sr-item .sr-snip{font-size:12.5px; color:var(--muted); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;}
+.sr-empty{padding:26px; text-align:center; color:var(--muted); font-size:14px;}
+.search-foot{display:flex; gap:14px; padding:9px 16px; border-top:1px solid var(--border-soft);
+  font-size:11.5px; color:var(--muted); flex-wrap:wrap;}
+.search-foot kbd{border-bottom-width:1px; font-size:10.5px;}
+
+/* ---------- cover ---------- */
+#cover .cover-hero{margin:16px 0 44px;}
+#cover h1{font-size:clamp(32px,5vw,46px); line-height:1.25; color:var(--heading);
+  font-weight:800; margin-bottom:16px; letter-spacing:-.6px; max-width:19ch;}
+#cover h1 .u{color:var(--user);} #cover h1 .k{color:var(--kernel);}
+.cover-tag{font-size:16.5px; color:var(--muted); max-width:58ch; line-height:1.8;}
+.legend{display:flex; gap:20px; margin:28px 0 8px; font-size:13.5px; flex-wrap:wrap;}
+.legend span{display:inline-flex; align-items:center; gap:8px; color:var(--muted);}
+.dot{width:10px; height:10px; border-radius:3px; display:inline-block; flex-shrink:0;}
+.dot.u{background:var(--user);} .dot.k{background:var(--kernel);}
+.cover-stats{display:flex; gap:26px; margin:24px 0 0; flex-wrap:wrap;
+  padding-top:22px; border-top:1px solid var(--border-soft);}
+.cover-stats div{display:flex; flex-direction:column;}
+.cover-stats .n{font-size:22px; font-weight:800; color:var(--heading); line-height:1.2;}
+.cover-stats .l{font-size:12px; color:var(--muted); letter-spacing:.3px;}
+
+/* ---------- resume banner ---------- */
+.resume{display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--panel); padding:12px 16px; margin:0 0 28px;}
+.resume .rt{flex:1; min-width:180px; font-size:14px; color:var(--muted);}
+.resume .rt b{color:var(--heading); font-weight:600;}
+.resume a{
+  text-decoration:none; background:var(--user-dim); border:1px solid var(--user);
+  color:var(--user); border-radius:var(--radius-sm); padding:6px 14px;
+  font-size:13.5px; font-weight:600; white-space:nowrap;
+  transition:background .15s var(--ease);
+}
+.resume a:hover{background:var(--user-glow);}
+.resume .dismiss{background:none; border:none; color:var(--muted); cursor:pointer;
+  font-size:16px; padding:2px 6px; font-family:inherit; line-height:1;}
+.resume .dismiss:hover{color:var(--heading);}
+
+/* ---------- print ---------- */
+@media print{
+  header.topbar, nav.sidebar, aside.rail, #progress, #scrim, .chapnav, .copybtn, .resume{display:none !important;}
+  main{margin:0; padding:0;}
+  section.chapter{display:block !important; page-break-after:always;}
+  body{background:#fff; color:#000; font-size:12pt;}
+}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<header class="topbar">
+  <button class="iconbtn" id="menuBtn" aria-label="Table of contents">☰</button>
+  <div class="brand">
+    <span><span class="u">user space</span> ⇅ <span class="k">kernel space</span></span>
+    <span class="sep">—</span>
+    <span class="full">Operating Systems ভিতর থেকে</span>
+  </div>
+  <div class="spacer"></div>
+  <span class="book-pct" id="bookPct" title="কতটা পড়া হয়েছে">0 / 43</span>
+  <button class="iconbtn" id="searchBtn" aria-label="Search">🔍 <span class="hint">/</span></button>
+  <button class="iconbtn" id="themeBtn" aria-label="Toggle theme" title="Theme">◐</button>
+</header>
+<div id="scrim"></div>
+<div class="layout">
+<nav class="sidebar" id="sidebar" aria-label="Table of contents">
+  <div class="toc-filter-wrap">
+    <input id="tocFilter" type="text" placeholder="Chapter ফিল্টার করো…" autocomplete="off" aria-label="Filter chapters">
+  </div>
+  <div id="tocList"></div>
+</nav>
+<main><div class="page" id="page">
+
+<section class="chapter" id="cover" data-part="ভূমিকা" data-title="Cover — এই বই কেন">
+  <div class="cover-hero">
+    <p class="part-label">A SOFTWARE ENGINEER'S MENTAL MODEL</p>
+    <h1>Operating Systems —<br>তোমার code-এর <span class="u">নিচে</span> আসলে <span class="k">কী ঘটে</span></h1>
+    <p class="cover-tag">তুমি প্রতিদিন code লেখো, run করো, deploy করো। কিন্তু <code>node server.js</code> চাপার পর CPU, memory, kernel, disk আর network-এর ভিতরে যে গল্পটা চলে — সেটাই এই বই। Definition মুখস্থ নয়, mental model।</p>
+    <div class="legend">
+      <span><span class="dot u"></span> User space — তোমার code যেখানে চলে</span>
+      <span><span class="dot k"></span> Kernel space — OS যেখানে কাজ করে</span>
+    </div>
+    <div class="cover-stats">
+      <div><span class="n">১২</span><span class="l">Part</span></div>
+      <div><span class="n">৪০</span><span class="l">Chapter</span></div>
+      <div><span class="n">Depth</span><span class="l">&gt; Breadth</span></div>
+      <div><span class="n">Model</span><span class="l">&gt; Memorization</span></div>
+    </div>
+  </div>
+  <div id="resumeSlot"></div>
+
+  <h3>এই বই কার জন্য</h3>
+  <p>ধরে নিচ্ছি তুমি একজন working software engineer — JavaScript/TypeScript বা যেকোনো high-level language-এ comfortable, Linux basics জানো, কিন্তু OS internals নিয়ে structured knowledge নেই। Process, thread, virtual memory, socket — term গুলো শুনেছ, কিন্তু এদের relationship মাথায় একটা coherent ছবি হয়ে দাঁড়ায়নি।</p>
+  <p>এই বই academic OS course না। Scheduling algorithm-এর exam question বা deadlock-এর mathematical proof এখানে পাবে না। পাবে একটা জিনিস — <strong>তোমার application-এর নিচে OS আসলে কী করছে, এবং সেটা তোমার code-এর performance আর behavior-এ কীভাবে impact ফেলে।</strong></p>
+
+  <div class="box concept">
+    <div class="box-title">এই বইয়ের BACKBONE — একটাই গল্প</div>
+    <pre class="diagram">তুমি program লিখলে
+  ↓ compiler executable বানালো
+  ↓ OS executable load করলো → <span class="u">process</span> তৈরি হলো
+  ↓ process-এর নিজস্ব <span class="u">virtual address space</span> তৈরি হলো
+  ↓ CPU instruction execute করলো, cache/RAM access হলো
+  ↓ দরকার পড়লে <span class="k">system call</span> হলো → <span class="k">kernel</span> কাজ করলো
+  ↓ disk / network / device access হলো
+  ↓ process আবার <span class="u">user space</span>-এ ফিরে এলো</pre>
+    <p>৪০টা chapter আসলে এই এক গল্পেরই আলাদা আলাদা zoom level। শেষে গিয়ে পুরোটা একসাথে জোড়া লাগবে।</p>
+  </div>
+
+  <h3>কীভাবে পড়বে</h3>
+  <ul>
+    <li><strong>Sequence maintain করো।</strong> Chapter গুলো একটার উপর আরেকটা build করে। Virtual memory না বুঝে page cache বুঝবে না।</li>
+    <li><strong>Experiment গুলো actually চালাও।</strong> প্রতিটা major topic-এর পরে ছোট Linux experiment আছে। Terminal খুলে চালালে concept টা হাতে-কলমে দেখা যাবে।</li>
+    <li><strong>"Can I explain this?" গুলো skip কোরো না।</strong> নিজের ভাষায় explain করতে না পারলে বোঝা হয়নি — শুধু term চেনা হয়েছে।</li>
+  </ul>
+  <p class="chap-sub" style="margin-top:30px">Sidebar থেকে chapter select করো, অথবা নিচের Next button চাপো। <kbd>/</kbd> চেপে search করতে পারবে।</p>
+</section>
+
+<!-- ==================== PART 1 ==================== -->
+<section class="chapter" id="chapter-01" data-part="Part 1 — The Big Picture" data-title="Operating System কেন দরকার?">
+  <p class="part-label">PART 1 · THE BIG PICTURE</p>
+  <h2>Chapter 1 — Operating System কেন দরকার?</h2>
+  <p class="chap-sub">Hardware আর application-এর মাঝখানে একটা layer কেন লাগে, আর সেই layer-টা আসলে কী কী responsibility নেয়।</p>
+
+  <h3>Problem-টা আগে বুঝি</h3>
+  <p>Computer hardware মানে মূলত চারটা জিনিস — <strong>CPU</strong> (instruction execute করে), <strong>RAM</strong> (running data রাখে), <strong>storage</strong> (persistent data রাখে), আর <strong>network interface</strong> (বাইরের দুনিয়ার সাথে কথা বলে)। এগুলো ভয়ংকর রকমের "dumb"। CPU শুধু raw instruction চেনে, disk শুধু block number চেনে — "file" বলে কিছু চেনে না, network card শুধু raw packet পাঠাতে জানে।</p>
+  <p>অন্যদিকে application মানে তোমার লেখা code — যে চায় "এই file-টা পড়ো", "এই port-এ listen করো", "এই object-টা memory-তে রাখো"। এখন ভাবো, OS না থাকলে প্রতিটা application-কে নিজে নিজে disk-এর electronics-এর সাথে কথা বলতে হতো, নিজে RAM-এর কোন byte কার সেটা track করতে হতো, নিজে network card-এর driver লিখতে হতো।</p>
+  <p>তার উপর আরেকটা বড় সমস্যা — এক computer-এ <strong>একসাথে অনেকগুলো program চলে</strong>। Chrome, VS Code, node server, Spotify — সবাই একই CPU, একই RAM চায়। কে কখন CPU পাবে? কার data কোন RAM-এ থাকবে? একজন আরেকজনের memory-তে হাত দিলে কী হবে? এই ঝগড়া মেটানোর জন্য একজন referee লাগে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Operating System = <strong>Resource Manager + Abstraction Layer</strong>। Resource manager হিসেবে ঠিক করে কে কখন CPU/RAM/disk/network পাবে। Abstraction layer হিসেবে dumb hardware-কে ঢেকে সুন্দর interface দেয় — raw disk block-এর বদলে <em>file</em>, raw packet-এর বদলে <em>socket</em>, raw physical memory-র বদলে <em>virtual memory</em>, raw CPU time-এর বদলে <em>process</em>।</p>
+  </div>
+
+  <h3>Kernel, user space, kernel space</h3>
+  <p>OS-এর core অংশটার নাম <strong>kernel</strong>। এটা একটা special program যেটা machine boot হওয়ার সময় load হয় এবং সবসময় memory-তে থাকে। Kernel-ই আসল resource manager — process schedule করা, memory ভাগ করা, filesystem চালানো, network stack চালানো, driver দিয়ে device-এর সাথে কথা বলা — সব kernel-এর কাজ।</p>
+  <p>CPU-তে hardware level-এ দুইটা privilege mode আছে (Chapter 31-এ deep dive করবো):</p>
+  <ul>
+    <li><strong>User mode / user space</strong> — তোমার application এখানে চলে। Restricted। Hardware-এ direct হাত দিতে পারে না, অন্য process-এর memory ছুঁতে পারে না।</li>
+    <li><strong>Kernel mode / kernel space</strong> — kernel এখানে চলে। Full power। যেকোনো memory, যেকোনো device access করতে পারে।</li>
+  </ul>
+  <p>তাহলে তোমার app file পড়ে কীভাবে? উত্তর: <strong>system call</strong>। Application kernel-কে অনুরোধ করে — "আমার হয়ে এই কাজটা করে দাও।" CPU controlled ভাবে kernel mode-এ ঢোকে, kernel কাজটা করে, তারপর result নিয়ে আবার user mode-এ ফেরত আসে। <code>read()</code>, <code>write()</code>, <code>open()</code>, <code>socket()</code> — এগুলো সব system call।</p>
+
+  <pre class="diagram"><span class="u">Application (তোমার code)</span>
+        ↓
+<span class="u">Libraries / Runtime (libc, Node.js, JVM ...)</span>
+        ↓
+━━━━━━ <span class="dim">system call boundary</span> ━━━━━━
+        ↓
+<span class="k">Kernel</span>
+  <span class="k">├── Process Management</span>
+  <span class="k">├── Memory Management</span>
+  <span class="k">├── File System</span>
+  <span class="k">├── Network Stack</span>
+  <span class="k">└── Device Drivers</span>
+        ↓
+Hardware
+  ├── CPU    ├── RAM
+  ├── Storage└── Network</pre>
+  <p class="diagram-caption">পুরো বইয়ে এই ছবিটা বারবার ফিরে আসবে — নীল মানে user space, amber মানে kernel space।</p>
+
+  <h3>একজন engineer-এর কেন এটা জানা দরকার</h3>
+  <p>কারণ তোমার code-এর performance-এর বড় অংশ ঠিক হয় এই boundary-গুলোতে। একটা slow API-এর কারণ হতে পারে excessive system call, হতে পারে disk I/O, হতে পারে memory pressure — এগুলো তোমার JavaScript-এ দেখা যায় না, দেখা যায় OS layer-এ। Black box-টা খুললে debugging আর optimization দুটোই অন্য level-এ চলে যায়।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>Terminal-এ চালাও: <code>uname -a</code> — এটা তোমার kernel-এর নাম আর version দেখায় (macOS-এ Darwin, Linux-এ Linux)। তারপর <code>ps aux | head -15</code> — এই মুহূর্তে চলা process-এর list। খেয়াল করো, তুমি কিছু run না করলেও কত process চলছে — এদের সবাইকে kernel-ই manage করছে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>OS-কে "resource manager + abstraction layer" বললে দুইটা অংশের মানে কী?</li>
+      <li>Kernel কী, আর সেটা user space থেকে আলাদা কেন?</li>
+      <li>Application hardware-এ direct হাত দিতে পারে না — তাহলে কাজ করায় কীভাবে?</li>
+      <li>System call এক কথায় কী?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-02" data-part="Part 1 — The Big Picture" data-title="The System Architecture">
+  <p class="part-label">PART 1 · THE BIG PICTURE</p>
+  <h2>Chapter 2 — The System Architecture</h2>
+  <p class="chap-sub">সব component-এর relationship একটা map-এ, আর একটা end-to-end উদাহরণ।</p>
+
+  <h3>Player-দের চিনে নেই</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Component</th><th>এক লাইনে কাজ</th></tr>
+    <tr><td><strong>CPU</strong></td><td>Instruction execute করে। একমাত্র জায়গা যেখানে "কাজ" হয়।</td></tr>
+    <tr><td><strong>RAM (Memory)</strong></td><td>Running process-এর code আর data রাখে। Fast, কিন্তু volatile — power গেলে সব শেষ।</td></tr>
+    <tr><td><strong>Storage (SSD/HDD)</strong></td><td>Persistent data। Slow (RAM-এর তুলনায়), কিন্তু power গেলেও থাকে।</td></tr>
+    <tr><td><strong>Network device</strong></td><td>Packet পাঠায়/রিসিভ করে।</td></tr>
+    <tr><td><strong>Program</strong></td><td>Disk-এ পড়ে থাকা executable file। Passive জিনিস।</td></tr>
+    <tr><td><strong>Process</strong></td><td>Running program — নিজস্ব memory, নিজস্ব state সহ। Active জিনিস।</td></tr>
+    <tr><td><strong>Kernel</strong></td><td>Resource manager। সবসময় memory-তে থাকে।</td></tr>
+    <tr><td><strong>Driver</strong></td><td>Kernel-এর ভিতরের সেই code যেটা specific hardware-এর ভাষা জানে।</td></tr>
+    <tr><td><strong>File system</strong></td><td>Raw disk block-কে file/directory হিসেবে organize করে।</td></tr>
+    <tr><td><strong>System call</strong></td><td>User space → kernel space-এ ঢোকার একমাত্র official দরজা।</td></tr>
+  </table></div>
+
+  <h3>End-to-end example: একটা file read</h3>
+  <p>ধরো তোমার Node.js code লিখলো <code>fs.readFileSync("config.json")</code>। Broadly যা ঘটে:</p>
+  <pre class="diagram"><span class="u">1. Application:  readFileSync("config.json") call করলো</span>
+<span class="u">2. Runtime/libc: ভিতরে গিয়ে read() system call বানালো</span>
+━━━━━━━━━━ <span class="dim">user → kernel mode switch</span> ━━━━━━━━━━
+<span class="k">3. Kernel:       request receive করলো</span>
+<span class="k">4. File system:  "config.json" মানে disk-এর কোন block? বের করলো</span>
+<span class="k">5. Page cache:   data আগেই cache-এ আছে কি? (থাকলে shortcut!)</span>
+<span class="k">6. Block layer:  না থাকলে disk-এর জন্য read request queue করলো</span>
+<span class="k">7. Driver:       storage device-কে command পাঠালো</span>
+8. Device:       data পড়ে DMA দিয়ে memory-তে দিলো
+<span class="k">9. Kernel:       data process-এর buffer-এ copy করলো</span>
+━━━━━━━━━━ <span class="dim">kernel → user mode switch</span> ━━━━━━━━━━
+<span class="u">10. Application: data হাতে পেলো, কাজ চললো</span></pre>
+
+  <p>প্রতিটা step এখনই পুরোপুরি বোঝার দরকার নেই — page cache, DMA, block layer সব সামনের chapter-গুলোতে আসবে। এখন শুধু structure-টা মাথায় গাঁথো: <strong>application কখনো disk-কে সরাসরি দেখে না। মাঝখানে সবসময় kernel থাকে।</strong></p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>যেকোনো I/O-এর গল্প আসলে একই pattern: <strong>user space request → system call → kernel-এর layer গুলো → hardware → ফেরার পথ উল্টো।</strong> File হোক, network হোক — pattern এক, শুধু মাঝের layer বদলায়।</p>
+  </div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"OS মানে UI — desktop, window, icon।" না। Desktop environment একটা application মাত্র। আসল OS হলো kernel + তার service গুলো, যেটা server-এ UI ছাড়াই দিব্যি চলে। তুমি যে production server-এ deploy করো, সেখানে OS পুরোদমে কাজ করছে — কোনো UI ছাড়াই।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program আর process-এর পার্থক্য এক লাইনে?</li>
+      <li>File read-এর সময় request-টা কোন কোন layer পার হয়?</li>
+      <li>Driver জিনিসটা kernel-এর ভিতরে কেন থাকে?</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== PART 2 ==================== -->
+<section class="chapter" id="chapter-03" data-part="Part 2 — From Program to Process" data-title="Program vs Process">
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 3 — Program vs Process</h2>
+  <p class="chap-sub">এই পার্থক্যটা পরিষ্কার না হলে সামনের অর্ধেক বই ঝাপসা লাগবে। তাই আলাদা করে একটা পুরো chapter।</p>
+
+  <h3>Program: disk-এ শুয়ে থাকা file</h3>
+  <p><strong>Program</strong> হলো একটা executable file — disk-এ পড়ে থাকা bytes। এর ভিতরে আছে machine instructions (CPU-র ভাষায় compiled code), কিছু initial data, আর metadata (কোথা থেকে execution শুরু হবে ইত্যাদি)। Linux-এ এই file format-এর নাম <strong>ELF</strong>। গুরুত্বপূর্ণ কথা: program একটা <em>passive</em> জিনিস। <code>/usr/bin/node</code> file-টা disk-এ পড়ে আছে — কিছুই করছে না।</p>
+
+  <h3>Process: সেই file-এর একটা running instance</h3>
+  <p>তুমি যখন <code>node server.js</code> চালাও, OS ওই executable-টা নিয়ে একটা <strong>process</strong> বানায়। Process মানে শুধু "চলছে" না — process মানে OS একগাদা জিনিস তৈরি করে দিয়েছে:</p>
+  <ul>
+    <li>একটা <strong>PID</strong> (Process ID) — kernel-এর খাতায় unique নাম্বার</li>
+    <li>নিজস্ব <strong>virtual address space</strong> — process-এর নিজের "private" memory জগৎ (Chapter 9)</li>
+    <li>Memory-তে load হওয়া code, data, <strong>heap</strong> আর <strong>stack</strong> (Chapter 5)</li>
+    <li>CPU state — registers, program counter (এখন কোন instruction-এ আছে)</li>
+    <li>Open file/socket-দের list — <strong>file descriptor table</strong></li>
+    <li>Kernel-এর bookkeeping — state (running/waiting), owner, parent কে, ইত্যাদি</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Program = <strong>recipe</strong> (কাগজে লেখা, passive)। Process = <strong>রান্না চলছে</strong> (চুলা জ্বলছে, উপকরণ কাটা হচ্ছে, নির্দিষ্ট state আছে)। একই recipe থেকে একসাথে দুই হাঁড়িতে রান্না চলতে পারে — দুইটা আলাদা process, আলাদা state, আলাদা হাঁড়ি (memory)।</p>
+  </div>
+
+  <h3>একই program, দুইটা process</h3>
+  <p>দুইটা terminal খুলে দুই জায়গায় <code>node</code> চালাও। Executable file একটাই, কিন্তু process দুইটা — আলাদা PID, আলাদা memory, আলাদা variables। একটাতে crash হলে আরেকটার কিছু হয় না। এটাই <strong>isolation</strong> — OS-এর অন্যতম প্রধান উপহার। তোমার Chrome-এর প্রতিটা tab আলাদা process রাখার পিছনেও এই একই logic — এক tab মরলে বাকিরা বাঁচে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Process = program in execution" — শুরুর জন্য ঠিক আছে, কিন্তু অসম্পূর্ণ। Process-এর নিজস্ব identity (PID), নিজস্ব address space, নিজস্ব resources আছে। শুধু "চলমান code" না — বরং <strong>code + memory + state + kernel bookkeeping-এর একটা পুরো package</strong>। আর সামনে দেখবে, একটা process-এ একাধিক thread-ও থাকতে পারে — তখন "in execution" অংশটা আসলে thread-এর কাজ।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>দুইটা terminal-এ চালাও: <code>sleep 300</code> (দুই জায়গায়)। তৃতীয় terminal-এ: <code>ps aux | grep sleep</code>। দেখবে একই program (<code>/bin/sleep</code>) কিন্তু দুইটা আলাদা PID। Linux হলে <code>ls /proc/&lt;PID&gt;/</code> চালিয়ে দেখো — প্রতিটা process-এর জন্য kernel কত কিছু track করে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program passive আর process active — মানে কী?</li>
+      <li>Process বানাতে OS কী কী জিনিস তৈরি করে দেয়?</li>
+      <li>একই executable-এর দুই process একে অপরের variable দেখতে পায় না কেন?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-04" data-part="Part 2 — From Program to Process" data-title="How a Program Is Executed">
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 4 — Program কীভাবে execute হয়</h2>
+  <p class="chap-sub">Source code থেকে চলমান process পর্যন্ত পুরো pipeline — high level-এ।</p>
+
+  <h3>Source থেকে executable</h3>
+  <p>একটা ছোট C program ধরি (C এখানে শুধু tool — OS-এর সবচেয়ে কাছের ভাষা বলে):</p>
+  <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
+
+int main() {
+    printf("hello\n");
+    return 0;
+}</code></pre></div>
+  <p><code>gcc hello.c -o hello</code> চালালে ভিতরে কয়েকটা ধাপ ঘটে:</p>
+  <pre class="diagram">hello.c (source)
+   ↓ <span class="dim">compiler — C কে assembly/machine code-এ translate</span>
+hello.o (object file — machine code, কিন্তু অসম্পূর্ণ)
+   ↓ <span class="dim">linker — printf-এর মতো বাইরের function-এর ঠিকানা জোড়া লাগায়</span>
+hello (executable — ELF file, run করার জন্য ready)</pre>
+  <p>Object file "অসম্পূর্ণ" কেন? কারণ তোমার code <code>printf</code> call করেছে, কিন্তু <code>printf</code>-এর code তোমার file-এ নেই — সেটা C library-তে। <strong>Linker</strong>-এর কাজ এই reference গুলো resolve করা। (Static vs dynamic linking Chapter 33-এ।)</p>
+
+  <h3>ELF: executable-এর গঠন</h3>
+  <p>Linux executable-এর format হলো <strong>ELF</strong> (Executable and Linkable Format)। ভিতরে মোটা দাগে থাকে: header (এটা কী ধরনের file, execution কোথা থেকে শুরু — <strong>entry point</strong>), machine code section, initialized data section, আর dynamic library-র dependency list। JavaScript developer হিসেবে ভাবতে পারো — ELF হলো compiled program-এর <code>package.json</code> + bundle একসাথে।</p>
+
+  <h3>Run করার মুহূর্তে: loader</h3>
+  <p><code>./hello</code> চালালে shell একটা system call দিয়ে kernel-কে বলে "এই executable থেকে process বানাও"। তখন kernel-এর <strong>loader</strong> অংশ কাজ করে:</p>
+  <ol>
+    <li>নতুন process তৈরি করে (PID, address space)</li>
+    <li>ELF header পড়ে code আর data segment গুলো process-এর memory-তে <em>map</em> করে</li>
+    <li>Stack setup করে, dynamic libraries load করে</li>
+    <li>CPU-র <strong>program counter</strong> (instruction pointer)-কে entry point-এ set করে দেয়</li>
+  </ol>
+  <p>ব্যস — এখন CPU ওই address থেকে instruction fetch করে execute করা শুরু করে। Program "চলছে" মানে আসলে এটুকুই: <strong>CPU-র program counter তোমার code-এর ভিতর দিয়ে হাঁটছে।</strong></p>
+
+  <div class="box kern">
+    <div class="box-title">তাহলে JavaScript/Python-এর বেলায়?</div>
+    <p><code>node server.js</code> চালালে process টা আসলে <code>node</code> executable-এর — সেটাই ELF, সেটাই load হয়। তোমার <code>server.js</code> হলো ওই process-এর data, যেটা V8 engine পড়ে ভিতরে JIT compile করে চালায়। OS-এর চোখে process একটাই — node। এজন্যই <code>ps</code> দিলে দেখো "node", "server.js" না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Compiler আর linker-এর কাজের পার্থক্য কী?</li>
+      <li>Loader ঠিক কী কী কাজ করে?</li>
+      <li>Entry point আর program counter-এর সম্পর্ক কী?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-05" data-part="Part 2 — From Program to Process" data-title="Anatomy of a Process">
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 5 — Anatomy of a Process</h2>
+  <p class="chap-sub">Process-এর memory-র ভিতরটা দেখতে কেমন — এই layout-টা বইয়ের সবচেয়ে বেশি ব্যবহৃত ছবিগুলোর একটা।</p>
+
+  <h3>Process memory layout</h3>
+  <pre class="diagram">High Address
++------------------------+
+|   Stack                |  ← function call, local variable
+|      ↓ (নিচের দিকে বাড়ে) |
++------------------------+
+|                        |
+|   Free space           |
+|                        |
++------------------------+
+|      ↑ (উপরের দিকে বাড়ে) |
+|   Heap                 |  ← dynamic allocation (malloc, new, object)
++------------------------+
+|   BSS                  |  ← uninitialized global (শূন্য দিয়ে শুরু)
++------------------------+
+|   Data                 |  ← initialized global/static variable
++------------------------+
+|   Code / Text          |  ← machine instructions (read-only)
++------------------------+
+Low Address</pre>
+
+  <ul>
+    <li><strong>Code/Text:</strong> Executable-এর machine instructions। Read-only রাখা হয় — নিজের code নিজে overwrite করা বন্ধ করতে। বোনাস: read-only বলেই একই program-এর একাধিক process এই অংশটা physical memory-তে share করতে পারে।</li>
+    <li><strong>Data:</strong> যেসব global/static variable-এর initial value দেওয়া আছে (<code>int count = 10;</code>)।</li>
+    <li><strong>BSS:</strong> Initial value ছাড়া global গুলো (<code>int total;</code>) — process শুরুতে zero-filled থাকে। ELF file-এ এদের জন্য জায়গা নষ্ট হয় না, শুধু size লেখা থাকে।</li>
+    <li><strong>Heap:</strong> Runtime-এ চাওয়া memory — <code>malloc</code>, JS-এর object/array, সব এখানে। উপরের দিকে বাড়ে।</li>
+    <li><strong>Stack:</strong> Function call-এর জায়গা। নিচের দিকে বাড়ে।</li>
+  </ul>
+
+  <h3>Stack ঠিক কীভাবে কাজ করে</h3>
+  <p>প্রতিটা function call-এ stack-এ একটা <strong>stack frame</strong> push হয়। Frame-এর ভিতরে থাকে: function-এর <strong>local variables</strong>, <strong>arguments</strong>, আর সবচেয়ে গুরুত্বপূর্ণ — <strong>return address</strong> (function শেষ হলে CPU কোথায় ফিরবে)। Function return করলে frame টা pop হয়ে যায়।</p>
+  <p>এই flow-টা trace করি:</p>
+  <div class="codewrap"><pre><code>void bar() { int z = 3; }
+void foo() { int y = 2; bar(); }
+int main()  { int x = 1; foo(); return 0; }</code></pre></div>
+  <pre class="diagram"><span class="dim">main() চলছে      foo() call        bar() call        bar() return      foo() return</span>
+
+|          |     |          |     | bar frame|     |          |     |          |
+|          |     | foo frame|     | foo frame|     | foo frame|     |          |
+| main     |     | main     |     | main     |     | main     |     | main     |
++----------+     +----------+     +----------+     +----------+     +----------+
+                 <span class="dim">frame push</span>       <span class="dim">আরেকটা push</span>       <span class="dim">pop</span>              <span class="dim">pop</span></pre>
+  <p class="diagram-caption">Stack literally একটা stack — LIFO। এজন্যই recursion বেশি গভীরে গেলে "stack overflow" হয়: frame জমতে জমতে জায়গা শেষ।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Stack হলো "এখন আমি কোথায় আছি আর কীভাবে ফিরবো"-র হিসাব। তোমার debugger-এ যে <strong>call stack / stack trace</strong> দেখো — সেটা আক্ষরিক অর্থেই এই memory region-এর ছবি। Exception-এর stack trace মানে: crash-এর মুহূর্তে stack-এ কোন কোন frame জমা ছিল।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>যেকোনো চলমান process-এর PID নিয়ে চালাও: <code>cat /proc/&lt;PID&gt;/maps</code>। Output-এ খুঁজে দেখো <code>[heap]</code>, <code>[stack]</code>, আর executable-এর path-ওয়ালা লাইনগুলো (ওগুলোই code/data)। এটা এই chapter-এর diagram-এর real-life version। <code>r-xp</code> (read+execute) দেখবে code segment-এ, <code>rw-p</code> দেখবে data/heap-এ — permission গুলোও layout-এর গল্প বলে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Process memory-র পাঁচটা region আর কার কী কাজ?</li>
+      <li>Stack frame-এ কী কী থাকে?</li>
+      <li>Return address জিনিসটা না থাকলে কী সমস্যা হতো?</li>
+      <li>Code segment read-only রাখার দুইটা সুবিধা কী?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-06" data-part="Part 2 — From Program to Process" data-title="Stack vs Heap">
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 6 — Stack vs Heap</h2>
+  <p class="chap-sub">দুইটা আলাদা allocation strategy — কেন দুটোই লাগে, আর কার কী cost।</p>
+
+  <h3>Stack কেন দরকার</h3>
+  <p>Function-এর local variable-দের একটা সুন্দর property আছে — এদের lifetime একদম predictable। Function ঢুকলে জন্ম, function বের হলে মৃত্যু। এমন predictable lifetime-এর জন্য stack perfect: allocation মানে শুধু stack pointer-টা একটু সরানো, deallocation মানে ফেরত সরানো। কোনো bookkeeping লাগে না, কোনো খোঁজাখুঁজি লাগে না।</p>
+
+  <h3>Heap কেন দরকার</h3>
+  <p>কিন্তু সব data-র lifetime function-এর সাথে বাঁধা না। ধরো একটা function user object বানিয়ে return করলো — function শেষ, কিন্তু object টা বেঁচে থাকতে হবে। অথবা runtime-এ ঠিক হবে কত বড় array লাগবে। এই "যতদিন দরকার ততদিন বাঁচবে, size আগে থেকে জানা নেই" ধরনের data-র জন্য <strong>heap</strong> — <code>malloc(size)</code> দিয়ে চাও, <code>free(ptr)</code> দিয়ে ফেরত দাও।</p>
+
+  <div class="box concept">
+    <div class="box-title">SCOPE vs LIFETIME</div>
+    <p><strong>Scope</strong> = code-এর কোথা থেকে variable-টা দেখা যায়। <strong>Lifetime</strong> = memory-টা কতক্ষণ বৈধ থাকে। Stack data-র বেলায় দুটো মিলে যায়। Heap data-র বেলায় না — pointer/reference টা scope-এর বাইরে চলে গেলেও heap-এর memory বেঁচে থাকতে পারে। C-তে এই ফাঁক থেকেই আসে dangling pointer আর memory leak; GC language-এ garbage collector এই lifetime tracking-টাই তোমার হয়ে করে।</p>
+  </div>
+
+  <h3>Cost-এর আসল হিসাব</h3>
+  <p>"Stack fast, heap slow" — এই oversimplification-টা এড়িয়ে যাই। আসল ছবিটা:</p>
+  <ul>
+    <li><strong>Stack allocation trivially simple</strong> — একটা pointer বাড়ানো/কমানো। প্রায় free।</li>
+    <li><strong>Heap allocation-এ কাজ বেশি</strong> — allocator-কে free space খুঁজতে হয়, bookkeeping করতে হয়, মাঝে মাঝে kernel-এর কাছে আরো memory চাইতে হয় (system call!)। কতটা costly সেটা allocator, allocation pattern আর size-এর উপর নির্ভর করে।</li>
+    <li><strong>Access speed-এ পার্থক্য allocation-এর না, locality-র</strong> — stack-এর data সাধারণত ছোট জায়গায় ঘেঁষাঘেঁষি করে থাকে বলে CPU cache-এ ভালো behave করে (Chapter 13)। Heap-এর data ছড়ানো-ছিটানো হলে cache miss বাড়ে। মানে পার্থক্যটা জায়গার "জাত"-এ না, access pattern-এ।</li>
+  </ul>
+
+  <h3>Heap-এর নিজস্ব রোগ</h3>
+  <ul>
+    <li><strong>Fragmentation:</strong> বারবার ছোট-বড় allocate/free করতে করতে free memory টুকরা টুকরা হয়ে যায় — মোট জায়গা থাকলেও বড় এক টুকরা পাওয়া যায় না।</li>
+    <li><strong>Memory leak:</strong> নেওয়া memory ফেরত না দেওয়া। GC language-এও হয় — যেমন global array-তে reference জমিয়ে রাখলে GC কিছুই করতে পারে না। Node.js app-এর memory ধীরে ধীরে বেড়ে যাওয়ার classic কারণ।</li>
+    <li><strong>Stack overflow:</strong> Heap-এর রোগ না, stack-এর — infinite/গভীর recursion-এ frame জমে stack-এর সীমা পার হয়ে যাওয়া।</li>
+  </ul>
+
+  <div class="box kern">
+    <div class="box-title">JS DEVELOPER-এর জন্য</div>
+    <p>V8-এ তোমার object/array/closure সব heap-এ থাকে, আর garbage collector সেই heap পরিষ্কার করে। "GC pause" মানে: collector heap ঘুরে ঘুরে মরা object খুঁজছে। Heap যত এলোমেলো আর বড়, GC-র কাজ তত বেশি। Chrome DevTools-এর Memory tab-এ যে heap snapshot নাও — সেটা আক্ষরিক অর্থেই এই chapter-এর heap region-এর ছবি।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>কোন data stack-এ আর কোন data heap-এ যায় — নিয়মটা কী?</li>
+      <li>Scope আর lifetime-এর পার্থক্য একটা উদাহরণ দিয়ে?</li>
+      <li>"Stack faster than heap" কথাটার মধ্যে কতটুকু সত্যি আর কোথায় ভুল?</li>
+      <li>Fragmentation কীভাবে তৈরি হয়?</li>
+    </ul>
+  </div>
+</section>
+<!-- ==================== PART 3 ==================== -->
+<section class="chapter" id="chapter-07" data-part="Part 3 — Memory" data-title="Understanding Physical Memory">
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 7 — Physical Memory বোঝা</h2>
+  <p class="chap-sub">RAM আসলে কী, আর কেন সেটা যত fast ভাবো তত fast না।</p>
+
+  <h3>RAM কী</h3>
+  <p><strong>RAM</strong> (Random Access Memory) হলো সেই hardware যেখানে চলমান process-দের code আর data থাকে। "Random access" মানে যেকোনো address-এ প্রায় সমান সময়ে পৌঁছানো যায় — disk-এর মতো ঘুরে ঘুরে খুঁজতে হয় না। আর RAM <strong>volatile</strong> — power গেলে সব মুছে যায়। এজন্যই "save" বলে একটা জিনিস আছে: RAM থেকে persistent storage-এ নেওয়া।</p>
+  <p>Physically RAM থাকে <strong>DIMM</strong> module-এ (motherboard-এর ওই লম্বা stick গুলো), আর আজকের প্রযুক্তির নাম <strong>DDR</strong> (DDR4/DDR5)। আমাদের জন্য এটুকু জানাই যথেষ্ট — এই বই memory hardware-এর encyclopedia না।</p>
+
+  <h3>Physical address</h3>
+  <p>RAM-কে ভাবো একটা বিশাল byte-এর array। প্রতিটা byte-এর একটা নাম্বার আছে — <strong>physical address</strong>। 16GB RAM মানে মোটামুটি 0 থেকে ১৬০০ কোটি+ পর্যন্ত address। CPU যখন memory access করে, শেষ পর্যন্ত এই physical address-ই ব্যবহৃত হয়। (কিন্তু তোমার process এই address কখনো সরাসরি দেখে না — সেই twist Chapter 9-এ।)</p>
+
+  <h3>Memory infinitely fast না কেন</h3>
+  <p>এখানেই একটা অস্বস্তিকর সত্য: <strong>CPU-র তুলনায় RAM ধীর</strong>। আধুনিক CPU প্রতি nanosecond-এ একাধিক instruction চালাতে পারে, কিন্তু RAM থেকে একটা data আনতে লাগে দশগুণ-শতগুণ বেশি সময় (exact number hardware-ভেদে ভিন্ন, তাই মুখস্থ করার দরকার নেই — অনুপাতটাই আসল)। কারণটা physics + engineering: RAM chip CPU থেকে physically দূরে, signal যেতে-আসতে সময় লাগে, আর DRAM cell পড়ার নিজস্ব latency আছে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>CPU হলো একটা দ্রুতগতির chef, RAM হলো storeroom। Chef-এর হাত যত দ্রুতই চলুক, প্রতিটা উপকরণের জন্য storeroom-এ হেঁটে গেলে রান্নার speed storeroom-এর হাঁটাপথেই আটকে যাবে। এই gap-টার নাম চলতি ভাষায় "memory wall" — আর এটা মেটানোর জন্যই cache-এর জন্ম (Chapter 8, 13)।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>Linux-এ <code>free -h</code> চালাও। <code>used</code>, <code>free</code>, আর <code>buff/cache</code> column গুলো দেখো। অবাক লাগতে পারে যে "free" এত কম — আসলে OS ইচ্ছা করেই অলস RAM-কে file cache হিসেবে ব্যবহার করে (Chapter 23-এ বুঝবে কেন এটা ভালো জিনিস)। <code>available</code> column-টাই আসল "কতটুকু পাওয়া যাবে"-র হিসাব।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Volatile মানে কী, আর তার consequence কী?</li>
+      <li>Physical address জিনিসটা কী?</li>
+      <li>CPU-র তুলনায় RAM slow — এটা software design-এ কেন matter করে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-08" data-part="Part 3 — Memory" data-title="CPU and Memory Interaction">
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 8 — CPU আর Memory-র কথাবার্তা</h2>
+  <p class="chap-sub">একটা memory access-এর ভিতরের যাত্রাপথ — cache-এর foundation এখানেই।</p>
+
+  <h3>একটা load instruction-এর যাত্রা</h3>
+  <p>ধরো CPU-র সামনে instruction: "address X থেকে value আনো" (load)। ঘটনা broadly এরকম:</p>
+  <pre class="diagram">CPU: "address X-এর data চাই"
+  ↓
+1. L1 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও  <span class="dim">(দ্রুততম)</span>
+  ↓ না
+2. L2 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
+  ↓ না
+3. L3 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
+  ↓ না
+4. RAM থেকে আনো    <span class="dim">(সবচেয়ে ধীর ধাপ — শত শত cycle)</span>
+  └─ আনার সময় data-টা cache-এও রেখে দাও, পরেরবারের জন্য</pre>
+  <p>মূল idea: CPU সরাসরি RAM-এ যায় না। মাঝে ছোট, দ্রুত memory-র কয়েকটা স্তর আছে — <strong>cache hierarchy</strong>। সম্প্রতি ব্যবহৃত data cache-এ থাকে; পাওয়া গেলে <strong>cache hit</strong> (সস্তা), না পেলে <strong>cache miss</strong> (দামি — RAM পর্যন্ত যাত্রা)।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Memory access-এর cost একটা fixed number না — এটা একটা <strong>lottery</strong>: data কোথায় বসে আছে তার উপর নির্ভর করে একই instruction সস্তাও হতে পারে, শতগুণ দামিও হতে পারে। Performance-sensitive code লেখার সময় আসল খেলা হলো এই lottery-তে জেতার সম্ভাবনা বাড়ানো — মানে cache-friendly access pattern। কীভাবে, সেটা Chapter 13-এ।</p>
+  </div>
+
+  <p>আরেকটা সূক্ষ্ম কথা: CPU byte ধরে ধরে RAM থেকে আনে না — আনে <strong>cache line</strong> ধরে (সাধারণত 64 bytes-এর chunk)। মানে address X চাইলে তার আশেপাশের byte গুলোও ফাউ হিসেবে cache-এ চলে আসে। এই এক তথ্যই sequential vs random access-এর পুরো পার্থক্যের বীজ — মাথায় রেখো।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>CPU data খোঁজার order-টা কী?</li>
+      <li>Cache hit আর miss-এর cost-এর পার্থক্য এত বড় কেন?</li>
+      <li>Cache line ধরে data আনার ফলে কী সুবিধা তৈরি হয়?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-09" data-part="Part 3 — Memory" data-title="Virtual Memory">
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 9 — Virtual Memory</h2>
+  <p class="chap-sub">এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ chapter-গুলোর একটা। ধীরে পড়ো — এটা clear হলে OS-এর অর্ধেক রহস্য খুলে যায়।</p>
+
+  <h3>Problem: সবাই একই RAM চায়</h3>
+  <p>ধরো process-রা সরাসরি physical address ব্যবহার করতো। তাহলে তিনটা মারাত্মক সমস্যা:</p>
+    <ol>
+    <li><strong>Isolation নেই:</strong> Chrome ভুল করে (বা malware ইচ্ছা করে) তোমার password manager-এর memory পড়ে ফেলতে পারতো — শুধু address জানলেই হলো।</li>
+    <li><strong>Coordination নightmare:</strong> Compiler code বানানোর সময় জানেই না program-টা RAM-এর কোথায় বসবে, আর কোন address অন্য কেউ ব্যবহার করছে।</li>
+    <li><strong>RAM-এর সীমা = hard limit:</strong> 8GB RAM-এ সব process মিলে 8GB-র বেশি কিছুতেই না।</li>
+  </ol>
+
+  <h3>Idea: প্রত্যেককে নিজের একটা "নকল" memory জগৎ দাও</h3>
+  <p>OS + hardware মিলে প্রতিটা process-কে একটা illusion দেয়: <strong>"পুরো memory তোমার একার।"</strong> প্রতিটা process পায় নিজস্ব <strong>virtual address space</strong> — address 0 থেকে শুরু করে বিশাল একটা range, যেখানে Chapter 5-এর সেই layout (code, data, heap, stack) সাজানো থাকে। Process-এর সব pointer, সব address — এগুলো <strong>virtual address</strong>। Physical RAM-এর সাথে এদের direct মিল নেই।</p>
+  <p>তাহলে আসল RAM-এ পৌঁছায় কীভাবে? <strong>Translation</strong>-এর মাধ্যমে। প্রতিটা memory access-এ virtual address → physical address-এ convert হয়।</p>
+
+  <h3>Page, page frame, page table</h3>
+  <p>Byte-by-byte translation রাখা অসম্ভব (mapping table-ই RAM খেয়ে ফেলতো)। তাই memory-কে ভাগ করা হয় fixed-size টুকরায়:</p>
+  <ul>
+    <li><strong>Page:</strong> Virtual address space-এর টুকরা — সাধারণত 4KB।</li>
+    <li><strong>Page frame:</strong> Physical RAM-এর একই size-এর টুকরা।</li>
+    <li><strong>Page table:</strong> প্রতিটা process-এর নিজস্ব "dictionary" — কোন virtual page কোন physical frame-এ বসেছে। Kernel এটা maintain করে।</li>
+  </ul>
+  <pre class="diagram"><span class="u">Process A</span>                                <span class="u">Process B</span>
+virtual addr 0x1000                       virtual addr 0x1000  <span class="dim">← একই address!</span>
+      ↓                                         ↓
+<span class="k">A-এর Page Table</span>                           <span class="k">B-এর Page Table</span>
+      ↓                                         ↓
+Physical frame #87                        Physical frame #412  <span class="dim">← আলাদা RAM!</span>
+
+              Physical RAM
+   [ frame 87: A-র data ] ... [ frame 412: B-র data ]</pre>
+  <p class="diagram-caption">দুই process-এর virtual address এক হলেও page table আলাদা — তাই physical memory আলাদা। এটাই isolation-এর মূলমন্ত্র।</p>
+  <p>Translation-টা করে CPU-র ভিতরের একটা hardware unit — <strong>MMU</strong> (Memory Management Unit)। প্রতিটা memory access-এ MMU page table দেখে address translate করে। আর যেহেতু প্রতিবার page table (যেটা নিজেই RAM-এ থাকে) পড়া দামি, MMU-র ভিতরে থাকে <strong>TLB</strong> (Translation Lookaside Buffer) — সাম্প্রতিক translation-গুলোর একটা ছোট cache। বেশিরভাগ access TLB-তেই মিটে যায়।</p>
+
+  <h3>Page fault: illusion-এর সবচেয়ে চালাক অংশ</h3>
+  <p>Page table-এ একটা entry-র "এই page-এর পিছনে এখন কোনো physical frame নেই" অবস্থাও থাকতে পারে। Process সেই address ছুঁলেই MMU হাত তুলে দেয় — CPU একটা <strong>page fault</strong> তোলে, control চলে যায় kernel-এর কাছে। তখন kernel সিদ্ধান্ত নেয়:</p>
+  <ul>
+    <li>Address টা বৈধ, কিন্তু data এখনো আনা হয়নি (যেমন executable-এর যে অংশ এখনো পড়া হয়নি, বা swap-এ পাঠানো page)? → RAM-এ frame জোগাড় করো, data আনো, page table update করো, process-কে আবার চালাও। <strong>Process টেরও পায় না।</strong></li>
+    <li>Address টা আসলেই অবৈধ? → process-কে <strong>segmentation fault</strong> দিয়ে মেরে ফেলো। C-তে ভুল pointer-এর সেই বিখ্যাত <code>segfault</code>, এই ঘটনা।</li>
+  </ul>
+
+  <h3>এই design থেকে ফাউ পাওয়া superpower গুলো</h3>
+  <ul>
+    <li><strong>Lazy loading:</strong> পুরো executable আগে load করার দরকার নেই — page fault হলে যে অংশ লাগবে সেটাই আসবে। বড় program-ও দ্রুত start হয়।</li>
+    <li><strong>Shared memory:</strong> দুই process-এর page table-এ একই physical frame map করে দাও — ব্যস, memory shared। Shared library (libc) এভাবেই শত process-এ এক কপি থাকে।</li>
+    <li><strong>Copy-on-write (CoW):</strong> Process copy করার সময় (fork, Chapter 15) memory সত্যি সত্যি copy না করে দুজনের page table-ই একই frame-এ point করাও, শুধু read-only mark করো। কেউ <em>লিখতে</em> গেলে তখনই সেই page-টা copy হবে। ফলে fork প্রায় instant।</li>
+    <li><strong>Swap:</strong> RAM ভরে গেলে কম-ব্যবহৃত page disk-এ সরিয়ে frame খালি করা যায়। পরে দরকার হলে page fault-এর মাধ্যমে ফেরত আসবে।</li>
+  </ul>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Virtual memory মানে disk-কে RAM হিসেবে ব্যবহার করা।" না — swap শুধু একটা side feature। Virtual memory-র আসল purpose হলো <strong>isolation আর address abstraction</strong>: প্রতিটা process-এর নিজস্ব, সুরক্ষিত, ধারাবাহিক address জগৎ। Swap বন্ধ থাকলেও (অনেক server-এ থাকে) virtual memory পুরোদমে চলে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>cat /proc/&lt;PID&gt;/status | grep -i vm</code> চালাও। <code>VmSize</code> (virtual address space-এর মোট size) প্রায়ই <code>VmRSS</code> (আসলে physical RAM-এ বসে থাকা অংশ)-এর চেয়ে অনেক বড় হবে। এটাই lazy allocation-এর evidence — process অনেক address "reserve" করেছে, কিন্তু kernel frame দিয়েছে শুধু যেটুকু ছোঁয়া হয়েছে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>প্রতিটা process নিজস্ব virtual address space পায় কেন?</li>
+      <li>Page, page frame, page table — তিনটার সম্পর্ক কী?</li>
+      <li>TLB কী এবং কেন লাগে?</li>
+      <li>Page fault-এর দুই রকম পরিণতি কী কী?</li>
+      <li>Copy-on-write-এ fork এত সস্তা হয় কীভাবে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-10" data-part="Part 3 — Memory" data-title="Memory Cost and Trade-offs">
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 10 — Memory-র Cost আর Trade-off</h2>
+  <p class="chap-sub">Virtual memory ফ্রি না — কোথায় কী দাম দিতে হয়, সেটার engineering হিসাব।</p>
+
+  <h3>Page size-এর টানাটানি</h3>
+  <p>Page 4KB কেন — 1 byte বা 1GB না কেন? দুই দিকেই খরচ আছে:</p>
+  <ul>
+    <li>Page <strong>ছোট</strong> হলে → page table-এ entry বেশি → table-এর নিজেরই memory খরচ বাড়ে, TLB-তে কম range ধরে।</li>
+    <li>Page <strong>বড়</strong> হলে → <strong>internal fragmentation</strong>: 5KB data-র জন্য 2MB page দিলে বাকিটা অপচয়। (তুলনায়, heap allocator-এর free space টুকরা টুকরা হয়ে যাওয়াটা <strong>external fragmentation</strong> — Chapter 6-এ দেখেছিলে।)</li>
+  </ul>
+  <p>4KB একটা historical sweet spot। Database/বড়-memory workload-এর জন্য Linux-এ "huge pages" (2MB) option-ও আছে — TLB-র উপর চাপ কমাতে।</p>
+
+  <h3>কোন operation-এর কী দাম</h3>
+  <div class="table-wrap"><table>
+    <tr><th>ঘটনা</th><th>Cost-এর ধরন</th></tr>
+    <tr><td>TLB hit</td><td>প্রায় free — translation cache থেকেই।</td></tr>
+    <tr><td>TLB miss</td><td>Page table হেঁটে আসতে হয় (memory access) — লক্ষণীয় কিন্তু ছোট দাম। এলোমেলো বিশাল data structure ঘাঁটলে এটা জমে জমে বড় হয়।</td></tr>
+    <tr><td>Minor page fault</td><td>Kernel-এ যেতে হয়, কিন্তু disk লাগে না (যেমন প্রথমবার ছোঁয়া lazy page)। মাঝারি দাম।</td></tr>
+    <tr><td>Major page fault</td><td><strong>Disk থেকে page আনতে হয়</strong> (swap বা file)। দাম কয়েক মাত্রা (orders of magnitude) বেশি। এগুলো ঘনঘন হলে performance ধসে যায়।</td></tr>
+  </table></div>
+
+  <h3>Memory mapping: file-কে memory বানিয়ে ফেলা</h3>
+  <p>Virtual memory-র আরেকটা elegant ব্যবহার — <strong>mmap</strong>। একটা file-কে process-এর address space-এ map করে দাও; এরপর file পড়া মানে স্রেফ memory পড়া। প্রথম access-এ page fault হবে, kernel disk থেকে page আনবে, তারপর থেকে direct। Database engine, dynamic linker (shared library load), বড় file processing — সবখানে এই কৌশল। এখানে দেখো কীভাবে concepts জোড়া লাগছে: page fault যেটা Chapter 9-এ "error handling" মনে হচ্ছিল, সেটাই এখানে একটা <em>loading mechanism</em>।</p>
+
+  <div class="box concept">
+    <div class="box-title">ENGINEERING INTUITION</div>
+    <p>Memory নিয়ে চিন্তা করার সময় দুইটা প্রশ্ন করো: <strong>(১) আমার working set (একই সময়ে দরকারি data) RAM-এ ধরে তো?</strong> না ধরলে major fault/swap শুরু হবে — তখন কোনো code optimization বাঁচাবে না। <strong>(২) আমার access pattern কি ঘেঁষাঘেঁষি (dense) নাকি ছড়ানো (sparse)?</strong> ছড়ানো হলে TLB আর cache দুটোই কাঁদবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Internal আর external fragmentation-এর পার্থক্য?</li>
+      <li>Minor আর major page fault-এর পার্থক্য এবং কোনটা ভয়ংকর কেন?</li>
+      <li>mmap কীভাবে page fault-কে feature বানিয়ে ফেলে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-11" data-part="Part 3 — Memory" data-title="DMA">
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 11 — DMA</h2>
+  <p class="chap-sub">Device আর memory-র মধ্যে data transfer-এ CPU-কে মুক্তি দেওয়ার কৌশল।</p>
+
+  <h3>Problem: CPU-কে কুলি বানানো</h3>
+  <p>ধরো disk থেকে 1GB data আনতে হবে। এক উপায়: CPU নিজে device থেকে টুকরো টুকরো data পড়ে RAM-এ লেখে — byte-কুলিগিরি। এতে দুইটা ক্ষতি: (১) দুনিয়ার সবচেয়ে দামি resource-টা (CPU) copy-র মতো বোকা কাজে আটকে থাকে, (২) সেই সময়ে সে আর কোনো process চালাতে পারে না।</p>
+
+  <h3>Solution: Direct Memory Access</h3>
+  <p><strong>DMA</strong>-তে কাজটা এভাবে ভাগ হয়:</p>
+  <pre class="diagram"><span class="k">1. Kernel/driver: DMA controller-কে বলে —</span>
+   "disk-এর এই block গুলো, RAM-এর এই address-এ, এতটুকু data"
+2. CPU: ততক্ষণে <span class="u">অন্য process চালাতে চলে যায়</span>
+3. DMA engine: device ↔ RAM data transfer নিজে নিজে করে
+4. শেষ হলে device একটা <span class="k">interrupt</span> দেয় — "কাজ শেষ!"
+<span class="k">5. Kernel: interrupt handle করে, waiting process-কে জাগিয়ে দেয়</span></pre>
+  <p>অর্থাৎ CPU-র ভূমিকা এখন শুধু <em>setup</em> আর <em>completion handling</em> — মাঝের ভারী transfer-টা hardware নিজে করে। আধুনিক প্রায় সব serious I/O (disk, network card) DMA-ই ব্যবহার করে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>এই chapter-টা আসলে একটা বড় সত্যের ছোট উদাহরণ: <strong>I/O চলাকালীন CPU সাধারণত বসে থাকে না — সে অন্য কাজ করে।</strong> "Disk read হচ্ছে" মানে CPU busy না; মানে <em>তোমার process</em> waiting, আর CPU অন্য কাউকে সময় দিচ্ছে। Async I/O, event loop, "I/O-bound vs CPU-bound" — এই সব আলোচনার ভিত্তি এখানেই।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>DMA ছাড়া বড় I/O-তে কী ক্ষতি হতো?</li>
+      <li>DMA transfer-এ CPU-র ভূমিকা ঠিক কতটুকু?</li>
+      <li>Transfer শেষ হয়েছে — kernel জানে কীভাবে?</li>
+    </ul>
+  </div>
+</section>
+<!-- ==================== PART 4 ==================== -->
+<section class="chapter" id="chapter-12" data-part="Part 4 — CPU" data-title="Inside the CPU">
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 12 — CPU-র ভিতরে</h2>
+  <p class="chap-sub">যেখানে আসল "কাজ" হয় — সেই যন্ত্রটার minimum viable mental model।</p>
+
+  <h3>ভিতরের যন্ত্রপাতি</h3>
+  <ul>
+    <li><strong>ALU</strong> (Arithmetic Logic Unit): যোগ-বিয়োগ-তুলনা-bitwise — actual হিসাবের জায়গা।</li>
+    <li><strong>Control Unit:</strong> Instruction পড়ে ঠিক করে কোন যন্ত্রাংশ কী করবে — অর্কেস্ট্রার conductor।</li>
+    <li><strong>Registers:</strong> CPU-র ভিতরের হাতেগোনা কয়েকটা ultra-fast storage slot। যেকোনো হিসাবের operand আগে register-এ আসে। এর মধ্যে দুটো special:
+      <ul>
+        <li><strong>Program Counter (PC):</strong> পরের instruction-এর address। "Program চলছে" মানে এই register এগোচ্ছে।</li>
+        <li><strong>Instruction Register:</strong> এই মুহূর্তে execute হওয়া instruction।</li>
+      </ul>
+    </li>
+    <li><strong>Cores:</strong> আধুনিক CPU আসলে এক chip-এ একাধিক স্বাধীন CPU — প্রতিটা core-এর নিজস্ব ALU, registers, L1/L2 cache। 8-core মানে সত্যিকারের ৮টা কাজ একসাথে।</li>
+    <li><strong>Clock speed:</strong> প্রতি second-এ কত cycle (3GHz = ৩০০ কোটি)। প্রতি cycle-এ CPU-র যন্ত্রপাতি এক ধাপ এগোয়।</li>
+  </ul>
+
+  <h3>একটা instruction-এর জীবনচক্র</h3>
+  <pre class="diagram">Fetch    → PC যেখানে দেখাচ্ছে, memory থেকে সেই instruction আনো
+Decode   → instruction-টা কী বলছে বোঝো (add? load? jump?)
+Execute  → ALU দিয়ে কাজটা করো
+Memory   → দরকার হলে memory read/write করো
+Writeback→ result register-এ লেখো
+   ↺ PC বাড়াও (বা jump হলে নতুন address বসাও), আবার Fetch</pre>
+  <p>তোমার পুরো career-এর সব code — React component থেকে SQL query — শেষ বিচারে এই লুপ: fetch, decode, execute, কোটি কোটি বার প্রতি second-এ। High-level ভাষা যত জাদুই দেখাক, নিচে নেমে সবকিছু এই সরল চক্রে দাঁড়ায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">CONNECTION</div>
+    <p>Chapter 5-এর stack pointer, Chapter 4-এর entry point, সামনের Chapter 17-এর context switch — সবকিছু ঘোরে registers-এর চারপাশে। <strong>Process-এর "execution state" মানে মূলত: registers + PC + stack pointer-এর snapshot।</strong> এই বাক্যটা মনে রেখো, context switching-এ কাজে লাগবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program counter কী, আর jump/if-else এর সাথে এর সম্পর্ক কী?</li>
+      <li>Fetch-decode-execute চক্রটা নিজের ভাষায়?</li>
+      <li>Core আর clock speed — কে কী বাড়ায়?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-13" data-part="Part 4 — CPU" data-title="CPU Cache">
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 13 — CPU Cache</h2>
+  <p class="chap-sub">Memory wall-এর জবাব — এবং তোমার code-এর speed-এর অন্যতম নীরব নিয়ন্ত্রক।</p>
+
+  <h3>Cache কেন exists করে</h3>
+  <p>Chapter 7-এ দেখেছি RAM CPU-র তুলনায় বহুগুণ ধীর। প্রতিটা instruction-এ RAM-এ গেলে 3GHz CPU-র বেশিরভাগ সময় কাটতো অপেক্ষায়। সমাধান: CPU-র গা ঘেঁষে ছোট কিন্তু অতি দ্রুত memory রাখো, আর সেখানে <em>সম্ভবত-আবার-লাগবে</em> data রাখো।</p>
+  <p>"সম্ভবত আবার লাগবে" — এটা অনুমান করা যায় কারণ program-দের behavior-এ দুইটা দারুণ predictable pattern আছে, একসাথে যাদের নাম <strong>locality</strong>:</p>
+  <ul>
+    <li><strong>Temporal locality:</strong> এইমাত্র যে data ছুঁয়েছ, শিগগিরই আবার ছোঁবে (loop-এর counter, hot object)।</li>
+    <li><strong>Spatial locality:</strong> যে address ছুঁয়েছ, তার <em>পাশের</em> address-ও ছোঁবে (array-র পরের element, struct-এর পরের field)।</li>
+  </ul>
+
+  <h3>Hierarchy</h3>
+  <pre class="diagram">CPU core
+  │
+  ├─ L1  <span class="dim">— ক্ষুদ্র (KB-স্কেল), দ্রুততম, প্রতি core-এ নিজস্ব</span>
+  ├─ L2  <span class="dim">— বড়, একটু ধীর, সাধারণত core-প্রতি</span>
+  ├─ L3  <span class="dim">— আরও বড় (MB-স্কেল), সব core-এ shared</span>
+  ↓
+ RAM   <span class="dim">— বিশাল, সবচেয়ে ধীর</span></pre>
+  <p>আর আগের অধ্যায়ের সেই কথা: data আনা-নেওয়া হয় <strong>cache line</strong> (~64 bytes) ধরে। একটা <code>int</code> চাইলে আশেপাশের আরও ১৫টা ফাউ আসে।</p>
+
+  <h3>Sequential vs random: পার্থক্যটা কোথা থেকে আসে</h3>
+  <p>একটা বড় array-র সব element sum করছো — দুইভাবে:</p>
+  <ul>
+    <li><strong>Sequential (index 0,1,2,3...):</strong> প্রথম access-এ এক cache line এলো — পরের ১৫টা element-ও সাথে এলো। ১৬টার মধ্যে ১৫টা access-ই cache hit। Spatial locality-র জয়।</li>
+    <li><strong>Random (এলোমেলো index):</strong> প্রায় প্রতিটা access নতুন cache line — miss, miss, miss। একই পরিমাণ কাজ, কিন্তু বাস্তবে কয়েকগুণ ধীর হতে পারে।</li>
+  </ul>
+  <p>এজন্যই linked list বনাম array-র পার্থক্য শুধু Big-O-তে ধরা পড়ে না: linked list-এর node গুলো heap-এ ছড়িয়ে থাকে (pointer chase = random access), array cache-এর প্রিয় বন্ধু। Big-O সমান হলেও বাস্তব ঘড়িতে array প্রায়ই জেতে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Cache মানে just faster RAM।" এতে দুটো জিনিস miss হয়: (১) cache একটা <strong>hierarchy</strong> — স্তরে স্তরে size/speed trade-off, (২) cache কাজই করে <strong>locality-র জুয়ায়</strong> — তোমার access pattern এলোমেলো হলে cache প্রায় অকেজো। Cache-এর সুবিধা automatic না; সেটা তোমার data layout আর access pattern-এর পুরস্কার।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Temporal আর spatial locality — একটা করে নিজের code-এর উদাহরণ?</li>
+      <li>Cache line কীভাবে sequential access-কে জেতায়?</li>
+      <li>L1/L2/L3-এর size ছোট → বড় আর speed দ্রুত → ধীর কেন সাজানো?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-14" data-part="Part 4 — CPU" data-title="Pipelining and Parallelism">
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 14 — Pipelining আর Parallelism</h2>
+  <p class="chap-sub">CPU একটা instruction শেষ করে পরেরটা ধরে না — কেন এবং তার মানে কী।</p>
+
+  <h3>Pipeline: assembly line-এর কৌশল</h3>
+  <p>Chapter 12-র সেই fetch → decode → execute → memory → writeback ধাপগুলো ভাবো একটা garment factory-র line হিসেবে। এক instruction যখন decode হচ্ছে, পরেরটা তখন fetch হতে পারে — ধাপগুলো তো আলাদা যন্ত্রাংশে চলে। এটাই <strong>pipelining</strong>: এক মুহূর্তে pipeline-এর ভিতরে একাধিক instruction, প্রত্যেকে আলাদা stage-এ। ফলে প্রতিটা instruction-এর নিজের সময় না কমলেও প্রতি cycle-এ একটা করে instruction "বের হয়ে আসে"।</p>
+  <p>Pipeline-এর শত্রু হলো <strong>branch</strong> — if/else, loop-এর শর্ত। পরের instruction কোনটা, তা তো শর্তের result-এর আগে জানা যায় না! CPU তখন <em>অনুমান</em> করে (branch prediction) আগেভাগে কাজ চালিয়ে যায়; অনুমান ভুল হলে pipeline-এর আধখাওয়া কাজ ফেলে দিতে হয়। এজন্যই খুব unpredictable branching-ওয়ালা code (যেমন unsorted data-র উপর শর্ত) মাঝে মাঝে আশ্চর্যরকম ধীর হয়।</p>
+
+  <h3>Parallelism-এর স্তরগুলো</h3>
+  <ul>
+    <li><strong>Pipeline (এক core-এর ভিতরে):</strong> ধাপ overlap — উপরে দেখলাম।</li>
+    <li><strong>Multiple cores:</strong> সত্যিকারের একসাথে একাধিক instruction stream। ৮ core = ৮টা process/thread আক্ষরিকভাবেই simultaneously।</li>
+    <li><strong>SMT / Hyper-threading:</strong> এক physical core দুইটা "hardware thread" সাজে — এক thread memory-র জন্য wait করলে core-এর অলস যন্ত্রাংশ আরেক thread চালায়। দুই core-এর সমান না, কিন্তু utilization বাড়ে। এজন্যই ৪-core laptop-এ <code>nproc</code> ৮ দেখাতে পারে।</li>
+  </ul>
+
+  <details><summary>Side note: RISC vs CISC, 32-bit vs 64-bit</summary><div class="d-body">
+    <p><strong>RISC vs CISC:</strong> Instruction set design-এর দুই দর্শন — ছোট-সরল instruction (RISC: ARM, তোমার M-series Mac) বনাম জটিল-শক্তিশালী instruction (CISC: x86)। আজকাল ভিতরের বাস্তবায়ন অনেকটা মিলে গেছে; app developer হিসেবে মূল takeaway: আলাদা instruction set মানে আলাদা machine code — এজন্যই ARM Mac-এ x86 binary সরাসরি চলে না (Rosetta translate করে)।</p>
+    <p><strong>32-bit vs 64-bit:</strong> মূলত address-এর size। 32-bit-এ virtual address space সর্বোচ্চ 4GB — আধুনিক workload-এর জন্য হাস্যকর ছোট; 64-bit-এ কার্যত সীমাহীন। Registers-ও চওড়া হয়। ব্যস, এটুকুই দরকার।</p>
+  </div></details>
+
+  <div class="box concept">
+    <div class="box-title">ENGINEERING TAKEAWAY</div>
+    <p>CPU নিজে ভিতরে ভিতরে প্রচণ্ড parallel — কিন্তু <strong>এক core-এ তোমার single-threaded JS যতই optimize করো, বাকি ৭টা core বসে থাকবে</strong>। Multi-core কাজে লাগাতে হলে process/thread level-এ parallelism আনতে হয় — সেই গল্প Part 5-এ।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Pipelining কীভাবে throughput বাড়ায় অথচ একক instruction-এর সময় কমায় না?</li>
+      <li>Branch prediction কেন লাগে, ভুল হলে কী দাম?</li>
+      <li>Core আর hardware thread (SMT)-এর পার্থক্য?</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== PART 5 ==================== -->
+<section class="chapter" id="chapter-15" data-part="Part 5 — Process Management" data-title="Process Management">
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 15 — Process Management</h2>
+  <p class="chap-sub">Process-এর জীবনচক্র, state, আর জন্ম-রহস্য: fork।</p>
+
+  <h3>Process-এর state</h3>
+  <p>Kernel-এর খাতায় প্রতিটা process যেকোনো মুহূর্তে একটা state-এ থাকে:</p>
+  <pre class="diagram">          <span class="dim">জন্ম</span>
+           ↓
+        [Ready] ←──────────────┐
+           ↓ <span class="dim">scheduler CPU দিলো</span>  │ <span class="dim">সময় শেষ / বড় কেউ এলো</span>
+        [Running] ─────────────┘
+           ↓ <span class="dim">I/O চাইলো (disk, network, sleep...)</span>
+        [Waiting / Blocked]
+           ↓ <span class="dim">I/O শেষ → আবার Ready</span>
+           
+        [Terminated] <span class="dim">← exit করলে</span></pre>
+  <ul>
+    <li><strong>Running:</strong> এই মুহূর্তে কোনো core-এ চলছে। একটা core-এ একসাথে একটাই।</li>
+    <li><strong>Ready:</strong> চলতে প্রস্তুত, কিন্তু CPU খালি নেই — লাইনে দাঁড়িয়ে।</li>
+    <li><strong>Waiting/Blocked:</strong> কিছুর জন্য অপেক্ষা করছে (disk data, network packet, timer)। <strong>CPU চাইছেই না।</strong> তোমার server-এর বেশিরভাগ process দিনের বেশিরভাগ সময় এখানেই কাটায়।</li>
+    <li><strong>Terminated:</strong> শেষ। Kernel exit code ইত্যাদি রেখে দেয় parent-এর জন্য।</li>
+  </ul>
+  <p>এই state machine চালায় kernel-এর <strong>scheduler</strong> — কে Ready থেকে Running-এ যাবে সেই সিদ্ধান্ত তার। (Scheduling algorithm-এর academic জঙ্গলে আমরা ঢুকবো না; "fairness আর priority মিলিয়ে kernel সিদ্ধান্ত নেয়" — এই model-ই যথেষ্ট।)</p>
+
+  <h3>fork(): process-এর জন্ম</h3>
+  <p>Unix-এ নতুন process বানানোর মৌলিক উপায়টা মজার — "নতুন বানাও" না, বরং <strong>"নিজের কপি বানাও"</strong>:</p>
+  <div class="codewrap"><pre><code>pid_t pid = fork();
+
+if (pid == 0) {
+    // এখানে child process চলছে
+} else {
+    // এখানে parent — pid-এ child-এর PID
+}</code></pre></div>
+  <p><code>fork()</code> call করলে kernel চলমান process-এর একটা প্রায়-হুবহু copy বানায়: একই code, memory-র copy (আসলে copy-on-write — Chapter 9 মনে আছে? তাই প্রায় instant), একই open file-গুলো। মজাটা হলো — <strong>একই fork() call দুই process-এ দুইবার return করে</strong>: parent পায় child-এর PID, child পায় 0। ওই if/else দিয়েই দুজনের রাস্তা আলাদা হয়।</p>
+  <p>তারপর child সাধারণত <code>exec()</code> family-র একটা call দিয়ে নিজের ভিতরে নতুন executable load করে — পুরনো memory ছবি মুছে নতুন program বসে। Shell ঠিক এটাই করে: তুমি <code>ls</code> লিখলে shell fork করে, child-এ exec("ls") হয়, parent (shell) child শেষ হওয়ার wait করে। এই fork+exec ভাগাভাগির সুবিধা: fork আর exec-এর মাঝখানে child নিজের setup বদলাতে পারে (যেমন output redirect — <code>ls &gt; file.txt</code> এভাবেই কাজ করে)।</p>
+  <p>এভাবেই পুরো system-এ process-দের একটা <strong>parent-child tree</strong> তৈরি হয় — সবার আদি পূর্বপুরুষ PID 1 (init/systemd)।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p><code>ps -ef | head</code> চালিয়ে PPID (parent PID) column দেখো। Linux-এ <code>pstree | head -30</code> চালালে পুরো family tree দেখা যায় — systemd থেকে নেমে তোমার terminal, তার child shell, তার child তোমার command।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Ready আর Waiting state-এর পার্থক্য কী — কে CPU চায়, কে চায় না?</li>
+      <li>fork() "দুইবার return করে" — মানে কী?</li>
+      <li>fork+exec আলাদা দুই ধাপ রাখার সুবিধা কী?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-16" data-part="Part 5 — Process Management" data-title="Process vs Thread">
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 16 — Process vs Thread</h2>
+  <p class="chap-sub">Concurrency-র সব আলোচনার ভিত্তি — এই ছবিটা মাথায় গাঁথা চাই।</p>
+
+  <h3>Thread কী</h3>
+  <p>এতক্ষণ বলেছি "process চলে"। আরও সঠিকভাবে: process-এর ভিতরের <strong>thread</strong> চলে। Thread হলো execution-এর একক — একটা নিজস্ব instruction stream, নিজস্ব stack, নিজস্ব register state। প্রতিটা process অন্তত একটা thread নিয়ে জন্মায় (main thread), চাইলে আরও বানাতে পারে।</p>
+  <p>মূল কথা: <strong>process হলো resource-এর container, thread হলো execution-এর unit।</strong> Address space, heap, open files — এগুলো process-এর সম্পত্তি; process-এর সব thread এগুলো share করে।</p>
+
+  <pre class="diagram"><span class="u">Process (একটা address space)</span>
+├── Thread 1   ├── Thread 2   ├── Thread 3
+│   নিজস্ব:      │   নিজস্ব:      │   নিজস্ব:
+│   • Stack     │   • Stack     │   • Stack
+│   • Registers │   • Registers │   • Registers
+│   • PC        │   • PC        │   • PC
+│
+└── সবাই মিলে shared:
+    • Code (text)  • Heap  • Global data  • Open files/sockets</pre>
+  <p class="diagram-caption">যার যার execution state আলাদা, সবার data জগৎ এক।</p>
+
+  <h3>Share করা: আশীর্বাদ ও অভিশাপ</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>দুই process</th><th>এক process-এর দুই thread</th></tr>
+    <tr><td><strong>Memory</strong></td><td>সম্পূর্ণ আলাদা (isolation)</td><td>Heap/global shared</td></tr>
+    <tr><td><strong>Communication</strong></td><td>কষ্টের — pipe, socket, shared memory setup লাগে, প্রায়ই kernel-এর মধ্য দিয়ে</td><td>সহজ — একই variable-এ লেখো, অন্যজন দেখে</td></tr>
+    <tr><td><strong>একজনের crash</strong></td><td>অন্যজন বাঁচে</td><td>পুরো process মরে — সবাই একসাথে ডোবে</td></tr>
+    <tr><td><strong>তৈরির খরচ</strong></td><td>বেশি (নতুন address space, page table)</td><td>কম (শুধু stack + thread state)</td></tr>
+    <tr><td><strong>Bug-এর ধরন</strong></td><td>Interface-এ ভুল</td><td>Race condition, data corruption (Chapter 18)</td></tr>
+  </table></div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Thread is a lightweight process" — অসম্পূর্ণ, আর আসল point-টা miss করে। হালকা তো বটেই, কিন্তু defining পার্থক্য ওজনে না — <strong>address space-এ</strong>: process-রা আলাদা জগতে থাকে, thread-রা এক জগৎ share করে। এই sharing-ই thread-এর সব শক্তি আর সব বিপদের উৎস।</p>
+  </div>
+
+  <div class="box kern">
+    <div class="box-title">তোমার দুনিয়ায়</div>
+    <p>Node.js-এর model: এক process, তোমার JS চলে এক main thread-এ, কিন্তু ভিতরে libuv-এর একটা thread pool কিছু কাজ (file I/O, crypto, DNS) চালায়, আর V8-এর GC-ও আলাদা thread ব্যবহার করে। <code>worker_threads</code> খুললে সত্যিকারের আলাদা JS thread পাও। আর PM2 cluster mode? সেটা thread না — আলাদা <em>process</em>, এজন্যই ওদের মধ্যে memory share হয় না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Process is a container of resources, thread is a unit of execution" — নিজের ভাষায়?</li>
+      <li>Thread-দের মধ্যে কোনটা shared, কোনটা নিজস্ব?</li>
+      <li>প্রতিটা thread-এর আলাদা stack লাগে কেন? (Hint: function call)</li>
+      <li>Chrome tab-প্রতি process কেন — thread কেন না?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-17" data-part="Part 5 — Process Management" data-title="Context Switching">
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 17 — Context Switching</h2>
+  <p class="chap-sub">৪টা core-এ ৪০০টা process "একসাথে" চলার জাদু — আর সেই জাদুর দাম।</p>
+
+  <h3>Context মানে কী</h3>
+  <p>Chapter 12-র সেই বাক্যটা ফিরিয়ে আনি: একটা thread-এর execution state মানে <strong>registers + program counter + stack pointer-এর snapshot</strong>। এটাই তার <strong>context</strong> — "আমি কোন instruction-এ ছিলাম, আমার হিসাবের মাঝপথের value গুলো কী, আমার stack কোথায়।"</p>
+
+  <h3>Switch-টা কীভাবে ঘটে</h3>
+  <pre class="diagram"><span class="u">Process A চলছে...</span>
+   ↓ <span class="k">interrupt (timer) বা A নিজেই block হলো (I/O চাইলো)</span>
+━━━━━━ <span class="dim">kernel mode-এ প্রবেশ</span> ━━━━━━
+<span class="k">1. A-র context (registers, PC, SP) kernel-এ save</span>
+<span class="k">2. Scheduler: "এরপর কে?" → B নির্বাচিত</span>
+<span class="k">3. Address space switch — B-র page table চালু</span>
+<span class="k">4. B-র সেভ-করা context registers-এ restore</span>
+━━━━━━ <span class="dim">user mode-এ ফেরা</span> ━━━━━━
+<span class="u">Process B ঠিক সেখান থেকে চলা শুরু করলো,
+যেখানে সে শেষবার থেমেছিল — যেন কিছুই হয়নি</span></pre>
+  <p>Switch trigger হয় মূলত দুইভাবে: (১) process নিজে block হলো — I/O, sleep, lock-এর অপেক্ষা; (২) kernel জোর করে থামালো — timer interrupt-এ scheduler দেখলো অনেকক্ষণ চলেছে, এবার অন্যের পালা (preemption)। এই দ্বিতীয়টার জন্যই একটা infinite loop-ওয়ালা process পুরো machine জমিয়ে ফেলতে পারে না।</p>
+
+  <h3>দামটা কোথায়</h3>
+  <p>Context switch free না — কিন্তু দামটা যেখানে ভাবো সেখানে না। Register save/restore নিজে সস্তা। আসল খরচ:</p>
+  <ul>
+    <li><strong>Kernel-এ ঢোকা-বেরোনো</strong> — mode switch-এর overhead।</li>
+    <li><strong>Cache দূষণ:</strong> A-র data দিয়ে গরম হয়ে থাকা CPU cache B-র কোনো কাজে লাগে না; B-র শুরুটা হয় ঠান্ডা cache-এ — miss-এর ঝড়। A ফিরে এলে তার cache-ও ততক্ষণে B-র data-য় ভরে গেছে।</li>
+    <li><strong>TLB flush:</strong> Address space বদলালে পুরনো translation গুলোও অচল।</li>
+  </ul>
+  <p>মানে switch-এর পরের কিছু সময় ধরে <em>সবকিছুই</em> একটু ধীর চলে। Exact nanosecond মুখস্থের দরকার নেই — takeaway হলো: <strong>switch যত ঘনঘন, "আসল কাজ"-এর ভাগ তত কম।</strong> হাজার হাজার thread বানিয়ে ফেললে CPU সময়ের বড় অংশ যায় জায়গা বদলাবদলিতেই — এই রোগের নাম thrashing। (এক process-এর দুই thread-এর মধ্যে switch একটু সস্তা — address space বদলায় না — কিন্তু cache-এর সমস্যা থেকেই যায়।)</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>CPU হলো এমন এক পাঠক যে হাজারটা বই "একসাথে" পড়ছে — প্রতিটা বইয়ে bookmark (context) রেখে রেখে লাফাচ্ছে। লাফানো এত দ্রুত যে মনে হয় সব বই একসাথে পড়া হচ্ছে। কিন্তু প্রতিটা লাফে bookmark রাখা-খোঁজা + "কোথায় যেন ছিলাম" মনে করার (cache warm-up) খরচ আছে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>vmstat 1</code> চালাও — <code>cs</code> column দেখায় প্রতি second context switch-এর সংখ্যা। একটা idle machine-এও হাজারে হাজারে দেখতে পারো। তারপর কোনো busy কাজ চালিয়ে দেখো সংখ্যাটা কীভাবে নড়ে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Context-এ ঠিক কী কী থাকে?</li>
+      <li>Switch trigger হওয়ার দুই পথ কী কী?</li>
+      <li>Context switch-এর সবচেয়ে বড় hidden cost কোনটা এবং কেন?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-18" data-part="Part 5 — Process Management" data-title="Concurrency">
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 18 — Concurrency</h2>
+  <p class="chap-sub">Shared state + একাধিক thread = software engineering-এর সবচেয়ে কুখ্যাত bug-দের জন্মভূমি।</p>
+
+  <h3>Concurrency vs parallelism</h3>
+  <p>দুটো আলাদা জিনিস, প্রায়ই গুলিয়ে যায়:</p>
+  <ul>
+    <li><strong>Concurrency:</strong> একাধিক কাজ <em>overlapping সময়ে এগোচ্ছে</em> — এক core-ও হতে পারে, context switch করে করে। Structure-এর ব্যাপার।</li>
+    <li><strong>Parallelism:</strong> একাধিক কাজ <em>আক্ষরিক একই মুহূর্তে</em> চলছে — একাধিক core লাগবেই। Execution-এর ব্যাপার।</li>
+  </ul>
+  <p>একজন waiter ১০টা টেবিল সামলাচ্ছে = concurrency। ১০ জন waiter = parallelism। Node.js event loop হলো এক waiter-এর master class; multi-core কাজে লাগানো মানে waiter বাড়ানো।</p>
+
+  <h3>Race condition: কুখ্যাত counter++</h3>
+  <p>দুই thread একই shared counter বাড়াচ্ছে। Source code-এ <code>counter++</code> এক লাইন, কিন্তু CPU-র চোখে তিনটা আলাদা instruction:</p>
+  <div class="codewrap"><pre><code>1. LOAD   counter → register     (পড়ো)
+2. ADD    register + 1           (বাড়াও)
+3. STORE  register → counter     (লেখো)</code></pre></div>
+  <p>এখন এই interleaving-টা দেখো (counter = 5 থেকে শুরু):</p>
+  <pre class="diagram">Thread A                    Thread B
+LOAD  → 5
+                            LOAD  → 5      <span class="dim">← A এখনো লেখেনি!</span>
+ADD   → 6
+                            ADD   → 6
+STORE → 6
+                            STORE → 6      <span class="dim">← A-র কাজ মুছে গেল</span>
+
+দুইবার increment, কিন্তু ফলাফল 6 — 7 না।</pre>
+  <p>এটাই <strong>race condition</strong>: ফলাফল নির্ভর করছে কে-কখন-চললো তার timing-এর উপর। ভয়ংকর দিকটা হলো — বেশিরভাগ সময় ঠিকঠাক চলে; হাজারে একবার ভুল হয়, সেটাও production-এ, load-এর সময়, আর reproduce করা প্রায় অসম্ভব।</p>
+
+  <h3>রক্ষার অস্ত্র</h3>
+  <p>যে code shared state ছোঁয়, সেই অংশটার নাম <strong>critical section</strong>। নিয়ম: এক সময়ে এক thread-ই সেখানে ঢুকবে (mutual exclusion)। Tools:</p>
+  <ul>
+    <li><strong>Mutex (lock):</strong> Critical section-এর দরজার তালা। ঢোকার আগে lock নাও, বেরিয়ে ছাড়ো; অন্যরা lock না পাওয়া পর্যন্ত block থাকে। সরল, সর্বাধিক ব্যবহৃত। বিপদ: দুই thread দুই lock ধরে পরস্পরেরটার জন্য বসে থাকলে <strong>deadlock</strong> — কেউই আর নড়ে না। (এর mathematical treatment-এ যাচ্ছি না; "lock নেওয়ার order সব জায়গায় এক রাখো" — এই practical নিয়মটাই বেশিরভাগ deadlock ঠেকায়।)</li>
+    <li><strong>Semaphore:</strong> Counter-ওয়ালা তালা — "সর্বোচ্চ N জন একসাথে"। যেমন DB connection pool: ১০টা connection, ১১তম আবেদনকারী অপেক্ষা করবে।</li>
+    <li><strong>Atomic operations:</strong> Hardware-এর দেওয়া বিশেষ instruction যা load-modify-store-কে একটা অবিভাজ্য ধাপে করে — ছোট কাজে (counter!) lock-এর চেয়ে সস্তা।</li>
+  </ul>
+
+  <div class="box kern">
+    <div class="box-title">"JS-এ তো race condition নেই!" — সত্যি?</div>
+    <p>Memory-level race (উপরের counter++) single-threaded JS-এ হয় না, ঠিক। কিন্তু <strong>logical race</strong> দিব্যি হয়: দুইটা async request-ই আগে DB থেকে balance পড়লো, তারপর দুজনেই লিখলো — একই lost-update গল্প, শুধু interleaving-টা instruction level-এ না, await point-এ। Race-এর মূল কারণ thread না — <strong>shared mutable state + non-atomic read-modify-write</strong>। সেটা DB row-তেও হয়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Concurrency আর parallelism-এর পার্থক্য একটা analogy দিয়ে?</li>
+      <li>counter++ কেন atomic না, আর সেটা থেকে bug কীভাবে জন্মায়?</li>
+      <li>Mutex আর semaphore-এর পার্থক্য?</li>
+      <li>Race condition ধরা এত কঠিন কেন?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-19" data-part="Part 5 — Process Management" data-title="When Should You Use Threads?">
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 19 — Thread কখন ব্যবহার করবে?</h2>
+  <p class="chap-sub">Workload চেনো, তারপর tool বাছো — একটা practical decision framework।</p>
+
+  <h3>প্রথম প্রশ্ন: তোমার workload কী-bound?</h3>
+  <ul>
+    <li><strong>CPU-bound:</strong> সময় যাচ্ছে হিসাবে — image processing, encryption, বড় JSON parse, ML inference। CPU 100%-এ আটকে।</li>
+    <li><strong>I/O-bound:</strong> সময় যাচ্ছে <em>অপেক্ষায়</em> — DB query, HTTP call, file read। CPU বেশিরভাগ সময় অলস; process টা Waiting state-এ (Chapter 15) পড়ে থাকে।</li>
+  </ul>
+  <p>বেশিরভাগ web backend আসলে I/O-bound — request-এর জীবনের সিংহভাগ কাটে DB আর downstream service-এর অপেক্ষায়।</p>
+
+  <h3>Framework</h3>
+  <div class="table-wrap"><table>
+    <tr><th>পরিস্থিতি</th><th>ভালো fit</th><th>কেন</th></tr>
+    <tr><td>CPU-bound, কাজগুলো মোটামুটি স্বাধীন, data ভারী share করতে হয় না</td><td><strong>Multiple processes</strong></td><td>সব core কাজে লাগে, isolation ফ্রি — একটার crash/leak অন্যদের ছোঁয় না। (PM2 cluster, worker process)</td></tr>
+    <tr><td>CPU-bound, কিন্তু বড় shared data structure-এর উপর সবাই কাজ করবে</td><td><strong>Threads</strong></td><td>Data copy না করে share করা যায়; process-এর মধ্যে বড় data পাঠানো দামি।</td></tr>
+    <tr><td>I/O-bound, অনেক concurrent connection</td><td><strong>Event loop / async I/O</strong></td><td>অপেক্ষার জন্য thread পোষা অপচয় — এক thread-ই non-blocking ভাবে হাজারটা সামলায় (Chapter 28-29)।</td></tr>
+    <tr><td>I/O-bound, কিন্তু blocking API/library ব্যবহার করতেই হবে</td><td><strong>Thread pool</strong></td><td>Blocking call-গুলো pool-এর thread-এ ফেলে main flow মুক্ত রাখো। (Node-এর libuv নিজেই এটা করে।)</td></tr>
+  </table></div>
+
+  <h3>Thread-এর hidden bill</h3>
+  <ul>
+    <li>প্রতিটা thread-এর নিজস্ব stack (default প্রায়ই MB-স্কেলে reserve হয়) — দশ হাজার thread মানে memory-র বিশাল দাবি।</li>
+    <li>Thread যত বেশি, context switch তত বেশি (Chapter 17) — একটা সীমার পরে থread যোগ করলে throughput <em>কমে</em>।</li>
+    <li>Shared state এলেই lock, lock এলেই contention + deadlock-এর ঝুঁকি + মাথার ব্যথা (Chapter 18)।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">RULE OF THUMB</div>
+    <p>CPU-bound হলে parallelism দরকার — core-সংখ্যার কাছাকাছি worker (process বা thread)। I/O-bound হলে parallelism না, দরকার <em>অপেক্ষাটা সস্তায় করা</em> — async I/O/event loop। আর isolation যত পাও নিয়ে নাও: shared state যত কম, রাতের ঘুম তত ভালো।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>নিজের কোনো real project-এর workload — CPU না I/O bound? প্রমাণ কী?</li>
+      <li>I/O-bound কাজে ১০০০ thread বানানো অপচয় কেন?</li>
+      <li>CPU-bound কাজে core-এর চেয়ে অনেক বেশি thread দিলে কী হয়?</li>
+    </ul>
+  </div>
+</section>
+<!-- ==================== PART 6 ==================== -->
+<section class="chapter" id="chapter-20" data-part="Part 6 — Storage" data-title="Persistent Storage">
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 20 — Persistent Storage</h2>
+  <p class="chap-sub">RAM-এর বাইরের জগৎ — যেখানে data power গেলেও বাঁচে, কিন্তু দাম দিতে হয় speed-এ।</p>
+
+  <h3>কেন persistence আলাদা সমস্যা</h3>
+  <p>RAM volatile — তাই database, file, log সবকিছুর একটা "স্থায়ী ঠিকানা" লাগে। সেই ঠিকানাই storage। কিন্তু storage-এর economics সম্পূর্ণ আলাদা: RAM-এর চেয়ে অনেক সস্তা আর বড়, কিন্তু অনেক ধীর। এই gap-টাই file I/O-র পুরো design-কে shape করে।</p>
+
+  <h3>তিন প্রজন্ম</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Device</th><th>কীভাবে কাজ করে</th><th>Character</th></tr>
+    <tr><td><strong>HDD</strong></td><td>ঘূর্ণায়মান চুম্বকীয় disk + নড়াচড়া করা read head</td><td>Mechanical বলে <em>seek</em> (head সরানো) ভীষণ দামি — random access-এ মরে, sequential-এ চলনসই। এখনো সস্তা bulk storage-এ রাজত্ব।</td></tr>
+    <tr><td><strong>SSD (SATA)</strong></td><td>Flash memory — কোনো moving part নেই</td><td>Random access-এ HDD-র চেয়ে কয়েক মাত্রা ভালো। তবে পুরনো SATA interface-এর গলা চিপা।</td></tr>
+    <tr><td><strong>NVMe SSD</strong></td><td>Flash + PCIe দিয়ে সরাসরি CPU-র কাছে</td><td>আজকের standard। বিশাল parallelism — একসাথে বহু request গিলতে পারে। তোমার Mac-এর ভিতরে এটাই।</td></tr>
+  </table></div>
+
+  <h3>Latency vs throughput — আলাদা করে ভাবো</h3>
+  <ul>
+    <li><strong>Latency:</strong> <em>একটা</em> request-এর জবাব আসতে কত সময়। DB-র একটা ছোট read এখানে আটকায়।</li>
+    <li><strong>Throughput:</strong> প্রতি second মোট কত data। বড় file copy/backup এখানে আটকায়।</li>
+  </ul>
+  <p>দুটো আলাদা অক্ষ — একটা device-এর throughput দুর্দান্ত হয়েও latency মাঝারি হতে পারে। আর সব device-এই sequential access random-এর চেয়ে সুবিধাজনক (HDD-তে আকাশ-পাতাল, SSD-তেও লক্ষণীয়)। Database-রা এজন্যই append-only log (WAL) এত ভালোবাসে — লেখাগুলো sequential করে ফেলা।</p>
+
+  <div class="box concept">
+    <div class="box-title">মাত্রাজ্ঞান (মুখস্থ না, অনুপাত)</div>
+    <p>মোটা দাগে: CPU cache → RAM → NVMe → HDD → network storage — প্রতিটা ধাপে latency মোটামুটি এক-দুই <em>মাত্রা</em> (order of magnitude) করে বাড়ে। মানে RAM-এ যা চোখের পলক, disk-এ তা দুপুরের খাবার-বিরতি। এই অনুপাতটাই মনে রাখো — এটাই বোঝায় কেন OS এত মরিয়া হয়ে disk access এড়াতে চায় (Chapter 23-এর page cache)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>HDD random access-এ এত খারাপ কেন?</li>
+      <li>Latency আর throughput-এর পার্থক্য একটা উদাহরণে?</li>
+      <li>Database-রা sequential write পছন্দ করে কেন?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-21" data-part="Part 6 — Storage" data-title="How File I/O Works">
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 21 — File I/O ভিতরে কীভাবে কাজ করে</h2>
+  <p class="chap-sub">fs.readFile() লেখা থেকে disk-এর data হাতে পাওয়া পর্যন্ত — পুরো stack-টা এবার সিরিয়াসলি।</p>
+
+  <h3>Stack-টা</h3>
+  <pre class="diagram"><span class="u">Application        — read(fd, buf, 4096)</span>
+      ↓ <span class="dim">system call</span>
+<span class="k">VFS                — "file" ধারণাটা সামলায়, fd → আসল file</span>
+<span class="k">File System (ext4) — file-এর byte → disk-এর কোন block, হিসাব রাখে</span>
+<span class="k">Page Cache         — data RAM-এ আছে? থাকলে এখানেই শেষ ✓</span>
+<span class="k">Block Layer        — disk request-দের queue, merge, schedule</span>
+<span class="k">Driver             — device-এর ভাষায় command</span>
+      ↓
+Storage Device     — data পড়ে DMA-তে RAM-এ দেয়</pre>
+
+  <h3>একটা read-এর গল্প, step by step</h3>
+  <ol>
+    <li><strong>open("config.json")</strong> — kernel file-টা খুঁজে বের করে, process-এর file descriptor table-এ একটা entry বসায়, তোমাকে দেয় একটা ছোট number — <strong>fd</strong> (ধরো 3)। এরপরের সব কথাবার্তা এই fd দিয়েই।</li>
+    <li><strong>read(3, buf, 4096)</strong> — system call। Kernel-এ ঢুকলো।</li>
+    <li>Filesystem হিসাব করে: এই file-এর প্রথম 4096 bytes মানে disk-এর অমুক block গুলো।</li>
+    <li><strong>Page cache check</strong> — block গুলোর data কি আগে থেকেই RAM-এ? <em>থাকলে সরাসরি copy করে দাও — disk ছোঁয়াই লাগলো না।</em> বাস্তবের বেশিরভাগ read এখানেই মিটে যায়।</li>
+    <li>Cache miss হলে: block layer-এ request → driver → device। ততক্ষণ তোমার process <strong>Waiting</strong> state-এ; CPU অন্য কাউকে চালায় (Chapter 15, 17 জোড়া লাগছে দেখো)।</li>
+    <li>Device DMA-তে data page cache-এ দেয়, interrupt দেয় (Chapter 11)। Kernel process-কে জাগায়, data user buffer-এ copy করে, read() return করে।</li>
+  </ol>
+
+  <h3>Write-এর গল্প: একটা মোচড় আছে</h3>
+  <p><code>write(fd, data, len)</code> return করলো মানে data disk-এ পৌঁছে গেছে? <strong>না।</strong> Default behavior: kernel data-টা page cache-এ লিখে page-টাকে <em>dirty</em> mark করে <em>সাথে সাথেই return করে দেয়</em>। Disk-এ আসল লেখা হয় পরে, background-এ (writeback)। ফলে write অবিশ্বাস্য fast লাগে — কারণ তুমি আসলে RAM-এ লিখেছ।</p>
+  <p>Trade-off পরিষ্কার: মাঝখানে power গেলে সেই dirty data হারিয়ে যায়। এজন্যই "সত্যি সত্যি disk-এ নামাও" বলার আলাদা system call আছে — <code>fsync(fd)</code>। Database-রা transaction commit-এ এটাই করে; এজন্যই durable write ধীর, আর এজন্যই Postgres-এর WAL config-এ fsync নিয়ে এত কথা।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"write() সফল return করেছে মানে data নিরাপদ।" না — মানে data <em>kernel-এর হাতে</em> পৌঁছেছে। Durability চাইলে fsync (এবং তার দাম) লাগবে। এই এক ভুল বোঝাবুঝি থেকে বহু "power গেল, data গেল" ঘটনা জন্মেছে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>strace -e trace=openat,read,write,close cat /etc/hostname</code> চালাও। নিজের চোখে দেখো <code>cat</code>-এর মতো সামান্য command-ও ঠিক এই system call গুলোই করে: open → fd পেলো → read → write (stdout-এ) → close। এই x-ray মেশিনটা (strace) মনে রেখো — Chapter 32-এ আবার আসবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>File descriptor কী, কোথায় থাকে?</li>
+      <li>Read path-এ page cache কোথায় বসে, কী বাঁচায়?</li>
+      <li>write() fast কেন, আর সেই speed-এর দাম কী?</li>
+      <li>fsync কখন লাগে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-22" data-part="Part 6 — Storage" data-title="File Systems">
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 22 — File Systems</h2>
+  <p class="chap-sub">Disk তো শুধু নাম্বার-দেওয়া block-এর সমুদ্র — "file" জিনিসটা বানায় কে?</p>
+
+  <h3>Problem আর idea</h3>
+  <p>Storage device-এর ভাষা: "block #48211 পড়ো/লেখো।" আমাদের ভাষা: "<code>/home/reza/notes.md</code> খোলো।" মাঝের অনুবাদক-টাই <strong>file system</strong> — disk-এর block গুলোর উপর সে বানায় নাম, hierarchy, permission, size — পুরো একটা সাজানো জগৎ।</p>
+
+  <h3>Core building blocks (ext4-এর ছবিতে)</h3>
+  <ul>
+    <li><strong>File = data blocks + metadata।</strong> Metadata থাকে <strong>inode</strong>-এ: size, owner, permission, timestamps, আর সবচেয়ে জরুরি — data কোন কোন block-এ আছে তার map। মজার fact: <strong>inode-এ file-এর নাম নেই।</strong></li>
+    <li><strong>Directory আসলে একটা বিশেষ file</strong> — যার content হলো একটা তালিকা: নাম → inode number। "File-এর নাম" আসলে directory-র সম্পত্তি। এজন্যই hard link সম্ভব — দুই নাম, এক inode।</li>
+    <li><strong>Path resolution:</strong> <code>/home/reza/notes.md</code> খুলতে kernel হাঁটে: root-এর inode → তার entry-তে "home" → সেই inode → entry "reza" → inode → entry "notes.md" → অবশেষে file-এর inode। প্রতিটা ধাপে permission check।</li>
+    <li><strong>Allocation:</strong> নতুন data-র জন্য কোন free block দেবে সেটা filesystem-এর কৌশল — ভালো filesystem চেষ্টা করে এক file-এর block গুলো কাছাকাছি রাখতে (sequential read-এর সুবিধা, Chapter 20)।</li>
+  </ul>
+  <pre class="diagram">directory entry          inode #5021              disk blocks
+"notes.md" → 5021   →   size: 8KB           →    [block 300][block 301]
+                        owner: reza
+                        perms: rw-r--r--
+                        blocks: 300, 301</pre>
+
+  <p>ext4 আধুনিক Linux-এর default — এতে আছে <em>journaling</em>: metadata বদলানোর আগে একটা log-এ intention লিখে রাখা, যাতে crash-এর পরে filesystem অসঙ্গত (corrupt) না থাকে। আর FAT? সেই সাদাসিধে পুরনো filesystem — permission নেই, journaling নেই — আজও pendrive/SD card-এ বেঁচে আছে কারণ সবাই এটা পড়তে পারে।</p>
+  <p>শেষ টুকরো — <strong>VFS</strong> (Virtual File System): kernel-এর ভিতরের সেই abstraction layer যার কারণে ext4, FAT, নেটওয়ার্ক filesystem — সবাইকে application একই <code>open/read/write</code> দিয়ে দেখে। Abstraction on abstraction — OS design-এর প্রিয় খেলা।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p><code>ls -li</code> চালাও — প্রথম column-টাই inode number। তারপর <code>stat &lt;filename&gt;</code> — এক file-এর পুরো inode-এর গল্প: size, blocks, links, timestamps। <code>df -T .</code> দিয়ে দেখো তোমার filesystem-টা আসলে কী (Linux-এ ext4, macOS-এ apfs)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>inode-এ কী থাকে, আর কী থাকে <em>না</em>?</li>
+      <li>Directory-কে "special file" বলা হয় কেন?</li>
+      <li>VFS কী সমস্যা solve করে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-23" data-part="Part 6 — Storage" data-title="Page Cache">
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 23 — Page Cache</h2>
+  <p class="chap-sub">Memory আর storage-এর জগৎ যেখানে মিলে যায় — এবং তোমার "দ্বিতীয়বার fast" রহস্যের সমাধান।</p>
+
+  <h3>Idea</h3>
+  <p>Disk RAM-এর চেয়ে মাত্রায়-মাত্রায় ধীর (Chapter 20)। আর RAM-এর খালি অংশ এমনিতেই বসে থাকে। Kernel-এর সিদ্ধান্ত: <strong>disk থেকে যা-ই পড়া হোক, RAM-এ রেখে দাও</strong> — কে জানে আবার লাগবে। এই জায়গাটার নাম <strong>page cache</strong> — file data-র page-size টুকরো, RAM-এ, kernel-এর জিম্মায়।</p>
+  <p>এজন্যই <code>free -h</code>-তে "buff/cache" এত বড় (Chapter 7-এর সেই ধাঁধা!) — এটা "দখল" না, এটা service। কোনো process-এর memory লাগলে kernel cache ছেড়ে দেয় — clean page ফেলে দেওয়া তো free।</p>
+
+  <h3>Read path আর write path</h3>
+  <pre class="diagram"><span class="dim">READ:</span>  read() → page cache-এ আছে? ── hit → copy, শেষ। <span class="dim">(RAM speed!)</span>
+                    └── miss → disk থেকে এনে cache-এ রাখো → copy
+
+<span class="dim">WRITE:</span> write() → cache-এর page-এ লেখো → page টা <span class="k">dirty</span> → return!
+                    <span class="dim">...পরে background-এ kernel dirty page গুলো disk-এ নামায়</span></pre>
+  <p>Dirty page মানে: cache-এর version disk-এর চেয়ে নতুন। Kernel এগুলো সময়মতো/চাপে পড়ে flush করে; <code>fsync</code> মানে "এই file-এর dirty page গুলো এক্ষুনি নামাও" (Chapter 21-এর সেই গল্প)।</p>
+
+  <h3>ফলাফল: চেনা চেনা কিছু behavior-এর ব্যাখ্যা</h3>
+  <ul>
+    <li>একই file <strong>দ্বিতীয়বার পড়া নাটকীয়ভাবে fast</strong> — প্রথমবার disk, দ্বিতীয়বার RAM। Benchmark করার সময় এটা মাথায় না রাখলে ভুল সিদ্ধান্তে পৌঁছাবে ("cold cache vs warm cache")।</li>
+    <li><strong>Database server-এ "free RAM" প্রায় শূন্য দেখায়</strong> — এবং সেটাই কাম্য: পুরো RAM জুড়ে data file-এর cache।</li>
+    <li>Server restart-এর পর প্রথম কিছুক্ষণ সব ধীর — cache ঠান্ডা, ধীরে ধীরে গরম হয়।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>এতক্ষণে খেয়াল করেছ নিশ্চয়ই — এই গল্পটা আগে শুনেছ: CPU-র জন্য cache (Chapter 13), address translation-এর জন্য TLB (Chapter 9), আর disk-এর জন্য page cache। <strong>যেখানেই দুই স্তরের speed-এ বিশাল ফারাক, মাঝখানে একটা cache</strong> — computing-এর সবচেয়ে পুনরাবৃত্ত design pattern। তোমার Redis layer-ও একই pattern-এর আরেক তলা।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>একটা বড় file নাও (না থাকলে বানাও: <code>dd if=/dev/zero of=big.bin bs=1M count=500</code>)। তারপর: <code>time cat big.bin &gt; /dev/null</code> — দুইবার চালাও। দ্বিতীয়বারের সময়টা দেখো। এটাই page cache, খালি চোখে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Page cache কী এবং কার memory-তে থাকে?</li>
+      <li>Dirty page মানে কী, এবং এর ঝুঁকি কী?</li>
+      <li>"Linux ate my RAM" অভিযোগটা ভুল কেন?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-24" data-part="Part 6 — Storage" data-title="File I/O Modes">
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 24 — File I/O-র Mode গুলো</h2>
+  <p class="chap-sub">Blocking, sync, async, O_SYNC, O_DIRECT — শব্দগুলোর পিছনের আসল প্রশ্ন দুটো মাত্র।</p>
+
+  <p>File I/O-র যাবতীয় mode আসলে দুইটা স্বাধীন প্রশ্নের উত্তর:</p>
+  <ol>
+    <li><strong>আমার thread কি অপেক্ষা করবে?</strong> (blocking vs non-blocking/async)</li>
+    <li><strong>Page cache-এর সাথে সম্পর্ক কী হবে?</strong> (durability/caching)</li>
+  </ol>
+
+  <h3>প্রশ্ন ১: অপেক্ষা</h3>
+  <ul>
+    <li><strong>Blocking (default):</strong> <code>read()</code> ডাকলে data না আসা পর্যন্ত thread টা Waiting-এ। সরল, বোঝা সহজ — আর এক thread-এ এক সময়ে একটাই I/O।</li>
+    <li><strong>Asynchronous:</strong> "কাজটা শুরু করো, আমি অন্য কাজে যাচ্ছি — শেষ হলে জানিও।" Thread আটকায় না। Linux-এ আধুনিক উত্তর <strong>io_uring</strong>; Node.js তোমাকে যে async <code>fs</code> API দেয়, তার পিছনে (ঐতিহাসিকভাবে) থাকে thread pool — blocking read-গুলো অন্য thread-এ চালিয়ে <em>তোমার</em> thread-কে মুক্ত রাখা।</li>
+  </ul>
+
+  <h3>প্রশ্ন ২: cache-এর সাথে বোঝাপড়া</h3>
+  <ul>
+    <li><strong>Default:</strong> সব page cache-এর মধ্য দিয়ে — write মানে cache-এ লেখা (fast, কিন্তু durable না যতক্ষণ না flush)।</li>
+    <li><strong><code>O_SYNC</code>:</strong> প্রতিটা write disk-এ পৌঁছানোর পরেই return করবে — যেন প্রতি write-এর সাথে ফাউ fsync। Durability সর্বোচ্চ, speed-এর দাম দিয়ে।</li>
+    <li><strong><code>O_DIRECT</code>:</strong> Page cache-কে পুরোপুরি bypass — data সরাসরি disk ↔ তোমার buffer। কে চায় এটা? যে নিজে আরও ভালো cache চালায় — যেমন কিছু database engine: "kernel, তোমার generic cache লাগবে না, আমি আমার data আমি-ই ভালো বুঝি।" সাধারণ application-এর জন্য এটা প্রায় সবসময় ভুল choice — kernel-এর cache-টা আসলে চমৎকার।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">TRADE-OFF TRIANGLE</div>
+    <p>Speed, durability, simplicity — তিনটা একসাথে পুরোপুরি পাওয়া যায় না। Default mode: speed + simplicity। O_SYNC/fsync: durability কিনলে speed বেচতে হয়। O_DIRECT: control কিনলে simplicity বেচতে হয়। Database design-এর অর্ধেক আলোচনা এই ত্রিভুজের ভিতরে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>File I/O mode-এর পিছনের দুইটা স্বাধীন প্রশ্ন কী কী?</li>
+      <li>O_SYNC আর O_DIRECT-এর পার্থক্য — কে কী bypass/guarantee করে?</li>
+      <li>সাধারণ app-এ O_DIRECT bad idea কেন?</li>
+    </ul>
+  </div>
+</section>
+<!-- ==================== PART 7 ==================== -->
+<section class="chapter" id="chapter-25" data-part="Part 7 — Networking and Sockets" data-title="What Is a Socket?">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 25 — Socket কী?</h2>
+  <p class="chap-sub">Network-কে OS যেভাবে file বানিয়ে দেয়।</p>
+
+  <h3>Abstraction-টা</h3>
+  <p>Network hardware-এর জগৎ raw packet-এর জগৎ। কিন্তু তুমি চাও "ওই server-এর সাথে একটা connection, যেখানে আমি bytes লিখবো আর পড়বো।" এই চাওয়াটার OS-দেওয়া রূপ হলো <strong>socket</strong> — network communication-এর একটা endpoint, kernel-এর তৈরি ও রক্ষণাবেক্ষণ করা একটা object।</p>
+  <p>সবচেয়ে সুন্দর অংশ: socket-ও পাও একটা <strong>file descriptor</strong> হিসেবে — file-এর মতোই (Chapter 21)! একই <code>read()</code>/<code>write()</code> চালে, একই fd table-এ বসে। Unix-এর সেই বিখ্যাত দর্শন — "everything is a file (descriptor)" — এখানে পুরো জৌলুসে।</p>
+
+  <h3>ঠিকানা: IP + port</h3>
+  <p>একটা TCP connection-কে uniquely চেনা যায় চারটা জিনিসে: <code>(client IP, client port, server IP, server port)</code>। <strong>IP</strong> machine চেনায়, <strong>port</strong> সেই machine-এর ভিতরে কোন application চেনায়। Server একটা well-known port-এ বসে থাকে (443, 5432...); client-এর port টা OS নিজেই একটা খালি নাম্বার থেকে দিয়ে দেয় (ephemeral port)। এই চার-টুপল আলাদা হলেই connection আলাদা — এজন্যই এক server port-এ হাজারো client একসাথে ঝুলতে পারে।</p>
+
+  <pre class="diagram"><span class="u">Client app</span>                              <span class="u">Server app</span>
+   │ write("GET /")                          ↑ read() → "GET /"
+   ↓                                         │
+<span class="u">socket fd</span>                               <span class="u">socket fd</span>
+   ↓                                         ↑
+<span class="k">Client kernel (TCP/IP stack)</span>            <span class="k">Server kernel (TCP/IP stack)</span>
+   ↓                                         ↑
+   └───────── network (packets) ─────────────┘</pre>
+  <p class="diagram-caption">দুই পাশের application শুধু নিজ নিজ socket দেখে; packet-এর ঝামেলা পুরোটা দুই kernel-এর।</p>
+
+  <h3>Server side-এর জীবনচক্র</h3>
+  <p>Server-এ socket-এর ব্যবহারটা একটু আলাদা ছন্দে চলে — নামগুলো চিনে রাখো, সামনে লাগবে:</p>
+  <ol>
+    <li><code>socket()</code> — একটা socket বানাও</li>
+    <li><code>bind()</code> — "আমি port 8080-এর মালিক"</li>
+    <li><code>listen()</code> — "connection নিতে প্রস্তুত" (এটা <em>listening socket</em>)</li>
+    <li><code>accept()</code> — একেকটা আগত connection-এর জন্য <em>নতুন একটা socket</em> ফেরত দেয় — data আদান-প্রদান ওটাতেই</li>
+  </ol>
+  <p>খেয়াল করো: listening socket আর connection socket আলাদা জিনিস। <code>app.listen(8080)</code> লেখার সময় Node ভিতরে ঠিক এই চারটা ধাপই চালায়।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Socket-কে file descriptor বানানোর সুবিধা কী?</li>
+      <li>Connection-এর চার-টুপল কী, আর এক port-এ বহু client কীভাবে?</li>
+      <li>Listening socket আর accepted socket-এর পার্থক্য?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-26" data-part="Part 7 — Networking and Sockets" data-title="TCP Connection Internals">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 26 — TCP Connection-এর ভিতরে</h2>
+  <p class="chap-sub">Connection "establish" হওয়া মানে আসলে কী তৈরি হয় — এবং কোথায়।</p>
+
+  <h3>Three-way handshake</h3>
+  <pre class="diagram">Client                          Server
+  │── SYN ──────────────────────→│   <span class="dim">"connection চাই" (+ আমার শুরুর sequence number)</span>
+  │←───────────────── SYN-ACK ───│   <span class="dim">"রাজি, এই নাও আমারটাও"</span>
+  │── ACK ──────────────────────→│   <span class="dim">"পাকা কথা"</span>
+  │                              │
+  │═══════ connection ready ═════│</pre>
+  <p>তিন ধাপ কেন? কারণ দুই পক্ষকেই নিশ্চিত হতে হবে — "আমার পাঠানো ওর কাছে পৌঁছায়, ওর পাঠানো আমার কাছে পৌঁছায়", আর দুজনের সেই শুরুর sequence number বিনিময় হতে হবে (এই নাম্বার দিয়েই TCP পরে হিসাব রাখে কোন byte পৌঁছেছে, কোনটা হারিয়েছে)।</p>
+  <p>সবচেয়ে জরুরি উপলব্ধি: <strong>"connection" জিনিসটা তারে-তারে কোথাও নেই।</strong> এটা দুই পাশের kernel-এর memory-তে রাখা state মাত্র — sequence number, window size, timers। মাঝের network শুধু স্বাধীন packet চেনে। TCP হলো দুই kernel-এর সম্মিলিত অভিনয়ে তৈরি "reliable stream"-এর illusion।</p>
+
+  <h3>Buffers: প্রতিটা socket-এর দুই গুদাম</h3>
+  <p>প্রতিটা established connection-এর জন্য kernel দুটো buffer রাখে:</p>
+  <ul>
+    <li><strong>Send buffer:</strong> তোমার <code>write()</code> data আগে এখানে জমা হয় → kernel নিজের গতিতে packet বানিয়ে পাঠায়। Buffer ভরা থাকলে (receiver ধীর!) write block করে — এটাই <strong>backpressure</strong>-এর জন্মস্থান।</li>
+    <li><strong>Receive buffer:</strong> Network থেকে আসা data এখানে জমে → তুমি <code>read()</code> করলে এখান থেকেই পাও। তুমি না পড়লে জমতে থাকে; ভরে গেলে TCP অপর পক্ষকে বলে দেয় "আস্তে!" (flow control)।</li>
+  </ul>
+  <p>দেখেছ pattern-টা? আবার সেই গল্প — দুই ভিন্ন গতির জগতের (তোমার app আর network) মাঝে buffer।</p>
+
+  <h3>Server-এর দুই queue</h3>
+  <p>Server-এর listening socket-এর পিছনে kernel দুটো লাইন রাখে:</p>
+  <pre class="diagram">SYN এলো → <span class="k">[SYN queue]</span>          <span class="dim">— handshake চলছে, আধা-পাকা connection</span>
+handshake শেষ → <span class="k">[accept queue]</span>  <span class="dim">— পুরো ready, app-এর accept()-এর অপেক্ষায়</span>
+app accept() করলো → connection app-এর হাতে</pre>
+  <p>এই ভাগাভাগির মানে গভীর: <strong>handshake পুরোটাই kernel সামলায় — তোমার Node process ঘুমিয়ে থাকলেও connection establish হয়ে accept queue-তে জমা হতে থাকে।</strong> আর app যদি accept করতে ধীর হয় (event loop আটকে আছে?), accept queue ভরে যায় — নতুন connection তখন refuse/drop হয়। <code>listen()</code>-এর backlog parameter এই queue-র সাইজই ঠিক করে। Production-এ "connection refused under load"-এর একটা classic কারণ এই queue overflow।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Handshake-এ তিনটা ধাপই লাগে কেন — দুইটায় হয় না কেন?</li>
+      <li>"Connection দুই kernel-এর memory-র state" — এর মানে কী?</li>
+      <li>Send/receive buffer কী কী সমস্যা solve করে?</li>
+      <li>SYN queue আর accept queue-র পার্থক্য, আর accept queue ভরলে কী হয়?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-27" data-part="Part 7 — Networking and Sockets" data-title="Sending and Receiving Data">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 27 — Data পাঠানো আর পাওয়া</h2>
+  <p class="chap-sub">write() থেকে তার/বাতাস পর্যন্ত — এবং উল্টো পথে।</p>
+
+  <h3>Send path</h3>
+  <pre class="diagram"><span class="u">Application — write(fd, "GET / ...", n)</span>
+   ↓ <span class="dim">system call — data send buffer-এ copy, return!</span>
+<span class="k">TCP  — buffer-এর data segment-এ কাটে, seq number দেয়,</span>
+<span class="k">       retransmission timer বসায় (হারালে আবার পাঠাবে)</span>
+<span class="k">IP   — segment-কে packet-এ মোড়ে: source/dest IP, routing</span>
+<span class="k">Driver — packet-কে NIC-এর queue-তে দেয়</span>
+   ↓ <span class="dim">DMA</span>
+NIC (network card) — bits হিসেবে তারে/বাতাসে</pre>
+  <p>লক্ষ করো: <code>write()</code> return মানে data <em>পৌঁছে গেছে</em> না — মানে <em>kernel-এর send buffer-এ ঢুকেছে</em> (file write-এর গল্পটার যমজ ভাই, Chapter 21)। পৌঁছানো নিশ্চিত করা, হারালে আবার পাঠানো, order ঠিক রাখা — সব TCP-র চাকরি, background-এ।</p>
+
+  <h3>Receive path — উল্টো ছবি</h3>
+  <pre class="diagram">NIC — packet এলো → DMA-তে memory-তে → <span class="k">interrupt: "data এসেছে!"</span>
+<span class="k">IP  — packet খুলে দেখে: আমার জন্যই তো?</span>
+<span class="k">TCP — চার-টুপল দেখে কোন connection-এর, seq number মিলিয়ে</span>
+<span class="k">      সঠিক জায়গায় বসায়, ACK পাঠায়, receive buffer-এ রাখে</span>
+<span class="k">      → এই socket-এ অপেক্ষারত process থাকলে জাগাও!</span>
+<span class="u">Application — read() → buffer থেকে data → তোমার হাতে</span></pre>
+  <p>সেই "জাগাও" শব্দটা মন দিয়ে দেখো — <strong>data আসা মানে waiting process-এর Ready হয়ে যাওয়া</strong> (Chapter 15-এর state machine)। তোমার server-এর প্রতিটা request-handling শুরু হয় আসলে একটা NIC interrupt থেকে।</p>
+  <p>আর buffering কেন অনিবার্য, এখন পুরো ছবিটা বলা যায়: network-এর data আসে <em>যখন খুশি</em> (packet-এ, এলোমেলো সময়ে), app পড়ে <em>যখন সুবিধা</em>। দুই অসমান ছন্দের মাঝে kernel-এর buffer-ই একমাত্র শান্তিচুক্তি।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>ss -t</code> চালাও (macOS: <code>netstat -an | grep ESTABLISHED | head</code>)। <code>Recv-Q</code> আর <code>Send-Q</code> column দুটো এই chapter-এর সেই দুই buffer-এর জমে থাকা data-র লাইভ পরিমাপ। Recv-Q বড় হয়ে থাকা মানে — app data পড়ছে না; Send-Q বড় মানে — অপর পাশ নিতে পারছে না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Send path-এ TCP আর IP-র ভাগের কাজ কী কী?</li>
+      <li>write() return করা আর data পৌঁছানো আলাদা কেন?</li>
+      <li>Receive path-এ process কখন, কীভাবে জাগে?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-28" data-part="Part 7 — Networking and Sockets" data-title="Blocking vs Non-blocking I/O">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 28 — Blocking vs Non-blocking I/O</h2>
+  <p class="chap-sub">C10K সমস্যার শিকড় — এবং event-driven জগতের জন্মকথা।</p>
+
+  <h3>Blocking model আর তার দেয়াল</h3>
+  <p>Default socket blocking: <code>read()</code> ডাকলে data না আসা পর্যন্ত thread ঘুমায়। সরল model-এ তাই দাঁড়ায়: <strong>এক connection = এক thread</strong> — যে-যার connection-এর read-এ ঝুলে থাকে।</p>
+  <p>১০০ connection-এ চলে। ১০,০০০-এ? ১০,০০০ thread: প্রত্যেকের stack-এ memory, scheduler-এর ঘাড়ে ১০,০০০ জনের হিসাব, অগুনতি context switch (Chapter 17, 19-এর সেই bill)। অথচ মজার ব্যাপার — <strong>এই thread-গুলোর ৯৯% কোনো কাজই করছে না, শুধু অপেক্ষা করছে।</strong> অপেক্ষার জন্য এত দামি জিনিস (thread) পোষা — এটাই মূল অপচয়। এই সমস্যার ঐতিহাসিক নাম "C10K problem"।</p>
+
+  <h3>Non-blocking: অপেক্ষা করতে অস্বীকার</h3>
+  <p>Socket-কে non-blocking mode-এ দিলে চুক্তি বদলে যায়: <code>read()</code>-এ data থাকলে দাও, না থাকলে <em>ঘুমিয়ো না</em> — সাথে সাথে বলো "এখন নেই" (<code>EWOULDBLOCK</code>)। Thread মুক্ত।</p>
+  <p>কিন্তু একা non-blocking যথেষ্ট না — data আছে কি না বারবার জিজ্ঞেস করতে থাকলে (busy polling) CPU পোড়ে অকারণে। দরকার একটা তৃতীয় জিনিস: <strong>kernel-কে বলা — "এই ১০,০০০ socket-এর <em>যেকোনোটায়</em> কিছু ঘটলে আমাকে ডেকো।"</strong> এক thread, ঘুমাবে একবারে, জাগবে ঠিক তখনই যখন সত্যি কাজ আছে। এই mechanism-টাই I/O multiplexing — পরের chapter পুরোটা এটা নিয়ে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Blocking model: প্রতি কাস্টমারের জন্য একজন dedicated কর্মচারী, যে কাস্টমার মেনু দেখার পুরোটা সময় পাশে দাঁড়িয়ে থাকে। Event-driven model: একজনই কর্মচারী, কিন্তু কাউন্টারে বেল আছে — যার দরকার সে বাজায়। কর্মচারীর সময় যায় শুধু <em>কাজে</em>, অপেক্ষায় না। শর্ত একটাই: প্রতিটা কাজ ছোট হতে হবে — কেউ কাউন্টার ২০ মিনিট আটকে রাখলে (event loop block!) বাকি সবাই আটকে যায়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Thread-per-connection কোথায় গিয়ে ভেঙে পড়ে — ঠিক কী কী খরচে?</li>
+      <li>Non-blocking mode-এ read()-এর আচরণ কী বদলায়?</li>
+      <li>Non-blocking একা কেন যথেষ্ট না?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-29" data-part="Part 7 — Networking and Sockets" data-title="I/O Multiplexing">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 29 — I/O Multiplexing</h2>
+  <p class="chap-sub">"এই হাজারটা fd-র কোনোটায় কিছু ঘটলে ডেকো" — nginx, Node, Redis সবার হৃদপিণ্ড।</p>
+
+  <h3>Evolution-টা বোঝাই আসল</h3>
+  <ul>
+    <li><strong>select / poll (আদি যুগ):</strong> প্রতিবার call-এ পুরো fd list kernel-কে দাও → kernel <em>সবগুলো</em> scan করে বলে কারা ready। কাজ চলে, কিন্তু connection N হলে প্রতি call-এ O(N) কাজ + পুরো list আনা-নেওয়া। ১০,০০০ fd-তে প্রতিটা event-এর জন্য ১০,০০০-এর scan — বাড়ে না (doesn't scale)।</li>
+    <li><strong>epoll (Linux-এর উত্তর):</strong> Approach উল্টে দাও — kernel-এর ভিতরেই একটা স্থায়ী interest list রাখো:
+      <ol>
+        <li><code>epoll_create()</code> — kernel-এ একটা "watch center" বানাও</li>
+        <li><code>epoll_ctl(ADD, fd)</code> — "এটার উপর নজর রেখো" (একবারই বলতে হয়)</li>
+        <li><code>epoll_wait()</code> — ঘুমাও; kernel জাগাবে <em>শুধু ready fd-দের list</em> হাতে দিয়ে</li>
+      </ol>
+      Data আসামাত্র kernel নিজেই (receive path-এর সেই "জাগাও" মুহূর্তে!) ready list-এ fd টা টুকে রাখে। ফলে কাজের খরচ ready event-এর সংখ্যার সমানুপাতিক — মোট connection যত-ই হোক। <strong>১০,০০০ ঘুমন্ত connection কার্যত free।</strong></li>
+    <li><strong>আত্মীয়স্বজন:</strong> kqueue (macOS/BSD-র epoll-সমতুল্য), IOCP (Windows-এর — দর্শন একটু আলাদা: "ready হলে বলো" না, "কাজ <em>শেষ</em> হলে বলো"), আর <strong>io_uring</strong> (Linux-এর নতুন প্রজন্ম — shared memory-র ring-এ request/completion বিনিময় করে system call-এর সংখ্যাই কমিয়ে দেয়; Chapter 32-এর পরে এর মর্ম আরও বুঝবে)।</li>
+  </ul>
+
+  <h3>একটা event-driven server-এর কঙ্কাল</h3>
+  <div class="codewrap"><pre><code>loop {
+    events = epoll_wait()             // ঘুমাও, ঘটনা এলে জাগো
+    for (e of events) {
+        if (e.fd == listening_fd)     // নতুন connection!
+            accept() → non-blocking করে epoll-এ ADD
+        else                          // পুরনো connection-এ data
+            read() → request process → write(response)
+    }
+}</code></pre></div>
+  <p>এটাই — literally এটাই — Node.js-এর event loop-এর, nginx-এর worker-এর, Redis-এর মূল কাঠামো। তোমার প্রতিটা <code>app.get(...)</code> handler ওই <code>process</code> জায়গাটায় বসে চলে। আর এখন এটাও পরিষ্কার কেন event loop-এ CPU-ভারী synchronous কাজ বিষ — loop-টা <code>epoll_wait</code>-এ ফিরতে না পারলে জমে থাকা কারো সেবাই হয় না।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Node.js single-threaded, তাই এক core-এ এক সাথে একটাই কাজ — slow।" আসল ছবি: I/O-bound জগতে "কাজ"-এর সংজ্ঞাই হলো ছোট ছোট CPU-র ঝলক, মাঝে বিশাল অপেক্ষা। Event loop সেই অপেক্ষাগুলো epoll-এ জমা দিয়ে ঝলকগুলো পরপর চালায় — এক thread-েই হাজারো connection। Single thread দুর্বলতা না, এই model-এর <em>design choice</em> — দুর্বলতা শুধু CPU-bound কাজে (তখন worker/process — Chapter 19)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>select/poll-এর scaling সমস্যাটা ঠিক কোথায়?</li>
+      <li>epoll কোন কাজটা "একবার" করে ফেলে বারবার করা এড়ায়?</li>
+      <li>Event loop block করলে ঠিক কী ঘটে — kernel level-এ ভেবে বলো।</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-30" data-part="Part 7 — Networking and Sockets" data-title="Socket Programming">
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 30 — Socket Programming: হাতেকলমে</h2>
+  <p class="chap-sub">একটা ন্যূনতম TCP server, C-তে — প্রতিটা লাইন এতক্ষণের theory-র প্রমাণ।</p>
+
+  <div class="codewrap"><pre><code>// ন্যূনতম echo server — error handling ইচ্ছা করে বাদ
+int server_fd = socket(AF_INET, SOCK_STREAM, 0);   // ১
+
+struct sockaddr_in addr = {0};
+addr.sin_family = AF_INET;
+addr.sin_port   = htons(8080);
+bind(server_fd, (struct sockaddr*)&amp;addr, sizeof(addr)); // ২
+
+listen(server_fd, 128);                            // ৩
+
+while (1) {
+    int client_fd = accept(server_fd, NULL, NULL); // ৪
+    char buf[1024];
+    int n = read(client_fd, buf, sizeof(buf));     // ৫
+    write(client_fd, buf, n);                      // ৬
+    close(client_fd);                              // ৭
+}</code></pre></div>
+
+  <p>লাইন ধরে ধরে — OS-এর চোখে কী ঘটলো:</p>
+  <ol>
+    <li><strong>socket():</strong> System call → kernel একটা socket object বানালো, fd দিলো। <code>SOCK_STREAM</code> মানে TCP।</li>
+    <li><strong>bind():</strong> "Port 8080 আমার" — kernel-এর port table-এ দাবি নথিভুক্ত। অন্য কেউ আগেই নিলে এখানেই <code>EADDRINUSE</code> — তোমার চেনা সেই "port already in use"।</li>
+    <li><strong>listen(fd, 128):</strong> Socket টা listening mode-এ; 128 হলো accept queue-র backlog (Chapter 26!)। এই মুহূর্ত থেকে kernel নিজে নিজে handshake করে connection জমাতে থাকবে।</li>
+    <li><strong>accept():</strong> Accept queue খালি থাকলে process এখানে block — Waiting state। Connection এলে জাগে, হাতে পায় <em>নতুন</em> fd।</li>
+    <li><strong>read():</strong> Receive buffer-এ data না থাকলে block; থাকলে copy। (এই যে ৪ আর ৫-এ blocking — এটাই এই server-এর সীমা: এক সময়ে এক client। Chapter 28-29 এর সমাধান তো এখন জানোই।)</li>
+    <li><strong>write():</strong> Send buffer-এ copy → kernel পাঠাবে।</li>
+    <li><strong>close():</strong> fd ছাড়ো → kernel TCP-র বিদায়-নৃত্য (FIN/ACK) চালায়।</li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">আসল শিক্ষা</div>
+    <p>মাত্র ৭টা system call-এ একটা network server — কারণ ভারী কাজের সবটাই kernel-এ: handshake, reliability, buffering, retransmission। Application-এর ভূমিকা আসলে <strong>orchestration</strong> — kernel-এর তৈরি জিনিসগুলো চাওয়া, আর bytes-এর অর্থ বোঝা (HTTP parse করা ইত্যাদি)। Express দিয়ে যে server লেখো, সেটা এই ৭ call-এর উপরে সাজানো অনেকগুলো সুবিধার স্তর মাত্র।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>কোনো C লাগবে না — দুই terminal-এ: <code>nc -l 8080</code> (server) আর <code>nc localhost 8080</code> (client), টাইপ করো — chat! তারপর তৃতীয় terminal-এ <code>ss -t | grep 8080</code> (macOS: <code>netstat -an | grep 8080</code>) — নিজের বানানো connection-টার state দেখো। Linux-এ <code>strace nc -l 8081</code> চালালে উপরের socket→bind→listen→accept ধারাটা লাইভ দেখবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>৭টা call-এর প্রতিটায় kernel-এ কী তৈরি/পরিবর্তন হয়?</li>
+      <li>এই server এক সময়ে এক client কেন — কোন দুই লাইনে আটকায়?</li>
+      <li>"Application orchestrates, kernel does the heavy lifting" — নিজের ভাষায়?</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== PART 8 ==================== -->
+<section class="chapter" id="chapter-31" data-part="Part 8 — User Space and Kernel Space" data-title="User Mode vs Kernel Mode">
+  <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
+  <h2>Chapter 31 — User Mode vs Kernel Mode</h2>
+  <p class="chap-sub">এই বইয়ের নীল-আর-amber রেখাটা এবার পুরো আলোয়।</p>
+
+  <h3>Privilege: hardware-এ খোদাই করা নিয়ম</h3>
+  <p>এটা কোনো software convention না — <strong>CPU নিজে</strong> দুই (বা ততোধিক) privilege level-এ চলে। Kernel mode-এ সব instruction, সব memory, সব device বৈধ। User mode-এ dangerous instruction (device-এ কথা বলা, page table বদলানো, interrupt বন্ধ করা) দিলে CPU নিজেই আটকে দিয়ে kernel-কে ডেকে দেয়। মানে যত বড় bug-ই লেখো, তোমার process hardware-এর ক্ষতি করতে বা অন্যের memory পড়তে <em>পারবেই না</em> — দারোয়ান silicon-এ বসানো।</p>
+  <p>কেন এত কড়াকড়ি? কারণ machine-টা shared। শত process, ভিন্ন user, আধা-বিশ্বাসী code — এদের মাঝে বিশ্বাসের সীমানা টানতেই হয়। Protection ছাড়া এক process-এর ভুল মানে পুরো machine-এর মৃত্যু (পুরনো DOS-যুগের বাস্তবতা)।</p>
+
+  <h3>দরজাটা: system call-এর যাত্রাপথ</h3>
+  <pre class="diagram"><span class="u">Application: file পড়তে চায়</span>
+<span class="u">  → libc-র read() → বিশেষ instruction (syscall)</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="dim">CPU: mode বদলে kernel — কিন্তু লাফ দেওয়া যাবে শুধু</span>
+<span class="dim">kernel-এর আগে-থেকে-ঠিক-করা entry point-এ, যেখানে খুশি নয়</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="k">Kernel: কোন syscall? (নম্বর দেখে) → argument validate</span>
+<span class="k">        → কাজ করো (fd বৈধ? permission আছে? data আনো)</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="u">CPU: user mode-এ ফেরত → application-এর হাতে result</span></pre>
+  <p>দুটো সূক্ষ্মতা লক্ষ করো: (১) ঢোকার জায়গাটা kernel-এর নির্ধারিত — user code "kernel mode-এ গিয়ে নিজের ইচ্ছামতো code" চালাতে পারে না; পারে শুধু kernel-এর menu থেকে order দিতে। (২) Kernel প্রতিটা argument সন্দেহের চোখে দেখে — user-এর দেওয়া pointer, সংখ্যা, সবকিছু validate হয়। এই অবিশ্বাসটাই security।</p>
+  <p>Mode বদলের আরও দুই দরজা আছে, ফাউ হিসেবে জেনে রাখো: <strong>interrupt</strong> (hardware-এর ডাক — NIC-এর "data এসেছে", timer-এর tick) আর <strong>exception/fault</strong> (তোমার code-এর কাণ্ড — page fault, zero-division)। তিন দরজাই এক জায়গায় নামে: kernel-এর নিয়ন্ত্রিত entry point।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Kernel হলো ব্যাংকের vault-এর কর্মকর্তা। তুমি (user process) vault-এ ঢুকতে পারো না — কাউন্টারে (syscall interface) slip জমা দাও, কর্মকর্তা ভিতরে গিয়ে কাজ করে ফলাফল আনে। Slip-এ যা-ই লেখো, কর্মকর্তা যাচাই করেই কাজ করবে। ব্যবস্থাটা একটু আনুষ্ঠানিক, তাই একটু ধীর — কিন্তু এজন্যই ব্যাংক লুট হয় না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Privilege enforcement software না hardware — কেন এটা গুরুত্বপূর্ণ পার্থক্য?</li>
+      <li>User code kernel-এর "যেখানে খুশি" ঢুকতে পারে না — ব্যবস্থাটা কী?</li>
+      <li>Mode switch-এর তিন দরজা কী কী?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-32" data-part="Part 8 — User Space and Kernel Space" data-title="System Calls and Their Cost">
+  <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
+  <h2>Chapter 32 — System Call আর তার দাম</h2>
+  <p class="chap-sub">Boundary পার হওয়ার হিসাব-নিকাশ — এবং সেটা ঘিরে গড়ে ওঠা engineering।</p>
+
+  <h3>দামটা আসে কোথা থেকে</h3>
+  <p>একটা syscall মানে সাধারণ function call না — মানে: mode switch (CPU state বদল), kernel-এ ঢুকে register বাঁচানো, syscall dispatch, argument validation, কাজ, তারপর পুরোটা উল্টো করে ফেরা। তার উপর আছে পরোক্ষ খরচ — kernel-এর code/data cache-এ ঢোকায় তোমার code-এর cache-এর কিছুটা দখল হয়ে যায় (Chapter 17-এর সেই cache দূষণের ছোট ভাই)।</p>
+  <p>কিন্তু ভারসাম্যটাও বলি: একটা syscall-এর নিজস্ব overhead nanoseconds-এর জগতে — আর তার ভিতরের <em>কাজটা</em> (disk read!) হতে পারে milliseconds-এর জগতে। অর্থাৎ <strong>overhead টা matter করে তখনই, যখন syscall গুলো ছোট এবং অনেক।</strong></p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"System calls are slow — যত পারো এড়াও।" ভুল frame। সঠিক frame: syscall-এর একটা <em>fixed per-call overhead</em> আছে। ১টা syscall-এ 4MB পড়া = overhead তুচ্ছ। ১০ লাখ syscall-এ ৪ byte করে পড়া = overhead-ই মূল খরচ। শত্রু syscall না — শত্রু <strong>ছোট কাজে ঘনঘন boundary পারাপার</strong>।</p>
+  </div>
+
+  <h3>এই হিসাব থেকে জন্ম নেওয়া কৌশলগুলো</h3>
+  <ul>
+    <li><strong>Batching/buffering:</strong> ছোট ছোট write জমিয়ে এক syscall-এ পাঠানো। তোমার <code>console.log</code>-এর পিছনে stdout buffering, HTTP client-এর request pipelining — সব এই এক idea।</li>
+    <li><strong>বড় buffer-এ পড়া:</strong> 64KB চেয়ে এক read, 1KB-র ৬৪ read না।</li>
+    <li><strong>epoll-ই একটা জবাব:</strong> হাজার fd-র খোঁজ এক <code>epoll_wait</code>-এ (Chapter 29)।</li>
+    <li><strong>io_uring — চূড়ান্ত রূপ:</strong> App আর kernel-এর মাঝে shared memory-র দুই ring (submission + completion)। App ring-এ request লিখে রাখে, kernel পড়ে কাজ করে result ring-এ রাখে — <em>অনেক operation, প্রায় শূন্য boundary-পারাপার।</em> পুরো design-টাই "syscall overhead"-এর বিরুদ্ধে যুদ্ধ।</li>
+    <li><strong>vDSO (মজার fact):</strong> কিছু নিরীহ syscall (যেমন সময় জানা — <code>gettimeofday</code>) এত ঘনঘন ডাকা হয় যে kernel সেগুলোর জবাব user space-এই map করে দেয় — boundary পারই হতে হয় না।</li>
+  </ul>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>দুটো তুলনা করো:<br><code>strace -c dd if=/dev/zero of=/dev/null bs=1 count=100000</code> (১ byte করে!)<br><code>strace -c dd if=/dev/zero of=/dev/null bs=100000 count=1</code> (এক চালানে)<br><code>-c</code> flag syscall-এর গণনা আর সময়ের summary দেখায় — একই কাজ, syscall সংখ্যায় লক্ষগুণ পার্থক্য, সময়েও চোখে পড়ার মতো। এটাই এই chapter-এর পুরো থিসিস এক পরীক্ষায়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Syscall-এর overhead-এর উপাদানগুলো কী কী?</li>
+      <li>কখন overhead টা তুচ্ছ, কখন সেটাই মূল খরচ?</li>
+      <li>Batching আর io_uring — দুটোই কোন এক সমস্যার দুই সমাধান?</li>
+    </ul>
+  </div>
+</section>
+<!-- ==================== PART 9 ==================== -->
+<section class="chapter" id="chapter-33" data-part="Part 9 — Compilers, Linkers and Executables" data-title="From Source Code to Executable">
+  <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
+  <h2>Chapter 33 — Source Code থেকে Executable</h2>
+  <p class="chap-sub">Chapter 4-এ ছবিটা এঁকেছিলাম দূর থেকে — এবার একটু কাছে গিয়ে।</p>
+
+  <h3>পুরো pipeline</h3>
+  <pre class="diagram">hello.c
+  ↓ <span class="dim">Preprocessing  — #include/#define বসানো: শুধুই text-এর কাজ</span>
+expanded source
+  ↓ <span class="dim">Compilation    — C → assembly (এখানেই optimization-এর জাদু)</span>
+hello.s
+  ↓ <span class="dim">Assembly       — assembly → machine code</span>
+hello.o  <span class="dim">(object file — code আছে, কিন্তু বাইরের ঠিকানাগুলো ফাঁকা)</span>
+  ↓ <span class="dim">Linking        — সব object + library জোড়া, ঠিকানা বসানো</span>
+hello  <span class="dim">(ELF executable)</span></pre>
+  <p>Object file-এর সেই "ফাঁকা ঠিকানা"-গুলোর তালিকার নাম symbol table — "আমার <code>printf</code> লাগবে, কে দেবে?" Linker-এর কাজ এই চাওয়া-পাওয়ার ঘটকালি। কোথাও জোড়া না মিললেই পাও সেই বিখ্যাত <code>undefined reference</code> error — এখন জানো ওটা কার অভিযোগ।</p>
+
+  <h3>Static vs dynamic linking — আসল সিদ্ধান্তটা</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Static</th><th>Dynamic</th></tr>
+    <tr><td>কী হয়</td><td>Library-র code executable-এর <em>ভিতরে</em> copy হয়ে যায়</td><td>Executable-এ শুধু নাম লেখা থাকে — "চলার সময় libc.so লাগবে"</td></tr>
+    <tr><td>ফল</td><td>একটাই বড় file, কোনো dependency নেই — যেখানে ফেলো চলে (Go-র binary-র জনপ্রিয়তার কারণ)</td><td>ছোট executable; আর সবচেয়ে বড় জয় — <strong>এক libc-র code memory-তে একবার</strong>, শত process page table দিয়ে share করে (Chapter 9-এর shared memory এখানেই!)</td></tr>
+    <tr><td>দাম</td><td>Library-র bug fix মানে সব executable আবার build</td><td>"Dependency hell" — ঠিক version-এর .so না পেলে চলে না</td></tr>
+  </table></div>
+  <p>Node-এর জগতে এর আত্মীয় চেনো: <code>node_modules</code> bundle করে এক file বানানো (esbuild) ≈ static; runtime-এ require ≈ dynamic-এর আবহ।</p>
+  <p>ELF file-এর গঠনটাও এখন অর্থবহ: header (কী এই file, entry point), <code>.text</code> (code), <code>.data</code>/<code>.bss</code> (Chapter 5-এর সেই segments-এর জন্মস্থান!), symbol tables, আর dynamic section-এ দরকারি .so-দের তালিকা।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>ldd /bin/ls</code> — ls কোন কোন shared library চায় দেখো। <code>file /bin/ls</code> — "ELF 64-bit... dynamically linked" নিজের চোখে। আর <code>readelf -h /bin/ls</code> দিলে ELF header — entry point address সহ।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Compiler-এর পরেও linker লাগে কেন?</li>
+      <li>Dynamic linking-এর memory-সুবিধাটা virtual memory-র কোন feature-এর উপর দাঁড়িয়ে?</li>
+      <li>"undefined reference" error-টা pipeline-এর কোন ধাপের, কীসের অভিযোগ?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-34" data-part="Part 9 — Compilers, Linkers and Executables" data-title="Loading an Executable">
+  <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
+  <h2>Chapter 34 — Executable Load হওয়া</h2>
+  <p class="chap-sub">ELF file থেকে Chapter 5-এর সেই memory layout — বৃত্তটা পূর্ণ হলো।</p>
+
+  <h3>exec()-এর মুহূর্তে ধাপে ধাপে</h3>
+  <ol>
+    <li>Kernel ELF header পড়ে — বৈধ executable তো?</li>
+    <li>Process-এর virtual address space সাজায় — কিন্তু চালাকিটা দেখো: <code>.text</code> আর <code>.data</code> RAM-এ <em>copy করে না</em> — file-টাকে address space-এ <strong>mmap</strong> করে দেয় (Chapter 10-এর সেই কৌশল!)। মানে "load" আসলে lazy: যে page ছোঁয়া হবে, page fault-এ সেটাই disk থেকে আসবে। এজন্যই বিশাল executable-ও প্রায় সাথে সাথে start হয়।</li>
+    <li>BSS-এর জন্য zero-filled জায়গা, stack-এর জন্য জায়গা তৈরি; stack-এর গোড়ায় বসিয়ে দেয় <code>argv</code> আর environment variables — তোমার <code>process.argv</code>-র জন্ম এখানে।</li>
+    <li>Dynamically linked হলে আগে চালু হয় <strong>dynamic linker</strong> (ld.so) — সে দরকারি .so গুলো address space-এ map করে, ঠিকানার জোড়াতালি (relocation) সারে।</li>
+    <li>Program counter → entry point। <span class="u">User mode</span>-এ যাত্রা শুরু।</li>
+  </ol>
+  <pre class="diagram"><span class="dim">ELF file (disk)</span>              <span class="u">Process address space</span>
+┌──────────────┐             +------------------+
+│ header       │             |   Stack ← argv   |
+│ .text  ──────┼── mmap ───→ |   ...            |
+│ .data  ──────┼── mmap ───→ |   Heap (নতুন)     |
+│ .bss (size)  │── zero ───→ |   BSS            |
+│ dynamic:     │             |   Data           |
+│  needs libc ─┼── ld.so ──→ |   Code / Text    |
+└──────────────┘             |   [libc.so map]  |
+                             +------------------+</pre>
+  <p class="diagram-caption">Chapter 5-এ layout-টা "দেওয়া ছিল" — এখন জানো কে, কখন, কোথা থেকে বানায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">সুতোগুলো জোড়া লাগলো</div>
+    <p>Executable loading = <strong>virtual memory-র feature-দের একটা orchestra</strong>: mmap (file→memory), demand paging (lazy load), page fault (loading mechanism), shared pages (libc সবার সাথে ভাগ), copy-on-write (fork-এর পরে)। Part 3 না বুঝে এই chapter পড়লে এগুলো জাদু লাগতো; এখন এগুলো স্রেফ চেনা যন্ত্রের নতুন ব্যবহার।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Load" আসলে copy না — তাহলে কী?</li>
+      <li>বিশাল binary-ও দ্রুত start হয় কীভাবে?</li>
+      <li>Dynamic linker কখন চলে, কী করে?</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== PART 10 ==================== -->
+<section class="chapter" id="chapter-35" data-part="Part 10 — Virtualization and Containers" data-title="Virtualization">
+  <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
+  <h2>Chapter 35 — Virtualization</h2>
+  <p class="chap-sub">এক hardware-এ একাধিক "computer" — cloud-এর ভিত্তিপ্রস্তর।</p>
+
+  <h3>Idea: illusion-এর আরেক ধাপ উপরে</h3>
+  <p>এই বইয়ে বারবার দেখেছি OS process-কে illusion দেয় — "CPU তোমার, memory তোমার।" Virtualization সেই একই খেলা এক level উপরে: <strong>একটা পুরো OS-কে illusion দেওয়া যে hardware-টা তার একার।</strong></p>
+  <ul>
+    <li><strong>Virtual machine (VM):</strong> Software দিয়ে বানানো একটা "computer" — virtual CPU, virtual RAM, virtual disk, virtual NIC।</li>
+    <li><strong>Guest OS:</strong> সেই নকল computer-এ install হওয়া পূর্ণাঙ্গ OS — নিজের kernel সহ, যে জানেও না সে নকলের উপর চলছে।</li>
+    <li><strong>Hypervisor:</strong> যে software এই সার্কাস চালায় — আসল hardware-কে ভাগ করে VM-দের দেয়, guest-দের বিপজ্জনক কাজগুলো ধরে ধরে সামলায়। Host hardware-এ সরাসরি বসতে পারে (server/cloud-এর ধরন), বা host OS-এর উপরে (তোমার laptop-এর VirtualBox/UTM)। আধুনিক CPU-তে hardware virtualization support থাকায় guest-এর সাধারণ code প্রায় native গতিতে চলে।</li>
+  </ul>
+  <p>Isolation-টা এখানে খুবই শক্ত — দুই VM-এর মাঝে আস্ত দুইটা kernel আর hypervisor-এর দেয়াল। এজন্যই cloud provider-রা অচেনা customer-দের এক machine-এ রাখতে VM-এই ভরসা করে। তুমি EC2/DigitalOcean-এ যে "server" ভাড়া নাও — সেটা প্রায় নিশ্চিতভাবেই একটা VM।</p>
+  <p>দামটাও পরিষ্কার: প্রতিটা VM-এ পুরো একটা OS — শত শত MB memory, নিজস্ব boot, নিজস্ব kernel-এর যাবতীয় খরচ। ১০টা ছোট service-এর জন্য ১০টা VM মানে ১০ কপি OS পোষা। এই অপচয়ের অস্বস্তি থেকেই পরের chapter-এর জন্ম।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Hypervisor-এর কাজ এক লাইনে?</li>
+      <li>VM-এর isolation এত শক্ত কেন?</li>
+      <li>VM-এর মূল অপচয়টা কোথায়?</li>
+    </ul>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-36" data-part="Part 10 — Virtualization and Containers" data-title="Containers">
+  <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
+  <h2>Chapter 36 — Containers</h2>
+  <p class="chap-sub">Docker-এর ভিতরের সত্য: নতুন কোনো জাদু না — এই বইয়ের চেনা জিনিসের চতুর সাজানো।</p>
+
+  <h3>মূল সত্যটা আগে</h3>
+  <p><strong>Container কোনো VM না। Container হলো সাধারণ process — শুধু kernel তাকে সীমিত আর বিভ্রান্ত করে রাখে।</strong> কোনো guest OS নেই, নকল hardware নেই, আলাদা kernel নেই — host-এর kernel-ই সবার। <code>docker run node</code> মানে host-এ একটা node process-ই চলছে; host থেকে <code>ps</code> দিলে দেখাও যায় তাকে।</p>
+  <p>তাহলে "আলাদা machine" feeling-টা আসে কোথা থেকে? Linux kernel-এর দুটো feature থেকে:</p>
+  <ul>
+    <li><strong>Namespaces — "কী দেখতে পাবে":</strong> Process-এর বিভিন্ন দৃষ্টিশক্তির আলাদা আলাদা নকল সংস্করণ। PID namespace — container নিজেকে PID 1 দেখে, বাইরের কাউকে দেখে না; mount namespace — নিজের আলাদা filesystem গাছ (image-এর সেই ubuntu/alpine ফাইলগুলো — ব্যস, ফাইলই, kernel না!); network namespace — নিজস্ব IP, নিজস্ব port জগৎ। চেনা লাগছে? <strong>Virtual memory যা address-এর জন্য, namespace তা-ই বাকি সবকিছুর জন্য</strong> — প্রত্যেকে ভাবে জগৎটা তার একার।</li>
+    <li><strong>cgroups — "কতটুকু পাবে":</strong> Process-দলের resource-এর রেশন কার্ড — এই দলের memory সর্বোচ্চ 512MB, CPU-র 50%, এতটুকু disk I/O। Docker-এর <code>--memory</code>/<code>--cpus</code> flag মানে স্রেফ cgroup-এর ঘর পূরণ। রেশন পার হলে? Memory-র বেলায় দলের কেউ খুন হয় — সেই কুখ্যাত <strong>OOM kill</strong>, তোমার Kubernetes pod-এর "OOMKilled"-এর জন্মস্থান।</li>
+  </ul>
+  <pre class="diagram"><span class="dim">VM:</span>                              <span class="dim">Container:</span>
+┌─App─┐ ┌─App─┐                  ┌─App─┐ ┌─App─┐   <span class="dim">← স্রেফ process,</span>
+│Guest│ │Guest│                  │ ns+ │ │ ns+ │      <span class="dim">namespace-এ মোড়া</span>
+│ OS  │ │ OS  │ <span class="dim">← ২টা kernel!</span>    │cgrp │ │cgrp │
+├─────┴─┴─────┤                  ├─────┴─┴─────┤
+│ Hypervisor  │                  │ <span class="k">এক Host Kernel</span>│
+│  Hardware   │                  │  Hardware    │
+└─────────────┘                  └──────────────┘</pre>
+  <p>এখন trade-off-টা নিজেই বলে দিতে পারবে: container start হয় process start-এর গতিতে (কোনো OS boot নেই), memory খায় process-এর মতো — কিন্তু সবাই <strong>এক kernel share করে</strong>, তাই isolation VM-এর মতো শক্ত না (kernel-এর ছিদ্র মানে সবার ছিদ্র), আর Linux container-এর Linux kernel-ই লাগে — এজন্যই তোমার Mac-এ Docker Desktop গোপনে একটা Linux VM চালিয়ে তার <em>ভিতরে</em> container চালায়। দুই chapter মিলে গেল।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker থাকলে)</div>
+    <p>Container-এর ভিতরে: <code>docker run --rm -it alpine ps aux</code> — গোটা "machine"-এ হাতে গোনা process, node/shell-টার PID 1! তারপর host-এ (Linux host হলে) <code>ps aux | grep &lt;সেই command&gt;</code> — একই process, বাইরে থেকে সাধারণ PID-তে। এক process, দুই দৃষ্টিকোণ — এটাই namespace।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Container is not a lightweight VM" — প্রমাণসহ?</li>
+      <li>Namespace আর cgroup — কে কোন প্রশ্নের উত্তর ("কী দেখবে" vs "কত পাবে")?</li>
+      <li>Mac-এ Docker-এর VM লাগে কেন?</li>
+      <li>OOMKilled আসলে কার সিদ্ধান্ত?</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ==================== PART 11 ==================== -->
+<section class="chapter" id="chapter-37" data-part="Part 11 — Putting Everything Together" data-title="What Happens When You Run a Program?">
+  <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
+  <h2>Chapter 37 — একটা Program চালালে কী কী ঘটে?</h2>
+  <p class="chap-sub">পুরো বইয়ের প্রথম মহাসংযোগ। Terminal-এ লিখলে <code>./app</code> আর Enter চাপলে —</p>
+
+  <ol>
+    <li><strong>Shell পড়লো তোমার লাইন</strong> — সে নিজেও এক সাধারণ process, stdin-এ <code>read()</code> করে বসে ছিল (Waiting-এ)। তোমার Enter-এ keyboard-এর interrupt → kernel → shell জাগলো। <em>[Ch 15, 31]</em></li>
+    <li><strong>Executable খোঁজা</strong> — PATH-এর directory-গুলোতে; প্রতিটা খোঁজ মানে filesystem-এ path resolution। <em>[Ch 22]</em></li>
+    <li><strong>fork()</strong> — shell নিজের copy বানালো; copy-on-write-এ প্রায় বিনা খরচে। <em>[Ch 15, 9]</em></li>
+    <li><strong>exec()</strong> — child-এর ভিতরে নতুন program: ELF header পড়া, নতুন virtual address space, code/data mmap (কিন্তু lazy!), stack-এ argv, dynamic linker-এর library জোড়া, PC → entry point। <em>[Ch 34, 33, 5]</em></li>
+    <li><strong>প্রথম instruction-এই page fault!</strong> — code-এর page টা তো এখনো disk-এ। Kernel: filesystem → block layer → driver → device → DMA → page cache → page table update → আবার চালাও। প্রথম কিছু মুহূর্ত এভাবে fault-এ fault-এ program-টা "টুকরো টুকরো জন্মায়"। <em>[Ch 9, 21, 11]</em></li>
+    <li><strong>এবার আসল দৌড়</strong> — fetch-decode-execute-এর কোটি কোটি চক্কর; কখনো cache hit-এর সুখ, কখনো miss-এর RAM-যাত্রা, TLB-র নীরব অনুবাদ প্রতি access-এ। <em>[Ch 12, 13, 9]</em></li>
+    <li><strong>Program কিছু চাইলো</strong> — file পড়া? <code>read()</code> syscall → kernel → (ভাগ্য ভালো হলে page cache hit) → data। Network? socket path। প্রতিটা চাওয়ায় নীল-থেকে-amber-থেকে-নীল সেই যাত্রা। <em>[Ch 21, 25-27, 31-32]</em></li>
+    <li><strong>মাঝে মাঝে সে-ও থামলো</strong> — I/O-র wait-এ Blocked, বা timer interrupt-এ scheduler-এর preemption; তার context save, অন্য কারো restore — machine-জুড়ে চলা হাজারো process-এর নাচের এক পা মাত্র সে। <em>[Ch 15, 17]</em></li>
+    <li><strong>Output</strong> — তোমার terminal-এ লেখাও আসলে <code>write()</code> — terminal-ও এক file descriptor! <em>[Ch 21, 25]</em></li>
+    <li><strong>exit()</strong> — শেষ syscall। Kernel memory ফেরত নিলো, fd গুলো বন্ধ করলো, exit code রেখে দিলো — shell (parent) <code>wait()</code> করে সেটা তুললো, prompt ফিরিয়ে দিলো। <em>[Ch 15]</em></li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">এখন পরীক্ষা করো নিজেকে</div>
+    <p>উপরের দশটা ধাপ বই বন্ধ করে, নিজের ভাষায়, কাউকে (বা রাবার হাঁসকে) বলে যাও — কোথায় আটকাও দেখো। যেখানে আটকাবে, সংশ্লিষ্ট chapter-টাই তোমার revision list। এই এক গল্প ঝরঝরে বলতে পারা মানে বইয়ের ৮০% হজম।</p>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-38" data-part="Part 11 — Putting Everything Together" data-title="What Happens When a Web Server Handles a Request?">
+  <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
+  <h2>Chapter 38 — একটা Web Server-এ Request এলে কী ঘটে?</h2>
+  <p class="chap-sub">দ্বিতীয় মহাসংযোগ — এবং তোমার প্রতিদিনের কাজের সবচেয়ে কাছের গল্পটা। ধরি: Node/Express API, Postgres, এক user browser-এ চাপ দিলো।</p>
+
+  <ol>
+    <li><strong>Browser-এর দিক:</strong> DNS, তারপর TCP handshake — SYN উড়ে এলো তোমার server-এ। <em>তোমার Node process টেরও পেলো না</em> — kernel একাই SYN queue → handshake → accept queue সামলালো। <em>[Ch 26]</em></li>
+    <li><strong>Event loop-এর ঘুম ভাঙলো:</strong> Node <code>epoll_wait</code>-এ ঘুমিয়ে ছিল; listening fd ready → জাগলো → <code>accept()</code> → নতুন connection fd, non-blocking করে epoll-এ ADD। <em>[Ch 29, 25]</em></li>
+    <li><strong>Request এলো:</strong> NIC → DMA → interrupt → kernel TCP: চার-টুপল মিলিয়ে সঠিক socket-এর receive buffer-এ HTTP bytes → epoll-এ সেই fd ready। Node <code>read()</code> করলো, HTTP parse হলো, তোমার route handler ডাক পেলো — <strong>এতক্ষণে, প্রথমবারের মতো, তোমার লেখা code মঞ্চে।</strong> <em>[Ch 27, 29]</em></li>
+    <li><strong>Handler-এ <code>await db.query(...)</code>:</strong> Postgres-এর দিকের socket-এ query <code>write()</code> (send buffer-এ জমা) — আর ব্যস, <em>অপেক্ষা নয়</em>: callback নথিভুক্ত করে event loop পরের event ধরলো। ওই এক thread এই ফাঁকে অন্য দশটা request-এর টুকরো এগোলো — এটাই সেই waiter-এর জাদু। <em>[Ch 28-29, 19]</em></li>
+    <li><strong>ওদিকে Postgres (আলাদা process!):</strong> নিজের socket-এ query পেলো, plan করলো, data চাইলো — তার নিজের page cache-জগৎ, ভাগ্য খারাপে disk: block layer → driver → DMA। ফলাফল socket-এ ফেরত <code>write()</code>। <em>[Ch 21, 23, 20]</em></li>
+    <li><strong>ফলাফল ফিরলো:</strong> আবার NIC → interrupt → TCP → Node-এর সেই fd ready → event loop জাগলো → তোমার <code>await</code>-এর পরের লাইন চললো। Response JSON বানানো — এটুকু খাঁটি CPU কাজ: V8-এর machine code, cache hit/miss, heap-এ object জন্ম (পরে GC-র খোরাক)। <em>[Ch 12-13, 6]</em></li>
+    <li><strong>Response রওনা:</strong> <code>res.json()</code> → শেষমেশ socket-এ <code>write()</code> → send buffer → TCP segment → IP → NIC → ইন্টারনেটের ওপারে browser-এর kernel → তার receive buffer → browser-এর epoll-জাতীয় জিনিস → পর্দায় pixel। <em>[Ch 27]</em></li>
+  </ol>
+
+  <p>পুরো যাত্রায় হয়তো তোমার handler-এর CPU-সময় মিলিসেকেন্ডেরও ভগ্নাংশ — বাকিটা kernel-এর কারিগরি আর অপেক্ষার শিল্প। এবার production-এর চেনা রোগগুলোও নতুন চোখে দেখো: <strong>latency spike?</strong> — DB-র disk নাকি event loop কেউ আটকে রেখেছে নাকি accept queue উপচে পড়ছে? <strong>Memory বাড়ছে?</strong> — heap leak নাকি কেউ receive buffer পড়ছে না? প্রতিটা প্রশ্ন এখন এই map-এর কোনো না কোনো জায়গায় pin করা যায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">চূড়ান্ত উপলব্ধি</div>
+    <p>"Backend engineer" পদটার গোপন অর্থ: <strong>দুই kernel-এর মাঝখানে বসে orchestration করা মানুষ।</strong> তোমার code যত ভালো হোক, request-এর ভাগ্য নির্ধারণ করে buffers, queues, caches, syscalls আর scheduler — এখন থেকে এরা তোমার কাছে অদৃশ্য না।</p>
+  </div>
+</section>
+
+<!-- ==================== PART 12 ==================== -->
+<section class="chapter" id="chapter-39" data-part="Part 12 — Engineering Intuition" data-title="Why Software Becomes Slow">
+  <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
+  <h2>Chapter 39 — Software ধীর হয় কেন</h2>
+  <p class="chap-sub">"Slow" একটা রোগের নাম না — উপসর্গ। এই chapter হলো রোগ নির্ণয়ের চেকলিস্ট।</p>
+
+  <p>প্রথম নিয়ম, খোদাই করে রাখো: <strong>আগে মাপো, তারপর ভাবো, সবার শেষে optimize করো।</strong> অনুমানের ভিত্তিতে optimization প্রায়ই ভুল জায়গায় শ্রম। এখন, "slow"-এর পিছনে সাধারণত এই সন্দেহভাজনদের কেউ থাকে:</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>সন্দেহভাজন</th><th>চেনার উপায় (লক্ষণ)</th><th>কোন chapter-এর জ্ঞান লাগবে</th></tr>
+    <tr><td><strong>CPU-bound</strong></td><td>Core গুলো 100%-এ, তবু কাজ শেষ হয় না। <code>top</code>-এ user CPU বেশি।</td><td>12-14, 19 — parallelism, cache-friendly algorithm</td></tr>
+    <tr><td><strong>Memory-bound</strong></td><td>CPU "busy" দেখায় কিন্তু আসলে RAM-এর অপেক্ষায়; এলোমেলো বড় data structure, cache miss-এর মিছিল।</td><td>7-8, 13 — locality, data layout</td></tr>
+    <tr><td><strong>Memory pressure / swap</strong></td><td>সবকিছু হঠাৎ কাদায় হাঁটছে; <code>vmstat</code>-এ si/so নড়ছে, major fault বাড়ছে, OOM-এর গন্ধ।</td><td>9-10 — working set vs RAM</td></tr>
+    <tr><td><strong>Disk-bound</strong></td><td>CPU অলস, iowait উঁচু; ছোট random read-এর বন্যা, fsync-ভারী write।</td><td>20-24 — cache, batching, sequential</td></tr>
+    <tr><td><strong>Network-bound</strong></td><td>Latency-র সিংহভাগ বাইরের service-এ; N+1 query, chatty API।</td><td>25-29 — round-trip কমাও</td></tr>
+    <tr><td><strong>Too many threads / context switching</strong></td><td><code>vmstat</code>-এ cs আকাশে, throughput বাড়ে না বা কমে; CPU busy অথচ "কাজ" কম।</td><td>17, 19 — worker সংখ্যা core-এ নামাও</td></tr>
+    <tr><td><strong>Blocking / event loop jam</strong></td><td>P99 কুৎসিত কিন্তু গড় ভালো; Node-এ event loop lag metric বাড়ে।</td><td>28-29 — sync কাজ loop থেকে বের করো</td></tr>
+    <tr><td><strong>Excessive syscalls</strong></td><td><code>strace -c</code>-তে লাখো ক্ষুদ্র read/write; per-call overhead জমে পাহাড়।</td><td>32 — batching, বড় buffer</td></tr>
+    <tr><td><strong>Lock contention</strong></td><td>Core বাড়ালেও speed বাড়ে না; সবাই এক lock/এক DB row-এর লাইনে।</td><td>18 — critical section ছোট করো, ভাগ করো</td></tr>
+  </table></div>
+
+  <p>খেয়াল করো — এই তালিকার একটা রোগও তোমার application-এর code দেখে ধরা যায় না; ধরা যায় OS-এর জানালা দিয়ে দেখলে (top, vmstat, iostat, strace, ss)। এই বইয়ের আসল উপহার এই জানালাগুলো চেনা।</p>
+
+  <div class="box warn">
+    <div class="box-title">সাবধান</div>
+    <p>কোনো magical checklist নেই — "cache যোগ করো / thread বাড়াও / SSD লাগাও" জাতীয় ঢালাও ওষুধ প্রায়ই রোগ না জেনে antibiotics। আগে <em>কোন resource-এ আটকে আছো</em> সেটা প্রমাণসহ বের করো; সমাধান তখন প্রায় নিজেই দেখা দেয়।</p>
+  </div>
+</section>
+
+<section class="chapter" id="chapter-40" data-part="Part 12 — Engineering Intuition" data-title="Performance Mental Model">
+  <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
+  <h2>Chapter 40 — Performance-এর Mental Model</h2>
+  <p class="chap-sub">শেষ chapter — hierarchy-টা মাথায় নিয়ে, কিন্তু তার ফাঁদগুলো জেনে।</p>
+
+  <h3>Hierarchy — প্রথম approximation</h3>
+  <pre class="diagram">CPU registers      <span class="dim">তাৎক্ষণিক</span>
+CPU cache          <span class="dim">ns-স্কেল</span>
+RAM                <span class="dim">~শত ns</span>
+NVMe SSD           <span class="dim">~µs–শত µs</span>
+HDD                <span class="dim">~ms</span>
+Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
+<span class="dim">(সংখ্যা নয়, মাত্রার লাফগুলো মনে রাখো — প্রতি ধাপে ~১০–১০০×)</span></pre>
+  <p>প্রথম-স্তরের intuition: <strong>data যত নিচের স্তরে, ছোঁয়া তত দামি — design এমন করো যেন গরম data উপরের স্তরে থাকে।</strong> এটুকুই অনেক দূর নিয়ে যায়। কিন্তু "closer = always faster" বলে থেমে গেলে এই ফাঁদগুলোয় পড়বে:</p>
+
+  <ul>
+    <li><strong>Latency ≠ throughput:</strong> Network-এর latency জঘন্য হতে পারে, কিন্তু throughput disk-কে হারাতে পারে। "কোনটা দরকার" আগে ঠিক করো — একটা payment confirm (latency-র খেলা) আর একটা backup (throughput-এর খেলা) সম্পূর্ণ আলাদা design চায়।</li>
+    <li><strong>Contention সব হিসাব উল্টে দেয়:</strong> কাগজে-কলমে দ্রুত জিনিসও লাইনে দাঁড়ালে ধীর। এক মিউটেক্সে দশ থ্রেড, এক DB row-এ শত transaction, এক NVMe-তে হাজার random write — resource-এর গতি না, <strong>queue-র দৈর্ঘ্য</strong> তখন তোমার latency। Load বাড়লে response time ধীরে না, hockey-stick-এ বাড়ে — queuing-এর স্বভাবই এই।</li>
+    <li><strong>Cache মানেই দুই জগৎ:</strong> প্রতিটা স্তরে hit আর miss-এর পার্থক্য এত বড় যে "গড় সময়" প্রায়ই মিথ্যা বলে। Benchmark-এ warm/cold আলাদা মাপো; production-এ P99 দেখো, গড় না।</li>
+    <li><strong>Parallelism মাত্রা বদলায়, জাত না:</strong> দশগুণ core দশগুণ throughput দিতে পারে — যদি কাজ ভাগ হয় আর shared state না আটকায়। Serial অংশটুকুই শেষমেশ সিলিং।</li>
+    <li><strong>Bandwidth-ও ফুরায়:</strong> RAM-এরও bandwidth সীমা আছে — সব core মিলে বিশাল data চিবাতে গেলে দ্রুততম CPU-ও ভাতঘুমে যায়।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">শেষ কথা — চারটা প্রশ্নের অভ্যাস</div>
+    <p>যেকোনো system/feature/bug-এর সামনে দাঁড়িয়ে জিজ্ঞেস করো: <strong>(১)</strong> Data কোন স্তরে বসে আছে, আর প্রতি request-এ কোন স্তর পর্যন্ত নামতে হচ্ছে? <strong>(২)</strong> কোথায় boundary পার হচ্ছি (syscall, network, process) — আর কতবার? <strong>(৩)</strong> কোথায় queue জমছে — কে কার জন্য অপেক্ষায়? <strong>(৪)</strong> কী shared — আর সেটাই কি লাইনের কারণ? এই চার প্রশ্ন সঙ্গে থাকলে এই বইয়ের প্রতিটা chapter তোমার হাতিয়ার।</p>
+  </div>
+</section>
+
+<!-- ==================== SYNTHESIS ==================== -->
+<section class="chapter" id="synthesis" data-part="উপসংহার" data-title="The Operating Systems Mental Model">
+  <p class="part-label">উপসংহার</p>
+  <h2>The Operating Systems Mental Model</h2>
+  <p class="chap-sub">পুরো বই, এক ছবিতে — তারপর সুতোগুলোর জোড়া।</p>
+
+  <pre class="diagram"><span class="u">        Application (তোমার code)</span>
+<span class="u">        Runtime / Libraries (V8, libc, JVM)</span>
+<span class="u">┌─────────────  USER SPACE  ─────────────┐</span>
+│  process memory: code · data · heap · stack  │
+└──────────────────┬─────────────────────┘
+          <span class="dim">system calls (একমাত্র দরজা)</span>
+<span class="k">┌────────────────  KERNEL  ──────────────┐</span>
+<span class="k">│ Process Mgmt   — scheduler, fork, states │</span>
+<span class="k">│ Memory Mgmt    — page tables, page cache │</span>
+<span class="k">│ File System    — VFS, ext4, inodes       │</span>
+<span class="k">│ Network Stack  — sockets, TCP/IP, queues │</span>
+<span class="k">│ Device Drivers — disk, NIC (DMA, IRQ)    │</span>
+<span class="k">└──────────────────┬─────────────────────┘</span>
+                   ↓
+        Hardware:  CPU (+cache) · RAM · Storage · Network</pre>
+
+  <h3>সুতোগুলো</h3>
+  <ul>
+    <li><strong>সব রাস্তার এক প্যাটার্ন:</strong> চাওয়া (নীল) → syscall → kernel-এর স্তর → hardware → ফেরা। File, network, memory — গল্প একটাই, চরিত্র আলাদা।</li>
+    <li><strong>Illusion স্তরে স্তরে:</strong> Virtual memory প্রতিটা process-কে "memory তোমার একার" বলে; scheduler বলে "CPU তোমার একার"; TCP বলে "নির্ভরযোগ্য stream আছে"; namespace বলে "machine-টা তোমার একার"; hypervisor বলে "hardware তোমার একার"। <strong>OS মানে সুশৃঙ্খল মিথ্যার স্থাপত্য — যে মিথ্যাগুলো আমাদের সরল code লিখতে দেয়।</strong></li>
+    <li><strong>যেখানেই speed-ফারাক, সেখানেই cache/buffer:</strong> CPU cache, TLB, page cache, socket buffers, তোমার Redis — এক pattern-এর পাঁচ তলা।</li>
+    <li><strong>সবকিছুর দাম আছে:</strong> syscall-এর boundary cost, context switch-এর cache-দূষণ, page fault-এর disk-যাত্রা, lock-এর লাইন। Engineering মানে এই দামগুলো জেনে খরচ করা।</li>
+  </ul>
+
+  <p>আর সেই final goal-টা মিলিয়ে দেখো: এখন একটা running application-এর দিকে তাকালে তোমার চোখে ভাসা উচিত — process আর তার address space, stack-এ ওঠানামা করা frames, heap-এ জন্মানো objects, cache-এ hit-miss-এর জুয়া, boundary পেরোনো syscalls, kernel-এর queue আর buffer, disk আর NIC-এর DMA, আর scheduler-এর অদৃশ্য কাঁচি। যদি ভাসে — বইটা কাজ করেছে।</p>
+</section>
+
+<section class="chapter" id="assessment" data-part="উপসংহার" data-title="Final Self-Assessment">
+  <p class="part-label">উপসংহার</p>
+  <h2>Final Self-Assessment</h2>
+  <p class="chap-sub">৪৫টা প্রশ্ন — multiple choice না, "নিজের ভাষায় বলো" ধাঁচের। উত্তর লিখে/বলে ফেলো; আটকালে বন্ধনীর chapter-এ ফিরে যাও। লক্ষ্য: "term চিনি" আর "বুঝি"-র পার্থক্য ধরা।</p>
+
+  <h3>Big picture আর process</h3>
+  <ol>
+    <li>OS-এর kernel লাগে কেন — kernel-বিহীন জগতে কী কী ভাঙতো? (Ch 1)</li>
+    <li>Program থেকে process হওয়ার মুহূর্তে ঠিক কী কী তৈরি হয়? (Ch 3-4)</li>
+    <li>একই executable-এর দুই process আলাদা জগতে থাকে — কোন mechanism-এ? (Ch 3, 9)</li>
+    <li>Stack কেন লাগে — function call-এর কোন সমস্যাটা সে solve করে? (Ch 5)</li>
+    <li>Heap কেন লাগে — stack-এ সব রাখলে কী আটকাতো? (Ch 6)</li>
+    <li>Scope আর lifetime-এর পার্থক্য, একটা bug-এর উদাহরণসহ। (Ch 6)</li>
+    <li>fork() একবার ডাকলে দুইবার return — ব্যাপারটা কী? (Ch 15)</li>
+    <li>Ready, Running, Waiting — কোন process কোন state-এ CPU চায়/চায় না? (Ch 15)</li>
+  </ol>
+  <h3>Memory</h3>
+  <ol start="9">
+    <li>প্রতিটা process-কে নিজস্ব virtual address space দেওয়ার তিনটা কারণ। (Ch 9)</li>
+    <li>Page আর page table কী, কে ব্যবহার করে? (Ch 9)</li>
+    <li>TLB না থাকলে প্রতিটা memory access-এ কী বাড়তি খরচ হতো? (Ch 9)</li>
+    <li>Page fault সবসময় error না — একটা "ভালো" page fault-এর উদাহরণ। (Ch 9-10)</li>
+    <li>Copy-on-write কীভাবে fork-কে সস্তা করে? (Ch 9)</li>
+    <li>Minor vs major page fault — কোনটা কেন ভয়ংকর? (Ch 10)</li>
+    <li>Swap আর virtual memory এক জিনিস না কেন? (Ch 9)</li>
+    <li>DMA ছাড়া বড় I/O-তে CPU-র কী দশা হতো? (Ch 11)</li>
+  </ol>
+  <h3>CPU</h3>
+  <ol start="17">
+    <li>Program counter কী, jump/branch-এর সাথে সম্পর্ক কী? (Ch 12)</li>
+    <li>CPU cache কেন লাগে — কোন gap-টা সে ভরাট করে? (Ch 13)</li>
+    <li>Temporal আর spatial locality — নিজের code থেকে একটা করে উদাহরণ। (Ch 13)</li>
+    <li>Array বনাম linked list — Big-O সমান হলেও বাস্তবে কে, কেন জেতে? (Ch 13)</li>
+    <li>Pipelining কী বাড়ায় — latency না throughput? কেন? (Ch 14)</li>
+    <li>Branch prediction ভুল হলে কী দাম দিতে হয়? (Ch 14)</li>
+  </ol>
+  <h3>Concurrency</h3>
+  <ol start="23">
+    <li>Process vs thread — "container vs execution unit" ব্যাখ্যা করো। (Ch 16)</li>
+    <li>Thread-এর কোনটা নিজস্ব, কোনটা shared — এবং প্রতিটার কারণ। (Ch 16)</li>
+    <li>Context switch-এ কী save/restore হয়, আর লুকানো খরচটা কোথায়? (Ch 17)</li>
+    <li>counter++ কীভাবে race condition বানায় — instruction level-এ। (Ch 18)</li>
+    <li>Mutex আর semaphore-এর পার্থক্য, একটা করে use case। (Ch 18)</li>
+    <li>Shared state ছাড়া কি race condition সম্ভব? যুক্তি দাও। (Ch 18)</li>
+    <li>CPU-bound-এ thread/process আর I/O-bound-এ event loop — কেন এই ভাগ? (Ch 19)</li>
+  </ol>
+  <h3>Storage আর file I/O</h3>
+  <ol start="30">
+    <li>File I/O-তে kernel জড়িত থাকতেই হয় কেন? (Ch 21, 31)</li>
+    <li>File descriptor কী, কার table-এ থাকে? (Ch 21)</li>
+    <li>write() return করা সত্ত্বেও data হারাতে পারে — পুরো ঘটনাটা। (Ch 21, 23)</li>
+    <li>OS file data cache করে কেন, আর সেই cache ছাড়ে কখন? (Ch 23)</li>
+    <li>inode-এ file-এর নাম থাকে না — তাহলে নাম থাকে কোথায়? (Ch 22)</li>
+    <li>একই file দ্বিতীয়বার পড়া দ্রুত কেন — benchmark-এ এর তাৎপর্য কী? (Ch 23)</li>
+  </ol>
+  <h3>Network</h3>
+  <ol start="36">
+    <li>Socket কী, আর file descriptor হওয়াটা কেন সুবিধাজনক? (Ch 25)</li>
+    <li>TCP "connection" জিনিসটা physically কোথায় থাকে? (Ch 26)</li>
+    <li>SYN queue আর accept queue — কে ভরলে কী উপসর্গ? (Ch 26)</li>
+    <li>Data আসার পর ঘুমন্ত server process জাগে কীভাবে — interrupt থেকে epoll পর্যন্ত। (Ch 27, 29)</li>
+    <li>Thread-per-connection কোথায় ভাঙে, আর epoll ঠিক কী বদলে দেয়? (Ch 28-29)</li>
+    <li>Event loop-এ ভারী sync কাজ চালালে kernel level-এ কী ঘটে? (Ch 29)</li>
+  </ol>
+  <h3>Boundary, virtualization আর সংযোগ</h3>
+  <ol start="42">
+    <li>Process সরাসরি hardware ছুঁতে পারে না — enforcement-টা কে করে, কীভাবে? (Ch 31)</li>
+    <li>Syscall-এর overhead কখন তুচ্ছ, কখন মুখ্য — নিয়মটা কী? (Ch 32)</li>
+    <li>Container VM না কেন — namespace আর cgroup দিয়ে ব্যাখ্যা করো। (Ch 35-36)</li>
+    <li>শেষটা বড়: browser-এ একটা button চাপা থেকে API response ফেরা পর্যন্ত গল্পটা — CPU, memory, socket, kernel, syscall, cache, scheduler সবাইকে চরিত্র বানিয়ে — নিজের ভাষায় বলো। (Ch 38 — এবং আসলে পুরো বই)</li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">এরপর কী</div>
+    <p>এই বই ইচ্ছা করেই অনেক কিছু বাদ দিয়েছে — scheduling algorithm-এর ভিতর, filesystem internals-এর গভীরতা, kernel development। যদি ক্ষুধা লাগে: <em>strace/perf দিয়ে নিজের production app-এর নিচে তাকানো</em> — এটাই সেরা পরের ধাপ। আর মনে রেখো এই বইয়ের মূলমন্ত্র: Depth &gt; Breadth, Mental Model &gt; Memorization।</p>
+  </div>
+</section>
+</div>
+<aside class="rail" id="rail" aria-label="On this page"></aside>
+</main>
+</div>
+
+<div id="searchOverlay">
+  <div class="search-panel" role="dialog" aria-label="Search">
+    <div class="search-head">
+      <span class="ic">🔍</span>
+      <input id="searchInput" type="text" placeholder="Chapter, section বা concept খুঁজো…" autocomplete="off">
+    </div>
+    <div id="searchResults"></div>
+    <div class="search-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> open</span>
+      <span><kbd>Esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var chapters = Array.prototype.slice.call(document.querySelectorAll('section.chapter'));
+  var sidebar = document.getElementById('sidebar');
+  var scrim = document.getElementById('scrim');
+  var visited = {};
+  var current = null;
+
+  /* ---------- TOC ---------- */
+  var lastPart = null;
+  chapters.forEach(function(ch, i){
+    var part = ch.getAttribute('data-part');
+    if(part !== lastPart){
+      var pl = document.createElement('div');
+      pl.className = 'toc-part';
+      pl.textContent = part;
+      sidebar.appendChild(pl);
+      lastPart = part;
+    }
+    var a = document.createElement('a');
+    a.className = 'toc-link';
+    a.href = '#' + ch.id;
+    a.dataset.target = ch.id;
+    var m = ch.id.match(/chapter-(\d+)/);
+    var num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = m ? String(parseInt(m[1],10)) : '•';
+    var t = document.createElement('span');
+    t.textContent = ch.getAttribute('data-title');
+    a.appendChild(num); a.appendChild(t);
+    sidebar.appendChild(a);
+  });
+
+  /* ---------- routing ---------- */
+  function showChapter(id, scrollTarget){
+    var target = document.getElementById(id);
+    if(!target || !target.classList.contains('chapter')) { target = chapters[0]; id = target.id; }
+    chapters.forEach(function(c){ c.classList.remove('active'); });
+    target.classList.add('active');
+    current = id;
+    visited[id] = true;
+    document.querySelectorAll('.toc-link').forEach(function(l){
+      l.classList.toggle('active', l.dataset.target === id);
+      if(visited[l.dataset.target]) l.classList.add('visited');
+    });
+    buildChapNav(target);
+    var active = sidebar.querySelector('.toc-link.active');
+    if(active) active.scrollIntoView({block:'nearest'});
+    if(scrollTarget){
+      var el = document.getElementById(scrollTarget);
+      if(el) setTimeout(function(){ el.scrollIntoView({block:'start'}); }, 30);
+    } else {
+      window.scrollTo(0,0);
+    }
+    updateProgress();
+    closeSidebar();
+  }
+
+  function buildChapNav(target){
+    var old = target.querySelector('.chapnav');
+    if(old) old.remove();
+    var idx = chapters.indexOf(target);
+    var nav = document.createElement('div');
+    nav.className = 'chapnav';
+    var prev = chapters[idx-1], next = chapters[idx+1];
+    nav.appendChild(navLink(prev, 'prev'));
+    nav.appendChild(navLink(next, 'next'));
+    target.appendChild(nav);
+  }
+  function navLink(ch, dir){
+    var a = document.createElement('a');
+    a.className = dir + (ch ? '' : ' hidden');
+    if(ch){
+      a.href = '#' + ch.id;
+      var d = document.createElement('span'); d.className='dir';
+      d.textContent = dir === 'prev' ? '← আগের' : 'পরের →';
+      var t = document.createElement('span'); t.className='t';
+      t.textContent = ch.getAttribute('data-title');
+      a.appendChild(d); a.appendChild(t);
+    }
+    return a;
+  }
+
+  function route(){
+    var hash = location.hash.replace('#','');
+    if(!hash){ showChapter('cover'); return; }
+    if(hash.indexOf('@') > -1){
+      var parts = hash.split('@');
+      showChapter(parts[0], parts[1]);
+    } else {
+      showChapter(hash);
+    }
+  }
+  window.addEventListener('hashchange', route);
+
+  /* ---------- progress ---------- */
+  var bar = document.getElementById('progress');
+  function updateProgress(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var pct = max > 0 ? (h.scrollTop / max) * 100 : 0;
+    bar.style.width = pct + '%';
+  }
+  window.addEventListener('scroll', updateProgress, {passive:true});
+
+  /* ---------- sidebar (mobile) ---------- */
+  function closeSidebar(){ sidebar.classList.remove('open'); scrim.classList.remove('show'); }
+  document.getElementById('menuBtn').addEventListener('click', function(){
+    sidebar.classList.toggle('open');
+    scrim.classList.toggle('show', sidebar.classList.contains('open'));
+  });
+  scrim.addEventListener('click', closeSidebar);
+
+  /* ---------- theme ---------- */
+  var root = document.documentElement;
+  if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches){
+    root.setAttribute('data-theme','light');
+  }
+  document.getElementById('themeBtn').addEventListener('click', function(){
+    root.setAttribute('data-theme', root.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  });
+
+  /* ---------- copy buttons ---------- */
+  document.querySelectorAll('pre:not(.diagram)').forEach(function(pre){
+    var wrap = pre.parentElement;
+    if(!wrap.classList.contains('codewrap')){
+      wrap = document.createElement('div');
+      wrap.className = 'codewrap';
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+    }
+    var btn = document.createElement('button');
+    btn.className = 'copybtn';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', function(){
+      var text = pre.innerText;
+      function done(){ btn.textContent = 'Copied ✓'; setTimeout(function(){ btn.textContent='Copy'; },1500); }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(function(){ fallback(); });
+      } else fallback();
+      function fallback(){
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try{ document.execCommand('copy'); done(); }catch(e){}
+        document.body.removeChild(ta);
+      }
+    });
+    wrap.appendChild(btn);
+  });
+
+  /* ---------- search ---------- */
+  var index = [];
+  chapters.forEach(function(ch){
+    var chTitle = ch.getAttribute('data-title');
+    var part = ch.getAttribute('data-part');
+    index.push({chap: ch.id, anchor: null, part: part, title: chTitle, text: chTitle.toLowerCase()});
+    var hcount = 0;
+    ch.querySelectorAll('h3').forEach(function(h){
+      hcount++;
+      if(!h.id) h.id = ch.id + '-s' + hcount;
+      var text = h.textContent;
+      var body = '';
+      var el = h.nextElementSibling;
+      var steps = 0;
+      while(el && el.tagName !== 'H3' && steps < 6){ body += ' ' + el.textContent; el = el.nextElementSibling; steps++; }
+      index.push({chap: ch.id, anchor: h.id, part: chTitle, title: text, text: (text + ' ' + body).toLowerCase(), snip: body.trim().slice(0,140)});
+    });
+  });
+
+  var overlay = document.getElementById('searchOverlay');
+  var input = document.getElementById('searchInput');
+  var results = document.getElementById('searchResults');
+  var selIdx = -1;
+
+  function openSearch(){ overlay.classList.add('show'); input.value=''; results.innerHTML=''; selIdx=-1; setTimeout(function(){input.focus();},20); }
+  function closeSearch(){ overlay.classList.remove('show'); }
+  document.getElementById('searchBtn').addEventListener('click', openSearch);
+  overlay.addEventListener('click', function(e){ if(e.target === overlay) closeSearch(); });
+
+  function doSearch(q){
+    results.innerHTML=''; selIdx=-1;
+    q = q.trim().toLowerCase();
+    if(q.length < 2) return;
+    var terms = q.split(/\s+/);
+    var hits = index.filter(function(item){
+      return terms.every(function(t){ return item.text.indexOf(t) > -1; });
+    }).slice(0, 12);
+    if(hits.length === 0){
+      results.innerHTML = '<div class="sr-empty">কিছু পাওয়া গেল না — অন্য keyword দিয়ে চেষ্টা করো</div>';
+      return;
+    }
+    hits.forEach(function(h){
+      var a = document.createElement('a');
+      a.className = 'sr-item';
+      a.href = '#' + h.chap + (h.anchor ? '@' + h.anchor : '');
+      a.innerHTML = '<div class="sr-ch">' + esc(h.part) + '</div><div class="sr-t">' + esc(h.title) + '</div>' + (h.snip ? '<div class="sr-snip">' + esc(h.snip) + '</div>' : '');
+      a.addEventListener('click', function(){ closeSearch(); });
+      results.appendChild(a);
+    });
+  }
+  function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+  input.addEventListener('input', function(){ doSearch(input.value); });
+  input.addEventListener('keydown', function(e){
+    var items = results.querySelectorAll('.sr-item');
+    if(e.key === 'ArrowDown'){ e.preventDefault(); selIdx = Math.min(selIdx+1, items.length-1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); selIdx = Math.max(selIdx-1, 0); }
+    else if(e.key === 'Enter' && selIdx >= 0 && items[selIdx]){ items[selIdx].click(); return; }
+    else return;
+    items.forEach(function(it,i){ it.classList.toggle('sel', i===selIdx); });
+    if(items[selIdx]) items[selIdx].scrollIntoView({block:'nearest'});
+  });
+
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape'){ closeSearch(); closeSidebar(); }
+    if(e.key === '/' && !overlay.classList.contains('show') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA'){
+      e.preventDefault(); openSearch();
+    }
+  });
+
+  /* ---------- init ---------- */
+  route();
+})();
+</script>
+</body>
+</html>
