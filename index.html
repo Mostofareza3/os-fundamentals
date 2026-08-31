@@ -191,6 +191,7 @@ h2{font-size:clamp(26px,3.4vw,32px); line-height:1.3; color:var(--heading);
   margin-bottom:8px; font-weight:800; letter-spacing:-.3px;}
 .chap-sub{color:var(--muted); font-size:15.5px; line-height:1.7; margin-bottom:14px; max-width:62ch;}
 h2 + .chap-sub{padding-bottom:26px; margin-bottom:12px; border-bottom:1px solid var(--border-soft);}
+#cover .chap-sub{border-bottom:none; padding-bottom:0;}
 h3{font-size:20.5px; color:var(--heading); margin:44px 0 14px; font-weight:700;
   letter-spacing:-.2px; scroll-margin-top:80px; position:relative;}
 h3::after{content:""; display:block; width:34px; height:2px; border-radius:2px;
@@ -394,7 +395,7 @@ details .d-body > :last-child{margin-bottom:0;}
     <span class="full">Operating Systems ভিতর থেকে</span>
   </div>
   <div class="spacer"></div>
-  <span class="book-pct" id="bookPct" title="কতটা পড়া হয়েছে">0 / 43</span>
+  <span class="book-pct" id="bookPct" title="কতটা পড়া হয়েছে">0 / 40</span>
   <button class="iconbtn" id="searchBtn" aria-label="Search">🔍 <span class="hint">/</span></button>
   <button class="iconbtn" id="themeBtn" aria-label="Toggle theme" title="Theme">◐</button>
 </header>
@@ -2303,76 +2304,255 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
 <script>
 (function(){
   var chapters = Array.prototype.slice.call(document.querySelectorAll('section.chapter'));
-  var sidebar = document.getElementById('sidebar');
-  var scrim = document.getElementById('scrim');
-  var visited = {};
-  var current = null;
+  var sidebar  = document.getElementById('sidebar');
+  var tocList  = document.getElementById('tocList');
+  var scrim    = document.getElementById('scrim');
+  var rail     = document.getElementById('rail');
+  var bookPct  = document.getElementById('bookPct');
+  var current  = null;
+
+  /* ---------- persistence ---------- */
+  var LS = 'osbook.v1';
+  var store = { read: {}, last: null, theme: null, collapsed: {} };
+  try {
+    var raw = localStorage.getItem(LS);
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        store.read      = parsed.read      || {};
+        store.last      = parsed.last      || null;
+        store.theme     = parsed.theme     || null;
+        store.collapsed = parsed.collapsed || {};
+      }
+    }
+  } catch(e){}
+  var saveTimer = null;
+  function save(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function(){
+      try { localStorage.setItem(LS, JSON.stringify(store)); } catch(e){}
+    }, 250);
+  }
+
+  /* ---------- theme (before paint of interactive bits) ---------- */
+  var root = document.documentElement;
+  function applyTheme(t){
+    if (t === 'light') root.setAttribute('data-theme','light');
+    else root.removeAttribute('data-theme');
+  }
+  if (store.theme) applyTheme(store.theme);
+  else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) applyTheme('light');
+
+  document.getElementById('themeBtn').addEventListener('click', function(){
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    applyTheme(next);
+    store.theme = next;
+    save();
+  });
 
   /* ---------- TOC ---------- */
-  var lastPart = null;
-  chapters.forEach(function(ch, i){
+  var totalChapters = chapters.filter(function(c){ return /chapter-\d+/.test(c.id); }).length;
+
+  function chapNum(ch){
+    var m = ch.id.match(/chapter-(\d+)/);
+    return m ? String(parseInt(m[1],10)) : null;
+  }
+
+  var lastPart = null, group = null, groupCount = 0, countEl = null;
+  chapters.forEach(function(ch){
     var part = ch.getAttribute('data-part');
-    if(part !== lastPart){
-      var pl = document.createElement('div');
-      pl.className = 'toc-part';
-      pl.textContent = part;
-      sidebar.appendChild(pl);
-      lastPart = part;
+    if (part !== lastPart) {
+      if (countEl) countEl.textContent = groupCount;
+      var btn = document.createElement('button');
+      btn.className = 'toc-part';
+      btn.type = 'button';
+      btn.setAttribute('aria-expanded','true');
+      var caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▼';
+      var ptext = document.createElement('span'); ptext.className = 'ptext'; ptext.textContent = part;
+      countEl = document.createElement('span'); countEl.className = 'pcount';
+      btn.appendChild(caret); btn.appendChild(ptext); btn.appendChild(countEl);
+
+      group = document.createElement('div');
+      group.className = 'toc-group';
+      btn.dataset.part = part;
+      group.dataset.part = part;
+
+      if (store.collapsed[part]) {
+        btn.classList.add('collapsed');
+        group.classList.add('collapsed');
+        btn.setAttribute('aria-expanded','false');
+      }
+      btn.addEventListener('click', function(){
+        var now = !group.classList.contains('collapsed');
+        group.classList.toggle('collapsed', now);
+        btn.classList.toggle('collapsed', now);
+        btn.setAttribute('aria-expanded', String(!now));
+        store.collapsed[part] = now;
+        save();
+      });
+
+      tocList.appendChild(btn);
+      tocList.appendChild(group);
+      lastPart = part; groupCount = 0;
     }
+    groupCount++;
+
     var a = document.createElement('a');
     a.className = 'toc-link';
     a.href = '#' + ch.id;
     a.dataset.target = ch.id;
-    var m = ch.id.match(/chapter-(\d+)/);
     var num = document.createElement('span');
     num.className = 'num';
-    num.textContent = m ? String(parseInt(m[1],10)) : '•';
+    num.textContent = chapNum(ch) || '•';
     var t = document.createElement('span');
+    t.className = 'ttl';
     t.textContent = ch.getAttribute('data-title');
     a.appendChild(num); a.appendChild(t);
-    sidebar.appendChild(a);
+    a.dataset.search = (ch.getAttribute('data-title') + ' ' + part).toLowerCase();
+    group.appendChild(a);
   });
+  if (countEl) countEl.textContent = groupCount;
+
+  /* ---------- TOC filter ---------- */
+  var tocFilter = document.getElementById('tocFilter');
+  var tocEmpty = document.createElement('div');
+  tocEmpty.className = 'toc-empty';
+  tocEmpty.textContent = 'কোনো chapter মিললো না';
+  tocEmpty.style.display = 'none';
+  tocList.appendChild(tocEmpty);
+
+  tocFilter.addEventListener('input', function(){
+    var q = tocFilter.value.trim().toLowerCase();
+    var anyVisible = false;
+    tocList.querySelectorAll('.toc-group').forEach(function(g){
+      var shown = 0;
+      g.querySelectorAll('.toc-link').forEach(function(l){
+        var hit = !q || l.dataset.search.indexOf(q) > -1;
+        l.classList.toggle('hide', !hit);
+        if (hit) shown++;
+      });
+      var header = tocList.querySelector('.toc-part[data-part="' + CSS.escape(g.dataset.part) + '"]');
+      if (q) {
+        // while filtering, force-expand and hide empty parts
+        g.classList.remove('collapsed');
+        if (header) { header.classList.remove('collapsed'); header.style.display = shown ? '' : 'none'; }
+        g.style.display = shown ? '' : 'none';
+      } else {
+        if (header) { header.style.display = ''; header.classList.toggle('collapsed', !!store.collapsed[g.dataset.part]); }
+        g.style.display = '';
+        g.classList.toggle('collapsed', !!store.collapsed[g.dataset.part]);
+      }
+      if (shown) anyVisible = true;
+    });
+    tocEmpty.style.display = anyVisible ? 'none' : '';
+  });
+
+  /* ---------- read progress ---------- */
+  function markRead(id){
+    if (!/chapter-\d+/.test(id)) return;
+    store.read[id] = 1;
+  }
+  function refreshReadUI(){
+    tocList.querySelectorAll('.toc-link').forEach(function(l){
+      l.classList.toggle('read', !!store.read[l.dataset.target]);
+    });
+    var n = Object.keys(store.read).length;
+    if (bookPct) bookPct.textContent = n + ' / ' + totalChapters;
+  }
+
+  /* ---------- right rail ---------- */
+  var railLinks = [];
+  function buildRail(target){
+    rail.innerHTML = '';
+    railLinks = [];
+    var hs = Array.prototype.slice.call(target.querySelectorAll('h3'));
+    if (hs.length < 2) { rail.classList.add('empty'); return; }
+    rail.classList.remove('empty');
+    var title = document.createElement('div');
+    title.className = 'rail-title';
+    title.textContent = 'On this page';
+    rail.appendChild(title);
+    hs.forEach(function(h, i){
+      if (!h.id) h.id = target.id + '-s' + (i+1);
+      var a = document.createElement('a');
+      a.href = '#' + target.id + '@' + h.id;
+      a.textContent = h.textContent;
+      a.addEventListener('click', function(e){
+        e.preventDefault();
+        h.scrollIntoView({block:'start'});
+        history.replaceState(null,'','#' + target.id + '@' + h.id);
+      });
+      rail.appendChild(a);
+      railLinks.push({a:a, h:h});
+    });
+  }
+  function updateRailSpy(){
+    if (!railLinks.length) return;
+    var best = 0;
+    for (var i = 0; i < railLinks.length; i++){
+      if (railLinks[i].h.getBoundingClientRect().top <= 120) best = i;
+    }
+    railLinks.forEach(function(r,i){ r.a.classList.toggle('active', i === best); });
+  }
 
   /* ---------- routing ---------- */
   function showChapter(id, scrollTarget){
     var target = document.getElementById(id);
-    if(!target || !target.classList.contains('chapter')) { target = chapters[0]; id = target.id; }
+    if (!target || !target.classList.contains('chapter')) { target = chapters[0]; id = target.id; }
     chapters.forEach(function(c){ c.classList.remove('active'); });
     target.classList.add('active');
     current = id;
-    visited[id] = true;
-    document.querySelectorAll('.toc-link').forEach(function(l){
+
+    markRead(id);
+    store.last = id;
+    save();
+
+    tocList.querySelectorAll('.toc-link').forEach(function(l){
       l.classList.toggle('active', l.dataset.target === id);
-      if(visited[l.dataset.target]) l.classList.add('visited');
     });
+    refreshReadUI();
     buildChapNav(target);
-    var active = sidebar.querySelector('.toc-link.active');
-    if(active) active.scrollIntoView({block:'nearest'});
-    if(scrollTarget){
+    buildRail(target);
+
+    var active = tocList.querySelector('.toc-link.active');
+    if (active) {
+      var g = active.closest('.toc-group');
+      if (g && g.classList.contains('collapsed')) {
+        g.classList.remove('collapsed');
+        var header = tocList.querySelector('.toc-part[data-part="' + CSS.escape(g.dataset.part) + '"]');
+        if (header) header.classList.remove('collapsed');
+        store.collapsed[g.dataset.part] = false;
+        save();
+      }
+      active.scrollIntoView({block:'nearest'});
+    }
+
+    if (scrollTarget) {
       var el = document.getElementById(scrollTarget);
-      if(el) setTimeout(function(){ el.scrollIntoView({block:'start'}); }, 30);
+      if (el) setTimeout(function(){ el.scrollIntoView({block:'start'}); updateRailSpy(); }, 40);
     } else {
       window.scrollTo(0,0);
     }
     updateProgress();
+    updateRailSpy();
     closeSidebar();
+    document.title = target.getAttribute('data-title') + ' — Operating Systems ভিতর থেকে';
   }
 
   function buildChapNav(target){
     var old = target.querySelector('.chapnav');
-    if(old) old.remove();
+    if (old) old.remove();
     var idx = chapters.indexOf(target);
     var nav = document.createElement('div');
     nav.className = 'chapnav';
-    var prev = chapters[idx-1], next = chapters[idx+1];
-    nav.appendChild(navLink(prev, 'prev'));
-    nav.appendChild(navLink(next, 'next'));
+    nav.appendChild(navLink(chapters[idx-1], 'prev'));
+    nav.appendChild(navLink(chapters[idx+1], 'next'));
     target.appendChild(nav);
   }
   function navLink(ch, dir){
     var a = document.createElement('a');
     a.className = dir + (ch ? '' : ' hidden');
-    if(ch){
+    if (ch){
       a.href = '#' + ch.id;
       var d = document.createElement('span'); d.className='dir';
       d.textContent = dir === 'prev' ? '← আগের' : 'পরের →';
@@ -2385,8 +2565,8 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
 
   function route(){
     var hash = location.hash.replace('#','');
-    if(!hash){ showChapter('cover'); return; }
-    if(hash.indexOf('@') > -1){
+    if (!hash) { showChapter('cover'); return; }
+    if (hash.indexOf('@') > -1){
       var parts = hash.split('@');
       showChapter(parts[0], parts[1]);
     } else {
@@ -2395,15 +2575,53 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
   }
   window.addEventListener('hashchange', route);
 
+  function goRelative(step){
+    var idx = chapters.indexOf(document.getElementById(current));
+    var next = chapters[idx + step];
+    if (next) location.hash = '#' + next.id;
+  }
+
+  /* ---------- resume banner ---------- */
+  function buildResume(){
+    var slot = document.getElementById('resumeSlot');
+    if (!slot || !store.last || store.last === 'cover') return;
+    var ch = document.getElementById(store.last);
+    if (!ch) return;
+    var box = document.createElement('div');
+    box.className = 'resume';
+    var txt = document.createElement('div');
+    txt.className = 'rt';
+    txt.innerHTML = 'শেষবার পড়ছিলে — <b></b>';
+    txt.querySelector('b').textContent = ch.getAttribute('data-title');
+    var link = document.createElement('a');
+    link.href = '#' + ch.id;
+    link.textContent = 'আবার শুরু করো →';
+    var x = document.createElement('button');
+    x.className = 'dismiss'; x.type = 'button';
+    x.setAttribute('aria-label','Dismiss'); x.textContent = '×';
+    x.addEventListener('click', function(){ box.remove(); });
+    box.appendChild(txt); box.appendChild(link); box.appendChild(x);
+    slot.appendChild(box);
+  }
+
   /* ---------- progress ---------- */
   var bar = document.getElementById('progress');
+  var ticking = false;
   function updateProgress(){
     var h = document.documentElement;
     var max = h.scrollHeight - h.clientHeight;
     var pct = max > 0 ? (h.scrollTop / max) * 100 : 0;
     bar.style.width = pct + '%';
   }
-  window.addEventListener('scroll', updateProgress, {passive:true});
+  window.addEventListener('scroll', function(){
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function(){
+      updateProgress();
+      updateRailSpy();
+      ticking = false;
+    });
+  }, {passive:true});
 
   /* ---------- sidebar (mobile) ---------- */
   function closeSidebar(){ sidebar.classList.remove('open'); scrim.classList.remove('show'); }
@@ -2413,19 +2631,10 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
   });
   scrim.addEventListener('click', closeSidebar);
 
-  /* ---------- theme ---------- */
-  var root = document.documentElement;
-  if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches){
-    root.setAttribute('data-theme','light');
-  }
-  document.getElementById('themeBtn').addEventListener('click', function(){
-    root.setAttribute('data-theme', root.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
-  });
-
   /* ---------- copy buttons ---------- */
   document.querySelectorAll('pre:not(.diagram)').forEach(function(pre){
     var wrap = pre.parentElement;
-    if(!wrap.classList.contains('codewrap')){
+    if (!wrap.classList.contains('codewrap')){
       wrap = document.createElement('div');
       wrap.className = 'codewrap';
       pre.parentNode.insertBefore(wrap, pre);
@@ -2433,19 +2642,23 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
     }
     var btn = document.createElement('button');
     btn.className = 'copybtn';
+    btn.type = 'button';
     btn.textContent = 'Copy';
     btn.addEventListener('click', function(){
       var text = pre.innerText;
-      function done(){ btn.textContent = 'Copied ✓'; setTimeout(function(){ btn.textContent='Copy'; },1500); }
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        navigator.clipboard.writeText(text).then(done).catch(function(){ fallback(); });
-      } else fallback();
+      function done(){
+        btn.textContent = 'Copied ✓'; btn.classList.add('done');
+        setTimeout(function(){ btn.textContent='Copy'; btn.classList.remove('done'); },1500);
+      }
       function fallback(){
         var ta = document.createElement('textarea');
         ta.value = text; document.body.appendChild(ta); ta.select();
-        try{ document.execCommand('copy'); done(); }catch(e){}
+        try { document.execCommand('copy'); done(); } catch(e){}
         document.body.removeChild(ta);
       }
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else fallback();
     });
     wrap.appendChild(btn);
   });
@@ -2459,35 +2672,48 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
     var hcount = 0;
     ch.querySelectorAll('h3').forEach(function(h){
       hcount++;
-      if(!h.id) h.id = ch.id + '-s' + hcount;
+      if (!h.id) h.id = ch.id + '-s' + hcount;
       var text = h.textContent;
       var body = '';
-      var el = h.nextElementSibling;
-      var steps = 0;
-      while(el && el.tagName !== 'H3' && steps < 6){ body += ' ' + el.textContent; el = el.nextElementSibling; steps++; }
-      index.push({chap: ch.id, anchor: h.id, part: chTitle, title: text, text: (text + ' ' + body).toLowerCase(), snip: body.trim().slice(0,140)});
+      var el = h.nextElementSibling, steps = 0;
+      while (el && el.tagName !== 'H3' && steps < 6){ body += ' ' + el.textContent; el = el.nextElementSibling; steps++; }
+      index.push({chap: ch.id, anchor: h.id, part: chTitle, title: text,
+                  text: (text + ' ' + body).toLowerCase(), snip: body.trim().replace(/\s+/g,' ').slice(0,140)});
     });
   });
 
   var overlay = document.getElementById('searchOverlay');
-  var input = document.getElementById('searchInput');
+  var input   = document.getElementById('searchInput');
   var results = document.getElementById('searchResults');
-  var selIdx = -1;
+  var selIdx  = -1;
 
-  function openSearch(){ overlay.classList.add('show'); input.value=''; results.innerHTML=''; selIdx=-1; setTimeout(function(){input.focus();},20); }
+  function openSearch(){
+    overlay.classList.add('show'); input.value=''; results.innerHTML=''; selIdx=-1;
+    setTimeout(function(){ input.focus(); },20);
+  }
   function closeSearch(){ overlay.classList.remove('show'); }
   document.getElementById('searchBtn').addEventListener('click', openSearch);
-  overlay.addEventListener('click', function(e){ if(e.target === overlay) closeSearch(); });
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) closeSearch(); });
+
+  function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+  function highlight(text, terms){
+    var out = esc(text);
+    terms.forEach(function(t){
+      if (t.length < 2) return;
+      out = out.replace(new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')','gi'), '<mark>$1</mark>');
+    });
+    return out;
+  }
 
   function doSearch(q){
     results.innerHTML=''; selIdx=-1;
     q = q.trim().toLowerCase();
-    if(q.length < 2) return;
+    if (q.length < 2) return;
     var terms = q.split(/\s+/);
     var hits = index.filter(function(item){
       return terms.every(function(t){ return item.text.indexOf(t) > -1; });
     }).slice(0, 12);
-    if(hits.length === 0){
+    if (hits.length === 0){
       results.innerHTML = '<div class="sr-empty">কিছু পাওয়া গেল না — অন্য keyword দিয়ে চেষ্টা করো</div>';
       return;
     }
@@ -2495,31 +2721,53 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
       var a = document.createElement('a');
       a.className = 'sr-item';
       a.href = '#' + h.chap + (h.anchor ? '@' + h.anchor : '');
-      a.innerHTML = '<div class="sr-ch">' + esc(h.part) + '</div><div class="sr-t">' + esc(h.title) + '</div>' + (h.snip ? '<div class="sr-snip">' + esc(h.snip) + '</div>' : '');
+      a.innerHTML = '<div class="sr-ch">' + esc(h.part) + '</div>' +
+                    '<div class="sr-t">' + highlight(h.title, terms) + '</div>' +
+                    (h.snip ? '<div class="sr-snip">' + esc(h.snip) + '</div>' : '');
       a.addEventListener('click', function(){ closeSearch(); });
       results.appendChild(a);
     });
+    selIdx = 0;
+    results.querySelector('.sr-item').classList.add('sel');
   }
-  function esc(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
   input.addEventListener('input', function(){ doSearch(input.value); });
   input.addEventListener('keydown', function(e){
     var items = results.querySelectorAll('.sr-item');
-    if(e.key === 'ArrowDown'){ e.preventDefault(); selIdx = Math.min(selIdx+1, items.length-1); }
-    else if(e.key === 'ArrowUp'){ e.preventDefault(); selIdx = Math.max(selIdx-1, 0); }
-    else if(e.key === 'Enter' && selIdx >= 0 && items[selIdx]){ items[selIdx].click(); return; }
+    if (e.key === 'ArrowDown'){ e.preventDefault(); selIdx = Math.min(selIdx+1, items.length-1); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); selIdx = Math.max(selIdx-1, 0); }
+    else if (e.key === 'Enter' && selIdx >= 0 && items[selIdx]){ items[selIdx].click(); return; }
     else return;
     items.forEach(function(it,i){ it.classList.toggle('sel', i===selIdx); });
-    if(items[selIdx]) items[selIdx].scrollIntoView({block:'nearest'});
+    if (items[selIdx]) items[selIdx].scrollIntoView({block:'nearest'});
   });
 
+  /* ---------- global keys ---------- */
+  function isTyping(){
+    var el = document.activeElement;
+    if (!el) return false;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
+  }
   document.addEventListener('keydown', function(e){
-    if(e.key === 'Escape'){ closeSearch(); closeSidebar(); }
-    if(e.key === '/' && !overlay.classList.contains('show') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA'){
-      e.preventDefault(); openSearch();
+    if (e.key === 'Escape'){
+      if (overlay.classList.contains('show')) { closeSearch(); return; }
+      if (document.activeElement === tocFilter && tocFilter.value){
+        tocFilter.value = ''; tocFilter.dispatchEvent(new Event('input')); return;
+      }
+      closeSidebar();
+      return;
     }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (overlay.classList.contains('show')) return;
+
+    if ((e.key === '/' ) && !isTyping()){ e.preventDefault(); openSearch(); return; }
+    if (isTyping()) return;
+    if (e.key === 'ArrowRight'){ e.preventDefault(); goRelative(1); }
+    else if (e.key === 'ArrowLeft'){ e.preventDefault(); goRelative(-1); }
+    else if (e.key === 't' || e.key === 'T'){ document.getElementById('themeBtn').click(); }
   });
 
   /* ---------- init ---------- */
+  buildResume();
   route();
 })();
 </script>
