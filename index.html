@@ -68,9 +68,6 @@ header.topbar{
 .brand .full{color:var(--muted); font-weight:600;}
 @media(max-width:860px){ .brand .full, .brand .sep{display:none;} }
 .topbar .spacer{flex:1;}
-.book-pct{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;
-  padding:4px 9px; border:1px solid var(--border-soft); border-radius:999px; white-space:nowrap;}
-@media(max-width:640px){ .book-pct{display:none;} }
 .iconbtn{
   background:var(--panel); border:1px solid var(--border); color:var(--text);
   border-radius:var(--radius-sm); height:34px; min-width:34px; padding:0 10px;
@@ -93,33 +90,14 @@ nav.sidebar{
   width:var(--sidebar-w); flex-shrink:0;
   position:fixed; top:58px; bottom:0; left:0; overflow-y:auto; overscroll-behavior:contain;
   background:var(--bg-soft); border-right:1px solid var(--border-soft);
-  padding:14px 12px 60px; z-index:40;
+  padding:20px 12px 60px; z-index:40;
 }
-.toc-filter-wrap{position:sticky; top:0; z-index:2; background:var(--bg-soft);
-  padding:0 2px 10px; margin-bottom:2px;}
-#tocFilter{
-  width:100%; background:var(--panel); border:1px solid var(--border); color:var(--text);
-  border-radius:var(--radius-sm); padding:7px 11px; font-size:13px; font-family:inherit; outline:none;
-  transition:border-color .15s var(--ease);
-}
-#tocFilter:focus{border-color:var(--user);}
-#tocFilter::placeholder{color:var(--muted);}
 
 .toc-part{
-  display:flex; align-items:center; gap:8px; width:100%;
-  margin:14px 0 4px; font-size:11.5px; font-weight:700; color:var(--muted);
-  letter-spacing:.6px; text-transform:uppercase; padding:5px 8px;
-  background:none; border:none; font-family:inherit; cursor:pointer; text-align:left;
-  border-radius:6px; transition:color .15s var(--ease), background .15s var(--ease);
+  margin:22px 0 6px; font-size:11px; font-weight:700; color:var(--muted);
+  letter-spacing:.7px; text-transform:uppercase; padding:0 9px;
 }
-.toc-part:hover{color:var(--heading); background:var(--panel);}
-.toc-part:first-of-type{margin-top:0;}
-.toc-part .caret{font-size:9px; transition:transform .18s var(--ease); flex-shrink:0; opacity:.7;}
-.toc-part.collapsed .caret{transform:rotate(-90deg);}
-.toc-part .ptext{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;}
-.toc-part .pcount{font-size:10.5px; opacity:.6; font-variant-numeric:tabular-nums;}
-.toc-group{overflow:hidden;}
-.toc-group.collapsed{display:none;}
+.toc-part:first-child{margin-top:0;}
 
 .toc-link{
   display:flex; gap:9px; align-items:baseline; position:relative;
@@ -135,9 +113,6 @@ nav.sidebar{
 .toc-link.active::before{content:""; position:absolute; left:0; top:6px; bottom:6px;
   width:2.5px; border-radius:2px; background:var(--user);}
 .toc-link.active .num{color:var(--user);}
-.toc-link.read .num::after{content:"✓"; color:var(--ok); font-size:9px; margin-left:2px;}
-.toc-link.hide{display:none;}
-.toc-empty{padding:20px 10px; color:var(--muted); font-size:13px; text-align:center;}
 
 main{
   margin-left:var(--sidebar-w); flex:1; min-width:0;
@@ -395,18 +370,12 @@ details .d-body > :last-child{margin-bottom:0;}
     <span class="full">Operating Systems ভিতর থেকে</span>
   </div>
   <div class="spacer"></div>
-  <span class="book-pct" id="bookPct" title="কতটা পড়া হয়েছে">0 / 40</span>
   <button class="iconbtn" id="searchBtn" aria-label="Search">🔍 <span class="hint">/</span></button>
   <button class="iconbtn" id="themeBtn" aria-label="Toggle theme" title="Theme">◐</button>
 </header>
 <div id="scrim"></div>
 <div class="layout">
-<nav class="sidebar" id="sidebar" aria-label="Table of contents">
-  <div class="toc-filter-wrap">
-    <input id="tocFilter" type="text" placeholder="Chapter ফিল্টার করো…" autocomplete="off" aria-label="Filter chapters">
-  </div>
-  <div id="tocList"></div>
-</nav>
+<nav class="sidebar" id="sidebar" aria-label="Table of contents"></nav>
 <main><div class="page" id="page">
 
 <section class="chapter" id="cover" data-part="ভূমিকা" data-title="Cover — এই বই কেন">
@@ -2305,24 +2274,20 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
 (function(){
   var chapters = Array.prototype.slice.call(document.querySelectorAll('section.chapter'));
   var sidebar  = document.getElementById('sidebar');
-  var tocList  = document.getElementById('tocList');
   var scrim    = document.getElementById('scrim');
   var rail     = document.getElementById('rail');
-  var bookPct  = document.getElementById('bookPct');
   var current  = null;
 
   /* ---------- persistence ---------- */
   var LS = 'osbook.v1';
-  var store = { read: {}, last: null, theme: null, collapsed: {} };
+  var store = { last: null, theme: null };
   try {
     var raw = localStorage.getItem(LS);
     if (raw) {
       var parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        store.read      = parsed.read      || {};
-        store.last      = parsed.last      || null;
-        store.theme     = parsed.theme     || null;
-        store.collapsed = parsed.collapsed || {};
+        store.last  = parsed.last  || null;
+        store.theme = parsed.theme || null;
       }
     }
   } catch(e){}
@@ -2351,114 +2316,30 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
   });
 
   /* ---------- TOC ---------- */
-  var totalChapters = chapters.filter(function(c){ return /chapter-\d+/.test(c.id); }).length;
-
-  function chapNum(ch){
-    var m = ch.id.match(/chapter-(\d+)/);
-    return m ? String(parseInt(m[1],10)) : null;
-  }
-
-  var lastPart = null, group = null, groupCount = 0, countEl = null;
+  var lastPart = null;
   chapters.forEach(function(ch){
     var part = ch.getAttribute('data-part');
-    if (part !== lastPart) {
-      if (countEl) countEl.textContent = groupCount;
-      var btn = document.createElement('button');
-      btn.className = 'toc-part';
-      btn.type = 'button';
-      btn.setAttribute('aria-expanded','true');
-      var caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▼';
-      var ptext = document.createElement('span'); ptext.className = 'ptext'; ptext.textContent = part;
-      countEl = document.createElement('span'); countEl.className = 'pcount';
-      btn.appendChild(caret); btn.appendChild(ptext); btn.appendChild(countEl);
-
-      group = document.createElement('div');
-      group.className = 'toc-group';
-      btn.dataset.part = part;
-      group.dataset.part = part;
-
-      if (store.collapsed[part]) {
-        btn.classList.add('collapsed');
-        group.classList.add('collapsed');
-        btn.setAttribute('aria-expanded','false');
-      }
-      btn.addEventListener('click', function(){
-        var now = !group.classList.contains('collapsed');
-        group.classList.toggle('collapsed', now);
-        btn.classList.toggle('collapsed', now);
-        btn.setAttribute('aria-expanded', String(!now));
-        store.collapsed[part] = now;
-        save();
-      });
-
-      tocList.appendChild(btn);
-      tocList.appendChild(group);
-      lastPart = part; groupCount = 0;
+    if (part !== lastPart){
+      var pl = document.createElement('div');
+      pl.className = 'toc-part';
+      pl.textContent = part;
+      sidebar.appendChild(pl);
+      lastPart = part;
     }
-    groupCount++;
-
+    var m = ch.id.match(/chapter-(\d+)/);
     var a = document.createElement('a');
     a.className = 'toc-link';
     a.href = '#' + ch.id;
     a.dataset.target = ch.id;
     var num = document.createElement('span');
     num.className = 'num';
-    num.textContent = chapNum(ch) || '•';
+    num.textContent = m ? String(parseInt(m[1],10)) : '•';
     var t = document.createElement('span');
     t.className = 'ttl';
     t.textContent = ch.getAttribute('data-title');
     a.appendChild(num); a.appendChild(t);
-    a.dataset.search = (ch.getAttribute('data-title') + ' ' + part).toLowerCase();
-    group.appendChild(a);
+    sidebar.appendChild(a);
   });
-  if (countEl) countEl.textContent = groupCount;
-
-  /* ---------- TOC filter ---------- */
-  var tocFilter = document.getElementById('tocFilter');
-  var tocEmpty = document.createElement('div');
-  tocEmpty.className = 'toc-empty';
-  tocEmpty.textContent = 'কোনো chapter মিললো না';
-  tocEmpty.style.display = 'none';
-  tocList.appendChild(tocEmpty);
-
-  tocFilter.addEventListener('input', function(){
-    var q = tocFilter.value.trim().toLowerCase();
-    var anyVisible = false;
-    tocList.querySelectorAll('.toc-group').forEach(function(g){
-      var shown = 0;
-      g.querySelectorAll('.toc-link').forEach(function(l){
-        var hit = !q || l.dataset.search.indexOf(q) > -1;
-        l.classList.toggle('hide', !hit);
-        if (hit) shown++;
-      });
-      var header = tocList.querySelector('.toc-part[data-part="' + CSS.escape(g.dataset.part) + '"]');
-      if (q) {
-        // while filtering, force-expand and hide empty parts
-        g.classList.remove('collapsed');
-        if (header) { header.classList.remove('collapsed'); header.style.display = shown ? '' : 'none'; }
-        g.style.display = shown ? '' : 'none';
-      } else {
-        if (header) { header.style.display = ''; header.classList.toggle('collapsed', !!store.collapsed[g.dataset.part]); }
-        g.style.display = '';
-        g.classList.toggle('collapsed', !!store.collapsed[g.dataset.part]);
-      }
-      if (shown) anyVisible = true;
-    });
-    tocEmpty.style.display = anyVisible ? 'none' : '';
-  });
-
-  /* ---------- read progress ---------- */
-  function markRead(id){
-    if (!/chapter-\d+/.test(id)) return;
-    store.read[id] = 1;
-  }
-  function refreshReadUI(){
-    tocList.querySelectorAll('.toc-link').forEach(function(l){
-      l.classList.toggle('read', !!store.read[l.dataset.target]);
-    });
-    var n = Object.keys(store.read).length;
-    if (bookPct) bookPct.textContent = n + ' / ' + totalChapters;
-  }
 
   /* ---------- right rail ---------- */
   var railLinks = [];
@@ -2503,29 +2384,17 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
     target.classList.add('active');
     current = id;
 
-    markRead(id);
     store.last = id;
     save();
 
-    tocList.querySelectorAll('.toc-link').forEach(function(l){
+    sidebar.querySelectorAll('.toc-link').forEach(function(l){
       l.classList.toggle('active', l.dataset.target === id);
     });
-    refreshReadUI();
     buildChapNav(target);
     buildRail(target);
 
-    var active = tocList.querySelector('.toc-link.active');
-    if (active) {
-      var g = active.closest('.toc-group');
-      if (g && g.classList.contains('collapsed')) {
-        g.classList.remove('collapsed');
-        var header = tocList.querySelector('.toc-part[data-part="' + CSS.escape(g.dataset.part) + '"]');
-        if (header) header.classList.remove('collapsed');
-        store.collapsed[g.dataset.part] = false;
-        save();
-      }
-      active.scrollIntoView({block:'nearest'});
-    }
+    var active = sidebar.querySelector('.toc-link.active');
+    if (active) active.scrollIntoView({block:'nearest'});
 
     if (scrollTarget) {
       var el = document.getElementById(scrollTarget);
@@ -2750,9 +2619,6 @@ Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
   document.addEventListener('keydown', function(e){
     if (e.key === 'Escape'){
       if (overlay.classList.contains('show')) { closeSearch(); return; }
-      if (document.activeElement === tocFilter && tocFilter.value){
-        tocFilter.value = ''; tocFilter.dispatchEvent(new Event('input')); return;
-      }
       closeSidebar();
       return;
     }
