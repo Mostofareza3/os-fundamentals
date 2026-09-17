@@ -1,0 +1,797 @@
+  <div class="ch-head">
+    <div class="ch-eyebrow p1">
+      Part 1 · Virtualization
+      <span class="src">· OSTEP ch 2, pdf p24–41</span>
+    </div>
+    <h1>OS কেন আছে — তিনটি সমস্যা</h1>
+    <p class="ch-lede">
+      একটা CPU, কিন্তু চল্লিশটা process চলছে। ১৬GB RAM, কিন্তু প্রতিটা process
+      ভাবছে পুরো address space তার একলার। Power চলে গেল, তবু data রয়ে গেল।
+      এই তিনটা illusion কীভাবে টিকে আছে — আর কোথায় ফাটল ধরে।
+    </p>
+  </div>
+
+  <p>
+    আপনি যখন <code>node server.js</code> চালান, আপনার ধারণা হয় program টা
+    সরাসরি hardware এর উপর চলছে। চলছে না। মাঝখানে একটা layer আছে যেটা
+    আপনার program কে <em>মিথ্যা বলে</em> — সুপরিকল্পিত, দরকারি মিথ্যা।
+    সেই layer টার নাম operating system, আর এই বইটা মূলত সেই মিথ্যাগুলোর
+    গঠন নিয়ে: কোনটা কীভাবে বানানো, কত খরচে, আর কোন পরিস্থিতিতে মিথ্যাটা
+    ভেঙে গিয়ে আসল hardware বেরিয়ে পড়ে।
+  </p>
+
+  <p>
+    OSTEP বইটা পুরো বিষয়টাকে তিন ভাগে সাজিয়েছে, আর সেই ভাগটা এত ভালো যে
+    আমরাও সেটাই রাখছি — <strong>virtualization</strong>,
+    <strong>concurrency</strong>, <strong>persistence</strong>। এই chapter এ
+    তিনটাকেই একবার দেখে নেব, কারণ বাকি ২৯টা chapter এই তিনটা সমস্যার
+    বিস্তারিত উত্তর।
+  </p>
+
+  <h2 id="c1-von-neumann">শুরুর জায়গা — একটা বোকা যন্ত্র</h2>
+
+  <p>
+    Processor যা করে তা হতাশাজনকভাবে সরল। একটা loop:
+    memory থেকে instruction আনা (fetch), সেটা কী বলছে বোঝা (decode),
+    সেটা করা (execute), তারপর পরেরটা। এটাই von Neumann model।
+    একটা আধুনিক core সেকেন্ডে কয়েক <em>বিলিয়ন</em> বার এই চক্র ঘোরায়।
+  </p>
+
+  <pre class="ascii"><code>   ┌──────────────── CPU core ────────────────┐
+   │                                          │
+   │   PC ──▶ fetch ──▶ decode ──▶ execute    │
+   │   ▲                              │       │
+   │   └──────────────────────────────┘       │
+   │            (PC বাড়ে, আবার শুরু)          │
+   └──────────────────────────────────────────┘
+              │ load / store
+              ▼
+   ┌──────────────────────────────────────────┐
+   │  Memory — byte এর একটা বিশাল array       │
+   │  0                              2^48-1   │
+   └──────────────────────────────────────────┘</code></pre>
+  <p class="figcap">fetch–decode–execute: এর বাইরে CPU কিছু জানে না।</p>
+
+  <p>
+    আসল CPU এর চেয়ে এটা সরল করে বলা হলো। বাস্তবে একটা core একসাথে
+    কয়েকটা instruction চালায় (superscalar), ক্রম ভেঙে চালায়
+    (out-of-order), আর branch কোন দিকে যাবে তা আগেই অনুমান করে চালিয়ে ফেলে
+    (speculative execution)। OSTEP এই জটিলতাগুলো সচেতনভাবে সরিয়ে রেখেছে,
+    আমরাও আপাতত রাখছি — কারণ আপনার program যে model ধরে লেখা হয়, সেটা এই
+    sequential model টাই।
+  </p>
+
+  <p>
+    তবে একটা কথা মনে রাখুন, কারণ chapter 13, 14 আর 30 এ এটা ফিরে আসবে:
+    এই তিনটা optimization নিরীহ নয়। Out-of-order execution এর কারণেই
+    memory model দরকার হয়। আর speculative execution এর কারণেই
+    Meltdown আর Spectre সম্ভব হয়েছিল — যেখানে hardware এর একটা
+    performance trick পুরো OS এর protection guarantee ভেঙে দিয়েছিল।
+  </p>
+
+  <div class="box note">
+    <div class="box-t">সংজ্ঞা</div>
+    <p>
+      <strong>OS (Operating System — যে software টা hardware আর আপনার
+      program এর মাঝখানে বসে resource ভাগ করে আর abstraction দেয়)।</strong>
+      পুরনো নাম ছিল <em>supervisor</em>, আরও পুরনো নাম
+      <em>master control program</em> — শেষেরটা একটু বেশি আত্মবিশ্বাসী
+      শোনায় বলেই সম্ভবত টেকেনি।
+    </p>
+  </div>
+
+  <h2 id="c1-three-roles">OS কে তিনভাবে দেখা যায়</h2>
+
+  <p>
+    একটা OS কী, তার একটা উত্তর নেই — কোন দিক থেকে দেখছেন তার উপর নির্ভর করে।
+    তিনটা দৃষ্টিভঙ্গি, তিনটাই সঠিক:
+  </p>
+
+  <ol>
+    <li>
+      <strong>Virtualizer</strong> — একটা physical resource নিয়ে তাকে
+      আরও সাধারণ, শক্তিশালী, ব্যবহারযোগ্য একটা virtual রূপে বদলে দেয়।
+      একটা CPU হয়ে যায় অসংখ্য virtual CPU। এই কারণেই OS কে মাঝে মাঝে
+      <em>virtual machine</em> বলা হয়।
+    </li>
+    <li>
+      <strong>Standard library</strong> — program চালানো, memory নেওয়া,
+      file পড়া, packet পাঠানো — এসব করার জন্য OS কয়েকশো
+      <strong>system call</strong> export করে। আপনার কাছে এগুলো function
+      call এর মতোই দেখায়।
+    </li>
+    <li>
+      <strong>Resource manager</strong> — যেহেতু অনেক program একসাথে
+      CPU, memory আর disk ভাগ করছে, কাকে কখন কতটুকু দেওয়া হবে সেই
+      সিদ্ধান্ত OS নেয় — কখনো efficiency এর কথা ভেবে, কখনো fairness এর।
+    </li>
+  </ol>
+
+  <p>
+    এই তিনটার মধ্যে দ্বিতীয়টা নিয়ে সবচেয়ে বেশি ভুল হয়, তাই সেটা এখনই
+    পরিষ্কার করে নেওয়া ভালো।
+  </p>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"<code>malloc()</code>, <code>printf()</code>,
+      <code>fopen()</code> — এগুলো system call।"</strong>
+      অথবা উল্টোটা: <strong>"library এর প্রতিটা function call kernel এ
+      ঢোকে, তাই library call খরচি।"</strong>
+    </p>
+    <p>
+      দুটোই ভুল। এগুলো <strong>library function</strong>, আর তাদের বেশিরভাগ
+      call কখনো kernel এ ঢোকেই না:
+    </p>
+    <ul>
+      <li>
+        <code>malloc()</code> একটা userspace allocator। তার কাছে আগে থেকে
+        নেওয়া memory থাকলে সে কোনো syscall ছাড়াই, ~১৫-২৫ nanosecond এ
+        pointer ফেরত দেয়। শুধু pool শেষ হলে <code>mmap()</code> বা
+        <code>brk()</code> দিয়ে kernel এ যায়।
+      </li>
+      <li>
+        <code>printf()</code> আপনার লেখা buffer এ জমায়। Buffer ভরলে বা
+        newline পেলে (terminal এ) তখন একটা <code>write()</code> syscall হয়।
+        দশটা <code>printf()</code> মানে দশটা syscall নয়।
+      </li>
+      <li>
+        <code>clock_gettime()</code> সাধারণত syscall ছাড়াই ফেরে — kernel
+        একটা page (vDSO — virtual Dynamic Shared Object) প্রতিটা process এর
+        address space এ map করে রাখে, যেখান থেকে সময় সরাসরি পড়া যায়।
+      </li>
+    </ul>
+    <p>
+      পার্থক্যটা মাপা যায়: একটা syscall ~৫০-৪০০ns (Spectre mitigation
+      চালু থাকলে আরও বেশি), আর একটা সাধারণ function call ~১-২ns।
+      <strong>দুইশো গুণ ব্যবধান।</strong> কোনটা কোথায় যাচ্ছে তা
+      <code>strace</code> দিয়ে দেখা যায় — chapter 4 এ করব।
+    </p>
+  </div>
+
+  <h2 id="c1-cpu">সমস্যা ১ — একটা CPU, অনেক program</h2>
+
+  <p>
+    OSTEP একটা ছোট program দিয়ে শুরু করে। এটা কিছুই করে না — এক সেকেন্ড
+    ঘোরে, একটা string ছাপে, আবার ঘোরে:
+  </p>
+
+  <div class="codewrap"><span class="lang">c</span>
+  <pre><code>/* cpu.c — spin for one second, print, repeat forever */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+/* Spin() busy-waits by repeatedly checking the clock
+   until one second of wall time has passed. */
+void Spin(int seconds);
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "usage: cpu &lt;string&gt;\n");
+        exit(1);
+    }
+    char *str = argv[1];
+    while (1) {
+        Spin(1);
+        printf("%s\n", str);
+    }
+    return 0;
+}</code></pre></div>
+
+  <p>একটা চালালে যা আশা করেন তাই হয়:</p>
+
+  <pre><code>$ gcc -o cpu cpu.c -Wall
+$ ./cpu A
+A
+A
+A
+^C</code></pre>
+
+  <p>এখন চারটা একসাথে চালান — একটাই CPU ধরে নিন:</p>
+
+  <pre><code>$ ./cpu A &amp; ./cpu B &amp; ./cpu C &amp; ./cpu D &amp;
+[1] 7353
+[2] 7354
+[3] 7355
+[4] 7356
+A
+B
+D
+C
+A
+B
+D
+C
+A
+C
+B
+D
+...</code></pre>
+
+  <p>
+    চারটা program একসাথে চলছে বলে মনে হচ্ছে, যদিও CPU একটা।
+    এটাই <strong>CPU virtualization</strong> — একটা physical CPU কে
+    আপাত-অসীম সংখ্যক virtual CPU তে রূপান্তর। Hardware সাহায্য করে
+    (timer interrupt), OS সিদ্ধান্ত নেয় (scheduler), আর আপনি illusion টা পান।
+  </p>
+
+  <p>
+    লক্ষ করুন output এর ক্রম <code>A B D C</code>, তারপর
+    <code>A B D C</code>, তারপর <code>A C B D</code> — <em>বদলে যাচ্ছে</em>।
+    কেউ ঠিক করে দেয়নি কে আগে ছাপবে। এই non-determinism টা bug নয়,
+    এটাই scheduler এর স্বভাব, আর chapter 12 এ দেখব এটাই race condition এর
+    উৎস।
+  </p>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"Output interleaved মানে চারটা program একইসাথে চলছে।"</strong>
+    </p>
+    <p>
+      একটা CPU তে না। যেকোনো মুহূর্তে ঠিক <em>একটা</em> process ই চলছে।
+      OS দ্রুত একটা থেকে আরেকটায় লাফাচ্ছে (context switch, chapter 4) —
+      এত দ্রুত যে মানুষের চোখে একসাথে মনে হয়। এটা
+      <strong>concurrency</strong> (কাজগুলো overlap করে এগোচ্ছে), কিন্তু
+      <strong>parallelism</strong> নয় (একই মুহূর্তে একাধিক কাজ)।
+    </p>
+    <p>
+      ২০২৬ এ উল্টো ভুলটাও সমান প্রচলিত: আপনার laptop এ ১০টা core আছে, তাই
+      আপনি ধরে নেন সব সত্যিই parallel চলছে। কিন্তু container এ
+      <code>cpu.max</code> দিয়ে আপনাকে ২ core এর সমান quota দেওয়া হলে,
+      ১০টা thread চালালেও আপনি ২ core এর কাজই পাবেন — বাকি সময় thread গুলো
+      throttled হয়ে বসে থাকবে। এটা production এ সবচেয়ে সাধারণ
+      performance bug, chapter 7 এ পুরোটা আছে।
+    </p>
+  </div>
+
+  <h2 id="c1-mem">সমস্যা ২ — একই address, আলাদা memory</h2>
+
+  <p>
+    Physical memory একটা byte array, এর চেয়ে বেশি কিছু নয়। একটা program
+    চলার সময় সারাক্ষণ এই array পড়ছে (load) আর লিখছে (store) — শুধু data
+    নয়, প্রতিটা instruction fetch ও একটা memory access।
+  </p>
+
+  <p>পরের program টা একটা int allocate করে, তার address ছাপে, তারপর সেটা বাড়াতে থাকে:</p>
+
+  <div class="codewrap"><span class="lang">c</span>
+  <pre><code>/* mem.c — allocate one int, print its address, increment forever */
+#include &lt;unistd.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;assert.h&gt;
+
+void Spin(int seconds);
+
+int main(int argc, char *argv[]) {
+    int *p = malloc(sizeof(int));       /* allocate 4 bytes */
+    assert(p != NULL);
+    printf("(pid:%d) addr of p: %p\n", (int) getpid(), p);
+    *p = 0;
+    while (1) {
+        Spin(1);
+        *p = *p + 1;
+        printf("(pid:%d) value of p: %d\n", getpid(), *p);
+    }
+    return 0;
+}</code></pre></div>
+
+  <p>দুটো instance একসাথে চালালে অদ্ভুত কিছু দেখা যায়:</p>
+
+  <pre><code>$ ./mem &amp; ./mem &amp;
+[1] 24113
+[2] 24114
+(pid:24113) addr of p: 0x200000
+(pid:24114) addr of p: 0x200000     ←  একই address!
+(pid:24113) value of p: 1
+(pid:24114) value of p: 1
+(pid:24113) value of p: 2
+(pid:24114) value of p: 2
+(pid:24113) value of p: 3
+(pid:24114) value of p: 3</code></pre>
+
+  <p>
+    দুটো process একই address <code>0x200000</code> পেয়েছে, অথচ একজন
+    অন্যজনের counter নষ্ট করছে না। প্রত্যেকে নিজের মতো ১, ২, ৩ গুনছে।
+  </p>
+
+  <p>
+    কারণ ওই address টা <strong>physical</strong> নয়,
+    <strong>virtual</strong>। প্রতিটা process একটা নিজস্ব
+    <strong>address space</strong> পায় — byte এর একটা কাল্পনিক array, যার
+    সূচনা শূন্য থেকে। OS (আর hardware এর MMU) এই virtual address গুলোকে
+    আসল physical address এ অনুবাদ করে, প্রতিটা process এর জন্য আলাদা
+    mapping দিয়ে।
+  </p>
+
+  <pre class="ascii"><code>  Process 24113                      Process 24114
+  virtual address space              virtual address space
+  ┌────────────────┐                 ┌────────────────┐
+  │                │                 │                │
+  │  0x200000 ●────┼──┐         ┌────┼──● 0x200000    │
+  │                │  │         │    │                │
+  └────────────────┘  │         │    └────────────────┘
+                      │         │
+              page table         page table
+                      │         │
+                      ▼         ▼
+       ┌──────────────────────────────────────────┐
+       │  Physical RAM                            │
+       │        ┌────┐            ┌────┐          │
+       │        │0x7a│            │0x3c│          │
+       │        └────┘            └────┘          │
+       └──────────────────────────────────────────┘
+          একই virtual address → আলাদা physical frame</code></pre>
+  <p class="figcap">
+    Address space virtualization: একই সংখ্যা, ভিন্ন গন্তব্য।
+  </p>
+
+  <p>
+    এই উদাহরণটা কাজ করানোর জন্য আজকাল একটা জিনিস বন্ধ করতে হয় —
+    <strong>ASLR (Address Space Layout Randomization — প্রতিবার চালালে
+    stack, heap আর library গুলোকে এলোমেলো address এ বসানো, যাতে attacker
+    আগে থেকে address অনুমান করতে না পারে)</strong>। ASLR চালু থাকলে
+    দুটো process আলাদা address দেখাবে। বন্ধ করতে:
+  </p>
+
+  <pre><code># Linux: disable ASLR for one command
+$ setarch $(uname -m) -R ./mem
+
+# or globally (needs root, and don't leave it off)
+$ sudo sysctl -w kernel.randomize_va_space=0</code></pre>
+
+  <div class="box dev">
+    <div class="box-t">আপনার কাজের সাথে যোগ</div>
+    <p>
+      এই isolation টাই কারণ যে <code>docker run</code> করলে দুটো container
+      একই port এ bind করতে পারে (আলাদা network namespace), অথবা একই
+      binary এর দুটো copy চললেও একজন আরেকজনের variable দেখে না।
+      কিন্তু isolation টা <em>সম্পূর্ণ</em> নয় — chapter 29 এ দেখব
+      container আসলে namespace + cgroup এর একটা সংকলন, আর কোন জায়গাগুলো
+      ফাঁক থেকে যায়।
+    </p>
+    <p>
+      আরেকটা যোগসূত্র: Node এ একটা <code>Buffer.alloc(1e9)</code> করলে
+      <code>top</code> এ VIRT লাফিয়ে বাড়ে কিন্তু RSS বাড়ে না। কারণ
+      virtual address space বুক করা আর physical page পাওয়া দুটো আলাদা
+      ঘটনা — chapter 11 এ এটাই মূল বিষয়।
+    </p>
+  </div>
+
+  <h2 id="c1-conc">সমস্যা ৩ — একসাথে চললে হিসাব মেলে না</h2>
+
+  <p>
+    এখন পর্যন্ত আলাদা process দেখেছি, যাদের memory আলাদা। কিন্তু একই
+    memory ভাগ করে একাধিক execution চললে? সেটাই
+    <strong>thread</strong> — একই address space এর ভিতরে চলা একাধিক
+    execution path।
+  </p>
+
+  <div class="codewrap"><span class="lang">c</span>
+  <pre><code>/* threads.c — two threads increment a shared counter */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;
+
+volatile int counter = 0;      /* NOTE: volatile is NOT the fix — see below */
+int loops;
+
+void *worker(void *arg) {
+    for (int i = 0; i &lt; loops; i++) {
+        counter++;
+    }
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) { fprintf(stderr, "usage: threads &lt;loops&gt;\n"); exit(1); }
+    loops = atoi(argv[1]);
+
+    pthread_t p1, p2;
+    printf("Initial value : %d\n", counter);
+    pthread_create(&amp;p1, NULL, worker, NULL);
+    pthread_create(&amp;p2, NULL, worker, NULL);
+    pthread_join(p1, NULL);
+    pthread_join(p2, NULL);
+    printf("Final value   : %d\n", counter);
+    return 0;
+}</code></pre></div>
+
+  <p>
+    দুটো thread, প্রত্যেকে <code>loops</code> বার counter বাড়াচ্ছে।
+    উত্তর হওয়া উচিত <code>2 × loops</code>। ছোট সংখ্যায় মিলেও যায়:
+  </p>
+
+  <pre><code>$ gcc -o threads threads.c -Wall -pthread
+$ ./threads 1000
+Initial value : 0
+Final value   : 2000          ←  ঠিক আছে</code></pre>
+
+  <p>সংখ্যা বাড়ান:</p>
+
+  <pre><code>$ ./threads 100000
+Initial value : 0
+Final value   : 143012        ←  200000 হওয়া উচিত ছিল
+
+$ ./threads 100000
+Initial value : 0
+Final value   : 137298        ←  আবার চালালে অন্য উত্তর!</code></pre>
+
+  <p>
+    প্রতিবার আলাদা উত্তর, আর কখনো কখনো ঠিক উত্তরও আসে — যেটা সবচেয়ে
+    বিপজ্জনক, কারণ test এ ধরা পড়ে না।
+  </p>
+
+  <p>
+    কারণটা <code>counter++</code> লাইনে। C তে এক লাইন, কিন্তু machine এ
+    তিনটা ধাপ:
+  </p>
+
+  <pre class="ascii"><code>  counter++  →   mov  eax, [counter]    ; 1. memory থেকে register এ আনো
+                 add  eax, 1            ; 2. register এ ১ যোগ করো
+                 mov  [counter], eax    ; 3. memory তে ফেরত লেখো
+
+  দুটো thread, counter = 50 থেকে শুরু:
+
+  Thread 1                    Thread 2               counter
+  ─────────────────────────────────────────────────── ───────
+  mov eax,[counter]  (50)                               50
+  add eax,1          (51)
+        ─── context switch ───▶
+                              mov eax,[counter] (50)    50   ← পুরনো মান!
+                              add eax,1         (51)
+                              mov [counter],eax         51
+        ◀── context switch ───
+  mov [counter],eax                                     51   ← হারিয়ে গেল
+  ─────────────────────────────────────────────────── ───────
+  দুটো increment হলো, counter বাড়ল মাত্র ১।</code></pre>
+  <p class="figcap">Lost update: তিন ধাপের মাঝখানে switch হলেই হিসাব নষ্ট।</p>
+
+  <p>
+    এই সমস্যাটার নাম <strong>race condition</strong>, আর যে অংশটা
+    একসাথে একজনের বেশি চালানো নিরাপদ নয় তার নাম
+    <strong>critical section</strong>। সমাধান দরকার এমন কিছু, যা ওই তিন
+    ধাপকে একটা অবিভাজ্য (atomic) একক বানায় — সেটাই lock, chapter 15।
+  </p>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"উপরের code এ <code>volatile</code> আছে, তাই ওটাই
+      সমস্যা সমাধান করার কথা ছিল।"</strong>
+    </p>
+    <p>
+      না। এটা এই বইয়ের source (OSTEP) থেকে পাওয়া সবচেয়ে ক্ষতিকর
+      শিক্ষা, আর আমি ইচ্ছে করেই code টা হুবহু রেখেছি যাতে এখনই
+      সংশোধন করা যায়।
+    </p>
+    <p>
+      <code>volatile</code> compiler কে বলে "এই variable এর access
+      optimize করে সরিয়ে দিও না, প্রতিবার সত্যিই memory থেকে পড়ো।"
+      এটা <strong>synchronization primitive নয়</strong>। এটা—
+    </p>
+    <ul>
+      <li><code>counter++</code> কে atomic বানায় না (তিন ধাপ তিন ধাপই থাকে);</li>
+      <li>CPU এর instruction reordering আটকায় না;</li>
+      <li>অন্য core এর cache এ আপনার লেখা কখন দেখা যাবে, তার কোনো নিশ্চয়তা দেয় না।</li>
+    </ul>
+    <p>
+      আর C11/C++11 এর ভাষায় এই code টা শুধু "ভুল উত্তর দেয়" এমন নয় —
+      এটা <strong>undefined behavior</strong>, কারণ synchronization ছাড়া
+      দুটো thread একই non-atomic object এ লিখছে। মানে compiler আইনত
+      যা খুশি করতে পারে। ঠিক সমাধান <code>_Atomic int</code> বা
+      <code>atomic_fetch_add()</code> বা একটা mutex — chapter 14 পুরোটাই
+      এই নিয়ে, আর ওখানে দেখব কেন Apple Silicon এ কাজ করা code
+      Graviton এ ভেঙে যেতে পারে।
+    </p>
+  </div>
+
+  <h2 id="c1-persist">সমস্যা ৩.৫ — power গেলে সব যায়</h2>
+
+  <p>
+    DRAM <strong>volatile</strong> — current বন্ধ হলে content শেষ।
+    তাই যা রাখতে হবে, তা যেতে হবে এমন device এ যা power ছাড়াও মনে রাখে:
+    HDD, বা আজকাল প্রায় সবসময় SSD। এই দায়িত্বটা OS এর যে অংশের,
+    তার নাম <strong>file system</strong>।
+  </p>
+
+  <div class="codewrap"><span class="lang">c</span>
+  <pre><code>/* io.c — write a string to a file */
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;assert.h&gt;
+#include &lt;fcntl.h&gt;
+
+int main(int argc, char *argv[]) {
+    int fd = open("/tmp/file", O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
+    assert(fd &gt; -1);
+    int rc = write(fd, "hello world\n", 13);
+    assert(rc == 13);
+    close(fd);
+    return 0;
+}</code></pre></div>
+
+  <p>
+    এখানে তিনটা system call: <code>open()</code>, <code>write()</code>,
+    <code>close()</code>। লক্ষণীয় যে OS এখানে virtualization এর নীতি
+    থেকে <em>সচেতনভাবে সরে এসেছে</em> — CPU আর memory প্রতিটা process এর
+    জন্য আলাদা করে virtualize করা হয়, কিন্তু disk করা হয় না। কারণ
+    file এর উদ্দেশ্যই ভাগ করা: আপনি editor এ লিখবেন, compiler সেটা পড়বে,
+    তারপর সেটা চালাবেন।
+  </p>
+
+  <p>
+    আর এখানেই এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ একটা ভুল ধারণা লুকিয়ে আছে।
+  </p>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"<code>write()</code> ১৩ ফেরত দিয়েছে, মানে ১৩ byte disk এ
+      লেখা হয়ে গেছে।"</strong> সমগোত্রীয় ভুল:
+      "<code>close()</code> করলে flush হয়ে যায়",
+      "<code>fflush()</code> করেছি, তাই নিরাপদ"।
+    </p>
+    <p>
+      <code>write()</code> ফেরত আসা মানে শুধু এটুকু: আপনার data
+      kernel এর <strong>page cache</strong> এ পৌঁছেছে। সেটা RAM।
+      এই মুহূর্তে power গেলে data নেই। Kernel সাধারণত লেখাটা কিছুক্ষণ
+      আটকে রাখে — কয়েক সেকেন্ড পর্যন্ত — যাতে ছোট লেখাগুলো একসাথে বড়
+      করে পাঠানো যায়, আর একই block বারবার লেখা হলে বাড়তি I/O বাঁচে।
+    </p>
+    <p>
+      Disk এ সত্যিই পৌঁছেছে কিনা নিশ্চিত হতে <code>fsync(fd)</code>
+      লাগে। আর তাতেও শেষ নয় — নতুন তৈরি করা file এর ক্ষেত্রে
+      <em>parent directory</em> ও fsync করতে হয়, নইলে file এর নামটাই
+      হারিয়ে যেতে পারে যদিও content লেখা হয়েছে। এই পুরো
+      "durability contract" টা chapter 25 এর বিষয়, আর ওখানে
+      <strong>fsyncgate</strong> ও দেখব — যেখানে Postgres আবিষ্কার করল
+      <code>fsync()</code> fail করার পর Linux কীভাবে ভুলভাবে সফলতা
+      রিপোর্ট করত, আর সেটা ঠিক করতে দুটো database কে নিজেদের
+      recovery model বদলাতে হয়েছিল।
+    </p>
+  </div>
+
+  <div class="box dev">
+    <div class="box-t">আপনার কাজের সাথে যোগ</div>
+    <p>
+      এই কারণেই Postgres এ <code>synchronous_commit</code> নামে একটা
+      setting আছে, আর সেটা <code>off</code> করলে TPS লাফিয়ে বাড়ে —
+      আপনি durability বিক্রি করে throughput কিনছেন। একই কারণে Redis এ
+      <code>appendfsync everysec</code> মানে "সবচেয়ে খারাপ ক্ষেত্রে এক
+      সেকেন্ডের লেখা হারাবে", আর SQLite এর
+      <code>PRAGMA synchronous=OFF</code> দিলে crash এ database
+      corrupt হতে পারে। তিনটাই একই hardware সত্যের উপর দাঁড়িয়ে।
+    </p>
+  </div>
+
+  <h2 id="c1-mech-policy">Mechanism আর policy — বইয়ের সবচেয়ে কাজের পার্থক্য</h2>
+
+  <p>
+    OS এর প্রতিটা অংশে এই দুটো আলাদা করে ভাবতে হয়:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>&nbsp;</th><th>Mechanism</th><th>Policy</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>প্রশ্ন</strong></td>
+        <td>কীভাবে করা সম্ভব?</td>
+        <td>কোনটা করা উচিত?</td>
+      </tr>
+      <tr>
+        <td><strong>Scheduling</strong></td>
+        <td>Context switch — register সরিয়ে রাখা, স্ট্যাক বদলানো</td>
+        <td>কোন process পরে চলবে (EEVDF, MLFQ)</td>
+      </tr>
+      <tr>
+        <td><strong>Memory</strong></td>
+        <td>Page table, TLB, page fault handling</td>
+        <td>RAM ভরে গেলে কোন page বের করা হবে</td>
+      </tr>
+      <tr>
+        <td><strong>বদলায়?</strong></td>
+        <td>কমই — hardware এর সাথে বাঁধা</td>
+        <td>ঘন ঘন — tunable, version এ version বদলায়</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    কেন এই পার্থক্যটা কাজের? কারণ production এ কোনো সমস্যা হলে
+    আপনি প্রায় সবসময় <em>policy</em> বদলান, mechanism নয়।
+    <code>cpu.weight</code>, <code>vm.swappiness</code>,
+    <code>dirty_ratio</code>, <code>GOMAXPROCS</code> — সবগুলোই policy
+    knob। Mechanism বদলাতে হলে kernel patch লাগে।
+  </p>
+
+  <h2 id="c1-design">OS এর design goal — আর সেগুলোর দাম</h2>
+
+  <ul>
+    <li>
+      <strong>Abstraction</strong> — যাতে আপনি transistor এর কথা না ভেবে
+      program লিখতে পারেন।
+    </li>
+    <li>
+      <strong>Performance</strong> — abstraction এর overhead যতটা সম্ভব কম,
+      সময়ে (বাড়তি instruction) আর জায়গায় (kernel এর নিজের memory) দুদিকেই।
+    </li>
+    <li>
+      <strong>Protection আর isolation</strong> — একটা process আরেকটাকে,
+      বা kernel কে, নষ্ট করতে না পারে।
+    </li>
+    <li>
+      <strong>Reliability</strong> — OS crash করলে তার উপরের সবকিছু যায়।
+      Linux kernel এখন কয়েক কোটি লাইন code।
+    </li>
+    <li>
+      <strong>Energy efficiency, security, mobility</strong> — battery,
+      attacker আর ছোট device এর যুগে এগুলো আর গৌণ নয়।
+    </li>
+  </ul>
+
+  <div class="box old">
+    <div class="box-t">যেখানে source টা পুরনো</div>
+    <p>
+      OSTEP (২০১৫) protection এর প্রতিশ্রুতিটা নিঃশর্তভাবে দেয়:
+      page table এর privilege bit থাকার কারণে user process kernel memory
+      পড়তে পারে না। ২০১৮ এর <strong>Meltdown</strong> দেখিয়ে দিল
+      কথাটা সত্য নয় — speculative execution ব্যবহার করে ওই bit কে
+      পাশ কাটিয়ে kernel memory পড়া যায়, কারণ hardware অনুমান করে
+      আগেই data টা cache এ তুলে ফেলে, আর privilege check টা হয় পরে।
+    </p>
+    <p>
+      উত্তরে Linux এ এল <strong>KPTI (Kernel Page Table Isolation —
+      প্রতিটা process এর address space থেকে kernel এর mapping সরিয়ে
+      রাখা)</strong>, যার দাম হলো প্রতিটা syscall এ বাড়তি খরচ।
+      অর্থাৎ "kernel কে প্রতিটা address space এ map করে রাখা" — যে
+      design টা কয়েক দশক ধরে নিঃসন্দেহে সঠিক ধরা হতো — তা আংশিকভাবে
+      ফিরিয়ে নিতে হয়েছে। Chapter 9 আর 10 এ এই খরচটা মাপব।
+    </p>
+  </div>
+
+  <h2 id="c1-history">কীভাবে এই জায়গায় পৌঁছাল</h2>
+
+  <p>
+    OS সবসময় এমন ছিল না। ইতিহাসটা জানা দরকার কারণ প্রতিটা ধাপে
+    <em>একটা নির্দিষ্ট সমস্যা</em> এই feature গুলো জন্ম দিয়েছে।
+  </p>
+
+  <pre class="ascii"><code>  ১৯৫০s   OS = শুধু একটা library
+          ─────────────────────────────────────────
+          একসাথে একটা program। মানুষ operator।
+          সমস্যা: মেশিনের ভাড়া ঘণ্টায় লক্ষ ডলার,
+                  আর CPU বসে থাকে I/O এর অপেক্ষায়।
+
+  ১৯৬০s   Protection আর system call  (Atlas, ১৯৬১)
+          ─────────────────────────────────────────
+          File system library হতে পারে না — যেকোনো
+          program যেকোনো file পড়ে ফেলবে। তাই
+          trap instruction: privilege বাড়িয়ে
+          kernel এ ঢোকা, কাজ শেষে ফেরত নামা।
+
+  ১৯৭০s   Multiprogramming  (DEC PDP)
+          ─────────────────────────────────────────
+          একসাথে কয়েকটা job memory তে, I/O এর সময়
+          অন্যটা চালাও। ফলাফল: memory protection
+          বাধ্যতামূলক হলো, আর kernel এর ভিতরেই
+          concurrency ঢুকে পড়ল (interrupt)।
+
+  ১৯৭০s   UNIX  (Thompson, Ritchie — Bell Labs)
+          ─────────────────────────────────────────
+          ছোট ছোট program, pipe দিয়ে জোড়া:
+             grep foo file.txt | wc -l
+          C তে লেখা, ছোট আর পড়ার যোগ্য kernel।
+
+  ১৯৮০s   PC — একধাপ পিছিয়ে যাওয়া
+          ─────────────────────────────────────────
+          DOS এ memory protection নেই। Mac OS 9 এ
+          cooperative scheduling — একটা infinite
+          loop পুরো মেশিন আটকে দেয়।
+
+  ১৯৯০s+  আবার ফেরা: Linux, Mac OS X (UNIX core),
+          Windows NT। আজ: Android, datacenter,
+          container — সব এই বংশের।</code></pre>
+
+  <p>
+    সবচেয়ে গুরুত্বপূর্ণ ধাপটা ১৯৬০ এর — <strong>system call</strong> এর
+    আবিষ্কার। প্রশ্নটা ছিল: file system কেন শুধু একটা library হতে পারে না?
+    উত্তর: তাহলে যেকোনো program যেকোনো file পড়তে বা মুছতে পারবে, কারণ
+    library আপনার program এর ভিতরেই চলে, আপনার সব permission নিয়ে।
+    দরকার ছিল এমন একটা সীমানা যা পার হতে হলে privilege বদলায় — সেটাই
+    trap, আর সেটাই chapter 4 এর বিষয়।
+  </p>
+
+  <div class="box note">
+    <div class="box-t">এই বইয়ে যা নেই</div>
+    <p>
+      OSTEP এর মতোই আমরা networking এর ভিতরের অংশ (TCP/IP stack এর
+      implementation), graphics device আর GPU, আর security এর গভীর
+      আলোচনা বাদ রাখছি — প্রতিটা নিজেই একটা বই। তবে যেখানে এগুলো OS এর
+      সাথে সরাসরি লাগে, সেখানে ছোঁব: socket আর epoll (chapter 19),
+      Meltdown/KPTI (chapter 9), seccomp আর namespace (chapter 29)।
+    </p>
+  </div>
+
+  <h2 id="c1-map">বাকি বইটা কীভাবে সাজানো</h2>
+
+  <pre class="ascii"><code>  Part 1 — Virtualization          (ch 2–11)
+     Process, fork/COW, trap আর context switch,
+     scheduling (MLFQ → EEVDF → cgroup throttling),
+     address space, page table, TLB, swap/OOM
+
+  Part 2 — Concurrency             (ch 12–19)
+     Thread, cache coherence, memory model,
+     lock, condition variable, deadlock,
+     event loop (epoll → io_uring → libuv/Go)
+
+  Part 3 — Persistence             (ch 20–27)
+     I/O device, flash/FTL, file আর inode,
+     file system, page cache,
+     durability contract, journaling, LSM-tree
+
+  Part 4 — আজকের বাস্তবতা          (ch 28–30)
+     Data integrity আর erasure coding,
+     container (namespace + cgroup + overlayfs),
+     runtime যেখানে OS এর সাথে ঘষা লাগে</code></pre>
+
+  <p>
+    ক্রমটা OSTEP এর, আর সেটা ইচ্ছাকৃত। Concurrency কে অনেক বই শুরুতে
+    রাখে, কিন্তু context switch কখন হতে পারে আর address space কী — এটা
+    না বুঝলে race condition কেন হয় তা ধরা যায় না। তাই process আর memory
+    আগে, thread পরে।
+  </p>
+
+  <div class="qs">
+    <h2 id="c1-q">প্রশ্ন</h2>
+    <ol>
+      <li>
+        একটা ৮-core মেশিনে আপনি ৮টা <code>./cpu</code> process চালালেন আর
+        output interleaved দেখলেন। এখন সেই একই ৮টা process কে
+        <code>--cpus=1</code> দেওয়া একটা container এ চালালেন — output
+        দেখতে একই রকম লাগবে, কিন্তু কোন মাপে দুটো পরিস্থিতি সম্পূর্ণ আলাদা?
+        কোন tool দিয়ে পার্থক্যটা প্রমাণ করবেন?
+      </li>
+      <li>
+        <code>mem.c</code> এর দুটো instance একই address ছাপছিল।
+        ধরুন আপনি ASLR বন্ধ রাখলেন, কিন্তু program টা <code>fork()</code>
+        দিয়ে একটা child বানাল আর দুজনেই <code>*p</code> বাড়াতে থাকল।
+        Address একই থাকবে, কিন্তু counter গুলো কি একসাথে বাড়বে, নাকি আলাদা?
+        উত্তরটা কোন mechanism এর উপর নির্ভর করে?
+      </li>
+      <li>
+        <code>threads.c</code> এ <code>volatile</code> সরিয়ে
+        <code>_Atomic int counter</code> লিখলে উত্তর সবসময় ঠিক আসবে।
+        এখন যদি দুটো thread এর কাজ হতো "counter পড়ে, সেটা দেখে সিদ্ধান্ত
+        নিয়ে, তারপর লেখা" — তাহলে <code>_Atomic</code> দিয়ে কি সমস্যা
+        মিটত? কেন, বা কেন নয়?
+      </li>
+      <li>
+        একটা program <code>write()</code> করে সফল return পেল, তারপর
+        <code>close()</code> করল, তারপর process টা <code>exit()</code>
+        করল — সব ঠিকঠাক। এর ঠিক পরেই মেশিনের power cable খুলে ফেলা হলো।
+        Data টা থাকবে কি? আপনার উত্তর যদি "নির্ভর করে" হয়, তাহলে
+        <em>কীসের</em> উপর নির্ভর করে — অন্তত তিনটা জিনিস বলুন।
+      </li>
+      <li>
+        Mechanism আর policy এর পার্থক্য ব্যবহার করে বলুন: Linux এ
+        scheduler টা CFS থেকে EEVDF এ বদলানো হলো — এটা mechanism এর
+        পরিবর্তন না policy এর? আর এই উত্তরটা থেকে বুঝুন কেন kernel
+        upgrade করলে আপনার latency profile বদলে যেতে পারে যদিও আপনি
+        কোনো code বদলাননি।
+      </li>
+      <li>
+        File system কে library বানানো যায় না — protection এর কারণে।
+        কিন্তু আজকাল কিছু database (যেমন embedded SQLite, বা
+        io_uring ব্যবহার করে userspace driver) kernel কে অনেকটা পাশ
+        কাটিয়ে সরাসরি device এ কাজ করে। তাহলে ১৯৬০ এর সেই যুক্তিটা কি
+        ভুল হয়ে গেল, নাকি এখানে protection অন্য কোনো জায়গা থেকে আসছে?
+      </li>
+    </ol>
+  </div>

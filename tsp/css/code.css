@@ -1,0 +1,37 @@
+/* code.css
+   Code blocks and ASCII diagrams — monospace, scrollable, captioned.
+*/
+
+pre{
+  margin:0 0 var(--s-5); padding:var(--s-4);
+  background:var(--code-bg); color:var(--code-text);
+  border:1px solid var(--border); border-radius:var(--radius);
+  overflow-x:auto; max-width:100%;
+  font-family:var(--font-mono); font-size:var(--fs-sm); line-height:var(--lh-code);
+  -webkit-overflow-scrolling:touch;
+}
+pre code{font-family:inherit; font-size:inherit; background:none; border:0; padding:0; white-space:pre;}
+pre.ascii{line-height:1.45; color:var(--muted);}
+.codewrap{position:relative;}
+.codewrap .lang{
+  position:absolute; top:var(--s-2); right:var(--s-3);
+  font-family:var(--font-mono); font-size:var(--fs-xs);
+  color:var(--muted); text-transform:uppercase; letter-spacing:.06em;
+  pointer-events:none;
+}
+.figcap{
+  font-size:var(--fs-xs); color:var(--muted);
+  margin:calc(var(--s-5) * -1 + var(--s-1)) 0 var(--s-5); text-align:center;
+}
+
+/* copy button — sits in the code block's corner, revealed on hover */
+.codewrap{position:relative;}
+.copybtn{
+  position:absolute; top:var(--s-2); right:var(--s-2);
+  background:var(--panel); border:1px solid var(--border); color:var(--muted);
+  border-radius:var(--radius-xs); padding:2px var(--s-2);
+  font-family:var(--font-mono); font-size:var(--fs-xs);
+  cursor:pointer; opacity:0; transition:opacity .15s var(--ease), color .15s var(--ease);
+}
+.codewrap:hover .copybtn, .copybtn:focus-visible{opacity:1;}
+.copybtn:hover{color:var(--heading); border-color:var(--user);}

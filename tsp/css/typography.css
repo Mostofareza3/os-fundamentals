@@ -1,0 +1,43 @@
+/* typography.css
+   Headings, body copy, lists, links, chapter header, inline code.
+*/
+
+.page h1,.page h2,.page h3,.page h4{
+  color:var(--heading); line-height:var(--lh-tight); text-wrap:balance;
+  font-weight:var(--fw-bold); margin:0;
+}
+.page h1{font-size:var(--fs-2xl); margin-bottom:var(--s-3);}
+.page h2{
+  font-size:var(--fs-xl); margin-top:var(--s-12); margin-bottom:var(--s-4);
+  padding-bottom:var(--s-2); border-bottom:1px solid var(--border-soft);
+}
+.page h3{font-size:var(--fs-lg); margin-top:var(--s-10); margin-bottom:var(--s-3);}
+.page h4{font-size:var(--fs-md); margin-top:var(--s-6); margin-bottom:var(--s-2); color:var(--text);}
+.page p{margin:0 0 var(--s-4);}
+.page ul,.page ol{margin:0 0 var(--s-4); padding-left:var(--s-6);}
+.page li{margin-bottom:var(--s-2);}
+.page li::marker{color:var(--muted);}
+.page a{color:var(--user); text-decoration:none; border-bottom:1px solid var(--user-dim);}
+.page a:hover{border-bottom-color:var(--user);}
+.page strong{color:var(--heading); font-weight:var(--fw-semi);}
+.page em{font-style:normal; color:var(--kernel);}
+.page hr{border:0; border-top:1px solid var(--border-soft); margin:var(--s-10) 0;}
+
+/* chapter header block */
+.ch-head{margin-bottom:var(--s-8); padding-bottom:var(--s-5); border-bottom:1px solid var(--border);}
+.ch-eyebrow{
+  display:inline-flex; align-items:center; gap:var(--s-2);
+  font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.09em;
+  font-weight:var(--fw-bold); margin-bottom:var(--s-3);
+}
+.ch-eyebrow.p1{color:var(--p1);} .ch-eyebrow.p2{color:var(--p2);} .ch-eyebrow.p3{color:var(--p3);}
+.ch-eyebrow .src{color:var(--muted); font-weight:var(--fw-normal); text-transform:none; letter-spacing:0;}
+.ch-lede{font-size:var(--fs-md); color:var(--muted); margin:0;}
+
+/* inline code */
+.page :not(pre) > code{
+  font-family:var(--font-mono); font-size:.88em;
+  background:var(--panel-2); color:var(--heading);
+  border:1px solid var(--border-soft); border-radius:var(--radius-xs);
+  padding:.1em .38em; white-space:nowrap;
+}

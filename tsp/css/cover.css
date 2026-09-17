@@ -1,0 +1,21 @@
+/* cover.css
+   Cover hero and the three-part badges.
+*/
+
+.cover-hero{padding:var(--s-8) 0 var(--s-10); border-bottom:1px solid var(--border); margin-bottom:var(--s-8);}
+.cover-hero .kicker{
+  font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.14em;
+  color:var(--muted); font-weight:var(--fw-bold); margin-bottom:var(--s-4);
+}
+.cover-hero h1{font-size:var(--fs-3xl); margin-bottom:var(--s-4);}
+.cover-hero .three{
+  display:flex; gap:var(--s-2); flex-wrap:wrap; margin-bottom:var(--s-5);
+  font-family:var(--font-mono); font-size:var(--fs-sm);
+}
+.cover-hero .three span{
+  padding:var(--s-1) var(--s-3); border-radius:100px; border:1px solid var(--border);
+}
+.cover-hero .three .a1{color:var(--p1); border-color:var(--p1); background:var(--p1-dim);}
+.cover-hero .three .a2{color:var(--p2); border-color:var(--p2); background:var(--p2-dim);}
+.cover-hero .three .a3{color:var(--p3); border-color:var(--p3); background:var(--p3-dim);}
+.cover-hero .lede{font-size:var(--fs-md); color:var(--muted); max-width:56ch; margin:0;}

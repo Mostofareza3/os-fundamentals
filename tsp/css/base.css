@@ -1,0 +1,18 @@
+/* base.css
+   Reset, body defaults, selection, focus ring, reduced motion.
+*/
+
+*{box-sizing:border-box;}
+html,body{margin:0; padding:0;}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:var(--font-bn); font-size:var(--fs-base); line-height:var(--lh-body);
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto;}
+  *{animation-duration:.01ms !important; transition-duration:.01ms !important;}
+}
+::selection{background:var(--user-dim); color:var(--heading);}
+:focus-visible{outline:2px solid var(--user); outline-offset:2px; border-radius:var(--radius-xs);}

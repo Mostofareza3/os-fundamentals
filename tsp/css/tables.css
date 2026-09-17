@@ -1,0 +1,10 @@
+/* tables.css
+   Tables in a horizontally scrollable wrapper.
+*/
+
+.tablewrap{overflow-x:auto; margin:0 0 var(--s-5); border:1px solid var(--border); border-radius:var(--radius);}
+table{border-collapse:collapse; width:100%; font-size:var(--fs-sm);}
+th,td{padding:var(--s-3) var(--s-4); text-align:left; border-bottom:1px solid var(--border-soft);}
+th{background:var(--panel-2); color:var(--heading); font-weight:var(--fw-semi); white-space:nowrap;}
+tr:last-child td{border-bottom:0;}
+td.num,th.num{font-family:var(--font-mono); font-variant-numeric:tabular-nums; text-align:right;}

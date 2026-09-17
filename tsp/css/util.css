@@ -1,0 +1,9 @@
+/* util.css
+   Utilities: chapter show/hide, skip link.
+*/
+
+[hidden]{display:none !important;}
+.chapter{display:none;}
+.chapter.on{display:block;}
+.skip{position:absolute; left:-9999px;}
+.skip:focus{left:var(--s-4); top:var(--s-4); z-index:100; background:var(--panel); padding:var(--s-3); border-radius:var(--radius-sm);}

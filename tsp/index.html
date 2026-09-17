@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="bn">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>তিনটি সহজ পাঠ — Virtualization · Concurrency · Persistence</title>
+
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230E1319'/%3E%3Crect x='6' y='7' width='20' height='4' rx='1' fill='%237FB4E6'/%3E%3Crect x='6' y='14' width='20' height='4' rx='1' fill='%23C9A0E9'/%3E%3Crect x='6' y='21' width='20' height='4' rx='1' fill='%237FCBB0'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="css/tokens.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/topbar.css" />
+    <link rel="stylesheet" href="css/layout.css" />
+    <link rel="stylesheet" href="css/toc.css" />
+    <link rel="stylesheet" href="css/typography.css" />
+    <link rel="stylesheet" href="css/code.css" />
+    <link rel="stylesheet" href="css/tables.css" />
+    <link rel="stylesheet" href="css/callouts.css" />
+    <link rel="stylesheet" href="css/chapnav.css" />
+    <link rel="stylesheet" href="css/search.css" />
+    <link rel="stylesheet" href="css/cover.css" />
+    <link rel="stylesheet" href="css/util.css" />
+
+    <script>
+      /* Apply the stored theme before first paint to avoid a flash. */
+      (function () {
+        try {
+          var raw = localStorage.getItem("tsp.v1");
+          var t = raw ? (JSON.parse(raw) || {}).theme : null;
+          if (t === "light" || t === "dark")
+            document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">সরাসরি লেখায় যাও</a>
+    <div id="progress"></div>
+
+    <header class="topbar">
+      <button class="iconbtn" id="menuBtn" aria-label="সূচিপত্র" aria-expanded="false">
+        ☰
+      </button>
+      <div class="brand">
+        <span class="n">তিনটি সহজ পাঠ</span>
+        <span class="sub">— Operating Systems</span>
+      </div>
+      <div class="spacer"></div>
+      <a
+        class="iconbtn"
+        id="oldBookBtn"
+        href="../index.html"
+        title="আগের বই — ভিতর থেকে"
+      >
+        📗 <span class="lbl">ভিতর থেকে</span>
+      </a>
+      <button class="iconbtn" id="searchBtn" aria-label="খুঁজো">
+        🔍 <kbd>/</kbd>
+      </button>
+      <button class="iconbtn" id="themeBtn" aria-label="Theme পাল্টাও" title="Theme">
+        ◐
+      </button>
+    </header>
+
+    <div id="scrim"></div>
+
+    <div class="layout">
+      <nav class="sidebar" id="sidebar" aria-label="সূচিপত্র"></nav>
+      <main id="main">
+        <div class="page" id="page"></div>
+      </main>
+    </div>
+
+    <div id="searchOverlay">
+      <div class="search-panel" role="dialog" aria-modal="true" aria-label="খোঁজো">
+        <div class="search-head">
+          <span aria-hidden="true">🔍</span>
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Concept, chapter বা technical term…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div id="searchResults"></div>
+        <div class="search-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> চলাচল</span>
+          <span><kbd>↵</kbd> খোলো</span>
+          <span><kbd>Esc</kbd> বন্ধ</span>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

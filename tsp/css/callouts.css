@@ -1,0 +1,41 @@
+/* callouts.css
+   Callout boxes: ভুল ধারণা, note, dev connection, warning, dated-source.
+*/
+
+.box{
+  margin:0 0 var(--s-5); padding:var(--s-4) var(--s-5);
+  border-radius:var(--radius); border:1px solid var(--border);
+  border-left-width:3px; background:var(--panel);
+}
+.box > .box-t{
+  display:flex; align-items:center; gap:var(--s-2);
+  font-size:var(--fs-xs); text-transform:uppercase; letter-spacing:.08em;
+  font-weight:var(--fw-bold); margin-bottom:var(--s-3);
+}
+.box > :last-child{margin-bottom:0;}
+.box.wrong{border-left-color:var(--danger); background:var(--danger-dim);}
+.box.wrong > .box-t{color:var(--danger);}
+.box.note{border-left-color:var(--user); background:var(--user-dim);}
+.box.note > .box-t{color:var(--user);}
+.box.dev{border-left-color:var(--ok); background:var(--ok-dim);}
+.box.dev > .box-t{color:var(--ok);}
+.box.warn{border-left-color:var(--warn); background:var(--warn-dim);}
+.box.warn > .box-t{color:var(--warn);}
+.box.old{border-left-color:var(--kernel); background:var(--kernel-dim);}
+.box.old > .box-t{color:var(--kernel);}
+
+/* questions block */
+.qs{margin-top:var(--s-12); padding-top:var(--s-6); border-top:1px solid var(--border);}
+.qs h2{margin-top:0; border-bottom:0; padding-bottom:0;}
+.qs ol{counter-reset:q; list-style:none; padding-left:0;}
+.qs ol li{
+  counter-increment:q; position:relative;
+  padding-left:var(--s-10); margin-bottom:var(--s-4);
+}
+.qs ol li::before{
+  content:counter(q); position:absolute; left:0; top:0;
+  font-family:var(--font-mono); font-size:var(--fs-xs); font-weight:var(--fw-bold);
+  color:var(--muted); background:var(--panel-2);
+  border:1px solid var(--border); border-radius:var(--radius-xs);
+  width:var(--s-6); height:var(--s-6); display:flex; align-items:center; justify-content:center;
+}

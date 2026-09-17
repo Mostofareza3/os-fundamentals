@@ -1230,6 +1230,610 @@ int main(int argc, char *argv[]) {
 
 </section>
 
+<section class="chapter" id="chapter-2" data-part="1" data-num="2"
+         data-title="Process — OS এর প্রধান abstraction">
+
+  <div class="ch-head">
+    <div class="ch-eyebrow p1">
+      Part 1 · Virtualization
+      <span class="src">· OSTEP ch 4, pdf p46–57</span>
+    </div>
+    <h1>Process — OS এর প্রধান abstraction</h1>
+    <p class="ch-lede">
+      Disk এ পড়ে থাকা একটা file আর চলমান একটা program — দুটোর মধ্যে কী যোগ
+      হলে প্রথমটা দ্বিতীয়টা হয়? উত্তরটা একটা kernel data structure, আর
+      সেটা আপনি <code>/proc</code> দিয়ে নিজের চোখে দেখতে পারেন।
+    </p>
+  </div>
+
+  <p>
+    Process এর সংজ্ঞা সরল: <strong>একটা চলমান program</strong>।
+    কিন্তু এই সরলতার নিচে একটা গুরুত্বপূর্ণ পার্থক্য আছে যেটা না ধরলে
+    পরের কোনো chapter ঠিকভাবে বসবে না।
+  </p>
+
+  <p>
+    আপনার disk এ <code>/usr/bin/node</code> একটা file। সেটা নিষ্প্রাণ —
+    কিছু instruction আর static data, পড়ে আছে। এর মধ্যে "চলা" বলে কিছু নেই।
+    আপনি <code>node</code> লিখলে OS ওই byte গুলো নিয়ে তার সাথে
+    <em>আরও কিছু</em> যোগ করে একটা চলমান সত্তা বানায়। সেই যোগ করা
+    জিনিসটাই process।
+  </p>
+
+  <div class="box note">
+    <div class="box-t">Crux</div>
+    <p>
+      Physical CPU মাত্র কয়েকটা। তাহলে OS কীভাবে প্রায়-অসীম সংখ্যক
+      CPU এর illusion দেয়? উত্তর: <strong>time sharing</strong> — একটা
+      process চালাও, থামাও, আরেকটা চালাও, এত দ্রুত যে সবগুলো একসাথে
+      চলছে মনে হয়। দাম হলো performance: প্রত্যেকে ধীরে চলে।
+    </p>
+  </div>
+
+  <h2 id="c2-machine-state">Process = machine state</h2>
+
+  <p>
+    Process কী দিয়ে তৈরি, সেটা বোঝার সবচেয়ে কাজের উপায় হলো প্রশ্ন করা:
+    <em>একটা চলমান program কী কী পড়তে বা বদলাতে পারে?</em> সেই তালিকাটাই
+    তার machine state।
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>উপাদান</th><th>কী থাকে</th><th>কোথায় দেখবেন</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Address space</strong></td>
+        <td>code, static data, heap, stack — যে memory টা process ছুঁতে পারে</td>
+        <td><code>/proc/&lt;pid&gt;/maps</code></td>
+      </tr>
+      <tr>
+        <td><strong>Register</strong></td>
+        <td>general purpose register, আর বিশেষ কয়েকটা (নিচে)</td>
+        <td><code>/proc/&lt;pid&gt;/syscall</code>, gdb</td>
+      </tr>
+      <tr>
+        <td><strong>PC / IP</strong></td>
+        <td>Program Counter — এই মুহূর্তে কোন instruction চলছে</td>
+        <td><code>/proc/&lt;pid&gt;/stat</code> (field 30)</td>
+      </tr>
+      <tr>
+        <td><strong>SP / FP</strong></td>
+        <td>Stack ও Frame Pointer — function এর parameter, local variable, return address</td>
+        <td><code>/proc/&lt;pid&gt;/stat</code> (field 29)</td>
+      </tr>
+      <tr>
+        <td><strong>I/O information</strong></td>
+        <td>কোন কোন file খোলা আছে</td>
+        <td><code>/proc/&lt;pid&gt;/fd/</code></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    শেষ সারিটা গুরুত্বপূর্ণ আর প্রায়ই ভুলে যাওয়া হয়: <strong>খোলা file
+    গুলোও process এর state এর অংশ</strong>। এই কারণেই একটা process কে
+    <code>kill</code> করলে তার সব file descriptor বন্ধ হয়ে যায়, আর
+    এই কারণেই chapter 3 এ দেখব <code>fork()</code> করলে child ঠিক একই
+    খোলা file গুলো পায় — একই file offset সহ।
+  </p>
+
+  <h2 id="c2-program-to-process">Program থেকে process — কী কী ঘটে</h2>
+
+  <p>
+    OS কে কয়েকটা কাজ করতে হয় program টা চালু করার আগে:
+  </p>
+
+  <pre class="ascii"><code>  DISK                          MEMORY (নতুন address space)
+  ┌──────────────┐              ┌──────────────────────┐  উঁচু address
+  │              │              │        stack         │  ↓ নিচের দিকে বাড়ে
+  │ ELF file     │              │  argc, argv, env     │
+  │ ┌──────────┐ │   load       ├──────────────────────┤
+  │ │  code    │─┼───────────▶  │                      │
+  │ ├──────────┤ │              │      (ফাঁকা)         │
+  │ │ static   │─┼───────────▶  │                      │
+  │ │ data     │ │              ├──────────────────────┤
+  │ └──────────┘ │              │        heap          │  ↑ উপরের দিকে বাড়ে
+  └──────────────┘              │   malloc() এখান থেকে │
+                                ├──────────────────────┤
+                    OS বানায়──▶ │    static data       │
+                                ├──────────────────────┤
+                                │       code           │  নিচু address
+                                └──────────────────────┘</code></pre>
+  <p class="figcap">
+    Program loading: file এর byte + OS এর বানানো stack ও heap = process।
+  </p>
+
+  <ol>
+    <li>
+      <strong>Code আর static data load করা</strong> — executable format
+      (Linux এ ELF) থেকে memory তে।
+    </li>
+    <li>
+      <strong>Stack বানানো</strong> — C তে local variable, function
+      parameter আর return address এর জন্য। OS এখানেই
+      <code>main()</code> এর argument বসিয়ে দেয়: <code>argc</code> আর
+      <code>argv</code>।
+    </li>
+    <li>
+      <strong>Heap এর প্রস্তুতি</strong> — <code>malloc()</code> যেখান
+      থেকে নেবে। শুরুতে ছোট, দরকারে বাড়ে।
+    </li>
+    <li>
+      <strong>I/O এর প্রাথমিক ব্যবস্থা</strong> — UNIX এ প্রতিটা process
+      তিনটা file descriptor নিয়ে শুরু করে: 0 = stdin, 1 = stdout,
+      2 = stderr।
+    </li>
+    <li>
+      <strong>Entry point এ লাফ দেওয়া</strong> — <code>main()</code> এ
+      (আসলে তার আগে কিছু runtime setup), আর CPU টা process এর হাতে
+      ছেড়ে দেওয়া।
+    </li>
+  </ol>
+
+  <div class="box old">
+    <div class="box-t">যেখানে source টা পুরনো</div>
+    <p>
+      OSTEP লেখে: OS কে "disk থেকে ওই byte গুলো পড়ে memory তে বসাতে হয়",
+      আর যোগ করে যে পুরনো OS এটা <em>eagerly</em> করত, আধুনিক OS করে
+      <em>lazily</em>। কথাটা সত্য কিন্তু এতটাই সংক্ষিপ্ত যে ভুল ছবি তৈরি হয় —
+      আর বইয়ের পরের অংশের সাথে সাংঘর্ষিকও (paging chapter বলে loading
+      lazy, আর এই chapter বলে OS byte পড়ে memory তে বসায়)।
+    </p>
+    <p>
+      আসল পথটা হলো: <code>execve()</code> ELF এর
+      <strong>PT_LOAD segment গুলো <code>mmap()</code> করে</strong> —
+      অর্থাৎ page table এ mapping বসায়, কিন্তু কোনো byte পড়ে না।
+      তারপর dynamic linker (<code>ld.so</code>) shared library গুলো map
+      করে। Page গুলো আসে চাহিদামতো, <strong>page fault</strong> এর মাধ্যমে,
+      যখন সত্যিই ওই address টা ছোঁয়া হয়।
+    </p>
+    <p>
+      এর একটা মাপা ফল আছে যেটা আপনি রোজ দেখেন:
+      <strong>একই binary দ্বিতীয়বার চালালে অনেক দ্রুত চালু হয়</strong> —
+      কারণ page গুলো তখন page cache এ গরম, disk এ যেতে হয় না।
+      Chapter 24 এ এটাই page cache। আর container এর
+      <strong>cold start</strong> এর বড় অংশ এই একই কারণ: নতুন node এ
+      image layer গুলো page-cache-cold, তাই প্রথম request ধীর —
+      এই কারণেই image size আর layer এর ক্রম গুরুত্বপূর্ণ।
+    </p>
+  </div>
+
+  <h2 id="c2-states">Process এর তিনটা অবস্থা</h2>
+
+  <p>
+    যেকোনো মুহূর্তে একটা process তিনটার একটায় থাকে:
+  </p>
+
+  <pre class="ascii"><code>                    scheduled
+              ┌─────────────────────┐
+              │                     ▼
+        ┌──────────┐          ┌──────────┐
+        │  READY   │          │ RUNNING  │
+        │          │◀─────────│          │
+        └──────────┘descheduled└──────────┘
+              ▲                     │
+              │                     │ I/O শুরু
+              │ I/O শেষ             ▼
+              │               ┌──────────┐
+              └───────────────│ BLOCKED  │
+                              └──────────┘
+
+  RUNNING  — এই মুহূর্তে CPU তে instruction চালাচ্ছে
+  READY    — চালানোর জন্য প্রস্তুত, কিন্তু OS এখন চালাচ্ছে না
+  BLOCKED  — কোনো ঘটনার অপেক্ষায় (I/O, lock, timer);
+             CPU দিলেও কাজে লাগবে না</code></pre>
+  <p class="figcap">Process state machine। তীরগুলোর নাম মনে রাখা দরকার।</p>
+
+  <p>
+    <strong>READY আর BLOCKED এর পার্থক্যটাই এই diagram এর আসল কথা।</strong>
+    READY process কে CPU দিলে সে কাজ করবে — সে শুধু অপেক্ষা করছে তার
+    পালার জন্য। BLOCKED process কে CPU দিলে সে কিছুই করতে পারবে না,
+    কারণ সে অপেক্ষা করছে <em>বাইরের কোনো ঘটনার</em>। তাই scheduler
+    BLOCKED process কে বিবেচনাই করে না।
+  </p>
+
+  <p>
+    দুটো process এর trace দেখলে পরিষ্কার হয়। প্রথমে দুটোই শুধু CPU ব্যবহার
+    করছে, কোনো I/O নেই:
+  </p>
+
+  <pre class="ascii"><code>  সময়   Process 0    Process 1    টীকা
+  ────   ──────────   ──────────   ─────────────────────
+   1     Running      Ready
+   2     Running      Ready
+   3     Running      Ready
+   4     Running      Ready        Process 0 শেষ
+   5     —            Running
+   6     —            Running
+   7     —            Running
+   8     —            Running      Process 1 শেষ</code></pre>
+
+  <p>
+    Process 1 চারটা সময়-একক পুরো বসে থাকল। এখন Process 0 যদি মাঝপথে
+    I/O শুরু করে:
+  </p>
+
+  <pre class="ascii"><code>  সময়   Process 0    Process 1    টীকা
+  ────   ──────────   ──────────   ──────────────────────────
+   1     Running      Ready
+   2     Running      Ready
+   3     Running      Ready        Process 0 I/O শুরু করল
+   4     Blocked      Running      P0 blocked, তাই P1 চলল
+   5     Blocked      Running
+   6     Blocked      Running
+   7     Ready        Running      I/O শেষ → P0 এখন Ready
+   8     Ready        Running      Process 1 শেষ
+   9     Running      —
+  10     Running      —            Process 0 শেষ</code></pre>
+
+  <p>
+    এখানে OS দুটো সিদ্ধান্ত নিয়েছে, আর দুটোই policy — mechanism নয়।
+    প্রথমত, P0 blocked হওয়ার সাথে সাথে P1 চালিয়ে দিল, তাতে CPU খালি
+    থাকল না। দ্বিতীয়ত, সময় ৭ এ I/O শেষ হওয়ার পরেও P0 তে ফেরত গেল না —
+    P1 কে চলতে দিল। এটা ভালো সিদ্ধান্ত কি না, সেটা নির্ভর করে আপনি কী
+    optimize করছেন, আর সেটাই chapter 5 আর 6 এর বিষয়।
+  </p>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"<code>top</code> এ load average ৮, মানে ৮টা process
+      CPU খাচ্ছে।"</strong>
+    </p>
+    <p>
+      Linux এ load average হলো <strong>RUNNING + READY</strong> process এর
+      সংখ্যা (আর একটা বিশেষ ব্যতিক্রম — নিচে)। অর্থাৎ যারা চলছে
+      <em>এবং</em> যারা চলার জন্য লাইনে দাঁড়িয়ে আছে। ৮ core এ load ৮
+      মানে মোটামুটি পুরো ব্যবহার; ২ core এ load ৮ মানে প্রতিটা process
+      তার সময়ের বড় অংশ লাইনে দাঁড়িয়ে কাটাচ্ছে।
+    </p>
+    <p>
+      ব্যতিক্রমটা বিভ্রান্তিকর: Linux (অন্য UNIX এর তুলনায় ব্যতিক্রমীভাবে)
+      load average এ <strong>uninterruptible sleep</strong> —
+      <code>ps</code> এ state <code>D</code> — ও গোনে। অর্থাৎ যে process
+      disk I/O এর জন্য আটকে আছে, সে CPU চাইছে না, তবু load বাড়াচ্ছে।
+      তাই ধীর disk বা আটকে যাওয়া NFS mount এর কারণে load ২০ দেখা যেতে
+      পারে যখন CPU প্রায় খালি। Load average দিয়ে CPU saturation মাপা
+      তাই ভুল — <code>%util</code> বা PSI (chapter 11) দেখা উচিত।
+    </p>
+    <pre><code># state কলাম দেখুন: R=running/ready, S=sleep, D=uninterruptible
+$ ps -eo pid,stat,wchan:20,comm | head
+# R  → RUNNING বা READY
+# S  → BLOCKED (interruptible — signal এ জাগবে)
+# D  → BLOCKED (uninterruptible — সাধারণত disk I/O)
+# Z  → ZOMBIE (নিচে দেখুন)</code></pre>
+  </div>
+
+  <h2 id="c2-pcb">PCB — যে structure টা process কে বাস্তব করে</h2>
+
+  <p>
+    OS নিজেও একটা program, আর যেকোনো program এর মতোই তার data structure
+    আছে। প্রতিটা process সম্পর্কে যা জানা দরকার, তা একটা structure এ
+    রাখা হয়। এর নাম <strong>PCB (Process Control Block — প্রতিটা process
+    এর metadata রাখার kernel data structure)</strong>; Linux এ এর নাম
+    <code>struct task_struct</code>।
+  </p>
+
+  <p>
+    xv6 (একটা শিক্ষামূলক UNIX) এর structure টা ছোট বলে পড়া সহজ:
+  </p>
+
+  <div class="codewrap"><span class="lang">c</span>
+  <pre><code>/* xv6: the registers saved and restored to stop and
+   restart a process — this IS the context switch */
+struct context {
+    int eip;     /* instruction pointer — কোথায় ছিল */
+    int esp;     /* stack pointer */
+    int ebx; int ecx; int edx;
+    int esi; int edi; int ebp;
+};
+
+enum proc_state { UNUSED, EMBRYO, SLEEPING,
+                  RUNNABLE, RUNNING, ZOMBIE };
+
+/* xv6: everything the kernel knows about one process */
+struct proc {
+    char *mem;                  /* start of process memory */
+    uint sz;                    /* size of process memory */
+    char *kstack;               /* bottom of kernel stack for this proc */
+    enum proc_state state;      /* the state machine above */
+    int pid;                    /* process ID */
+    struct proc *parent;        /* who created it — needed for wait() */
+    void *chan;                 /* if non-zero, sleeping on this channel */
+    int killed;
+    struct file *ofile[NOFILE]; /* open files — part of process state */
+    struct inode *cwd;          /* current directory */
+    struct context context;     /* switch here to run this process */
+    struct trapframe *tf;       /* trap frame for current interrupt */
+};</code></pre></div>
+
+  <p>
+    কয়েকটা field আলাদা করে দেখার মতো:
+  </p>
+
+  <ul>
+    <li>
+      <code>context</code> — process থামলে তার register গুলো এখানে জমা
+      হয়। আবার চালাতে হলে এখান থেকে ফিরিয়ে দিলেই সে ঠিক যেখানে ছিল
+      সেখান থেকে চলতে শুরু করে। <strong>এটাই context switch</strong>,
+      chapter 4 এ পুরোটা।
+    </li>
+    <li>
+      <code>parent</code> — কে এই process বানিয়েছে। <code>wait()</code>
+      কাজ করার জন্য এটা দরকার, আর zombie আর orphan বোঝার জন্যও।
+    </li>
+    <li>
+      <code>ofile[]</code> — খোলা file। আবারও: I/O state process এর অংশ।
+    </li>
+    <li>
+      <code>chan</code> — BLOCKED হলে <em>কীসের</em> অপেক্ষায়। Linux এ
+      এটাই <code>/proc/&lt;pid&gt;/wchan</code> — আটকে যাওয়া process
+      debug করার সময় এটা প্রথম দেখার জিনিস।
+    </li>
+  </ul>
+
+  <p>
+    লক্ষ করুন <code>enum</code> টায় তিনটার বেশি state আছে।
+    আমাদের diagram এ ছিল RUNNING/READY/BLOCKED (xv6 এ
+    RUNNING/RUNNABLE/SLEEPING), কিন্তু বাস্তবে শুরুর একটা state লাগে
+    (<code>EMBRYO</code>) আর শেষেরও একটা — <code>ZOMBIE</code>।
+  </p>
+
+  <h2 id="c2-zombie">Zombie — মরেও যায়নি</h2>
+
+  <p>
+    একটা process <code>exit()</code> করল। তার memory ছেড়ে দেওয়া যায়,
+    file বন্ধ করা যায়। কিন্তু একটা জিনিস এখনো দরকার:
+    <strong>তার exit code</strong>। Parent জানতে চায় কাজটা সফল হয়েছিল
+    কি না (UNIX এ 0 মানে সফল, non-zero মানে না)।
+  </p>
+
+  <p>
+    তাই process টা মরার পরেও PCB টা রেখে দেওয়া হয়, শুধু exit status টুকু
+    নিয়ে। এই অবস্থার নাম <strong>zombie</strong>। Parent
+    <code>wait()</code> করলে status টা পায়, আর তখন kernel শেষ
+    structure টাও মুছে ফেলে।
+  </p>
+
+  <pre class="ascii"><code>  child: exit(0)
+       │
+       ▼
+  ┌──────────┐   parent wait() করেনি
+  │  ZOMBIE  │───────────────────────▶ PCB রয়ে গেল
+  └──────────┘   (process table এ জায়গা দখল)
+       │
+       │ parent wait() করল → status পড়ল
+       ▼
+    সম্পূর্ণ মুছে গেল</code></pre>
+
+  <div class="box wrong">
+    <div class="box-t">ভুল ধারণা</div>
+    <p>
+      <strong>"Zombie process CPU বা memory খাচ্ছে, তাই server ধীর।"</strong>
+    </p>
+    <p>
+      Zombie এর কোনো memory নেই, কোনো code চলছে না, CPU এর হিসাবে সে
+      শূন্য। সে শুধু process table এর একটা entry আর একটা PID দখল করে
+      আছে। একটা-দুটো zombie সম্পূর্ণ নিরীহ।
+    </p>
+    <p>
+      আসল বিপদ হলো <em>জমতে থাকা</em> zombie: PID এর একটা সীমা আছে
+      (<code>/proc/sys/kernel/pid_max</code>), আর হাজারে হাজারে zombie
+      জমলে নতুন process তৈরি করা যায় না — <code>fork()</code> ব্যর্থ হয়
+      <code>EAGAIN</code> দিয়ে। এটা সবসময় parent এর bug: সে
+      <code>wait()</code> করছে না।
+    </p>
+    <p>
+      <strong>Container এ এটা খুব সাধারণ।</strong> আপনি যদি Dockerfile এ
+      সরাসরি <code>CMD ["node", "server.js"]</code> দেন, তাহলে node হয়ে
+      যায় PID 1। কিন্তু PID 1 এর একটা বিশেষ দায়িত্ব আছে — যেসব process
+      এর parent মরে গেছে (orphan), তারা PID 1 এর সন্তান হয়, আর PID 1 কেই
+      তাদের <code>wait()</code> করতে হয়। Node সেটা করে না, তাই zombie
+      জমে। সমাধান: <code>docker run --init</code>, বা
+      <code>tini</code>/<code>dumb-init</code> কে PID 1 বানানো।
+      Chapter 29 এ PID namespace এর সাথে এটা ফিরে আসবে।
+    </p>
+    <pre><code># zombie খুঁজুন
+$ ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'
+# PPID কলামটাই দোষী parent</code></pre>
+  </div>
+
+  <h2 id="c2-proc">হাতে-কলমে — <code>/proc</code> দিয়ে abstraction দেখা</h2>
+
+  <p>
+    এই chapter এর সবকিছু কাল্পনিক শোনাতে পারে। শোনার দরকার নেই —
+    Linux এ প্রতিটা process এর PCB এর বড় অংশ file হিসেবে পড়া যায়।
+    একটা process চালিয়ে দেখুন:
+  </p>
+
+  <pre><code>$ sleep 300 &amp;
+[1] 48231
+
+$ ls /proc/48231/
+cmdline   environ  fd/      maps     stat     status   wchan
+cwd       exe      limits   mem      statm    syscall  task/</code></pre>
+
+  <p><strong>Address space টা দেখুন</strong> — উপরের diagram টা এখানে বাস্তব:</p>
+
+  <pre><code>$ cat /proc/48231/maps
+55d8c4e00000-55d8c4e02000 r--p ...  /usr/bin/sleep     ← code (read-only)
+55d8c4e02000-55d8c4e06000 r-xp ...  /usr/bin/sleep     ← code (executable)
+55d8c4e06000-55d8c4e08000 r--p ...  /usr/bin/sleep     ← static data
+55d8c4e09000-55d8c4e0a000 rw-p ...  /usr/bin/sleep     ← writable data
+55d8c5f0a000-55d8c5f2b000 rw-p ...  [heap]             ← heap
+7f2a1c000000-7f2a1c028000 r--p ...  /lib/libc.so.6     ← shared library
+7ffd4a5c0000-7ffd4a5e1000 rw-p ...  [stack]            ← stack
+7ffd4a5f4000-7ffd4a5f8000 r--p ...  [vvar]
+7ffd4a5f8000-7ffd4a5fa000 r-xp ...  [vdso]             ← chapter 1 এর vDSO!</code></pre>
+
+  <p>
+    শেষ লাইনটা লক্ষ করুন — chapter 1 এ বলেছিলাম
+    <code>clock_gettime()</code> syscall ছাড়াই ফেরে কারণ kernel একটা page
+    map করে রাখে। ওই <code>[vdso]</code> টাই সেটা, প্রতিটা process এর
+    address space এ।
+  </p>
+
+  <p><strong>State আর wait channel:</strong></p>
+
+  <pre><code>$ grep -E '^(State|Threads|VmRSS|VmSize)' /proc/48231/status
+State:   S (sleeping)          ← BLOCKED
+Threads: 1
+VmSize:  2776 kB               ← virtual — বুক করা address space
+VmRSS:   1024 kB               ← resident — সত্যিই RAM এ আছে
+
+$ cat /proc/48231/wchan
+hrtimer_nanosleep              ← ঠিক কীসের অপেক্ষায় আটকে আছে</code></pre>
+
+  <p>
+    <code>VmSize</code> আর <code>VmRSS</code> এর পার্থক্যটা মনে রাখুন —
+    chapter 11 এ এটাই সবচেয়ে বেশি ভুল বোঝা মাপ। এখানে ২৭৭৬kB address
+    space বুক করা, কিন্তু মাত্র ১০২৪kB সত্যিই RAM এ। বাকিটা lazy loading
+    এর কারণে এখনো আসেইনি।
+  </p>
+
+  <p><strong>খোলা file গুলো:</strong></p>
+
+  <pre><code>$ ls -l /proc/48231/fd/
+lrwx------ 0 -&gt; /dev/pts/3      ← stdin
+lrwx------ 1 -&gt; /dev/pts/3      ← stdout
+lrwx------ 2 -&gt; /dev/pts/3      ← stderr</code></pre>
+
+  <p>
+    তিনটাই terminal এ যাচ্ছে। এটাই <code>struct proc</code> এর
+    <code>ofile[]</code>, শুধু file হিসেবে দেখানো।
+  </p>
+
+  <div class="box dev">
+    <div class="box-t">আপনার কাজের সাথে যোগ</div>
+    <p>
+      এই <code>/proc</code> টাই যেখান থেকে আপনার সব tool তথ্য নেয় —
+      <code>ps</code>, <code>top</code>, <code>htop</code> সবাই
+      <code>/proc</code> পড়ে। কোনো গোপন API নেই।
+    </p>
+    <p>
+      আর এই কারণেই container এ একটা বিখ্যাত সমস্যা হয়:
+      Container এর ভিতরে <code>/proc/cpuinfo</code> আর
+      <code>/proc/meminfo</code> সাধারণত <strong>host এর</strong> মান
+      দেখায়, cgroup limit এর নয়। তাই JVM বা Go runtime যখন
+      "কত core আছে?" জিজ্ঞেস করে, সে ৬৪ দেখে — যদিও আপনি ২ core এর
+      quota দিয়েছেন। ফলাফল: ৬৪টা thread এর pool, অকারণ context switch,
+      আর throttling। Chapter 7 আর 30 এ এটাই মূল আলোচনা।
+    </p>
+    <pre><code># container এর ভিতরে আসল limit কোথায়
+$ cat /sys/fs/cgroup/cpu.max        # "200000 100000" = 2 core
+$ cat /sys/fs/cgroup/memory.max     # byte এ
+# অথচ:
+$ nproc                             # host এর core সংখ্যা দেখাতে পারে</code></pre>
+  </div>
+
+  <h2 id="c2-api">Process API — যা প্রতিটা OS এ থাকতে হয়</h2>
+
+  <p>
+    বিস্তারিত API পরের chapter এ, কিন্তু যেকোনো OS এ এই কাজগুলোর ব্যবস্থা
+    থাকতেই হয়:
+  </p>
+
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>কাজ</th><th>কী করে</th><th>POSIX</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Create</strong></td><td>নতুন process বানানো</td><td><code>fork()</code>, <code>execve()</code>, <code>posix_spawn()</code></td></tr>
+      <tr><td><strong>Destroy</strong></td><td>জোর করে থামানো</td><td><code>kill()</code> + signal</td></tr>
+      <tr><td><strong>Wait</strong></td><td>শেষ হওয়া পর্যন্ত অপেক্ষা</td><td><code>wait()</code>, <code>waitpid()</code></td></tr>
+      <tr><td><strong>Control</strong></td><td>থামানো/চালু করা</td><td><code>SIGSTOP</code>, <code>SIGCONT</code></td></tr>
+      <tr><td><strong>Status</strong></td><td>তথ্য নেওয়া</td><td><code>/proc</code>, <code>getrusage()</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    আপনি যখন terminal এ <kbd>Ctrl</kbd>+<kbd>Z</kbd> চাপেন, shell
+    process টাকে <code>SIGSTOP</code> পাঠায় — সে RUNNING/READY থেকে
+    একটা থেমে-থাকা অবস্থায় যায়। <code>fg</code> লিখলে
+    <code>SIGCONT</code> যায়, আর সে আবার READY হয়। State machine টা
+    আপনি প্রতিদিন হাতে চালান।
+  </p>
+
+  <h2 id="c2-time-space">Time sharing আর space sharing</h2>
+
+  <p>
+    Resource ভাগ করার দুটো মৌলিক উপায়, আর দুটোই এই বইয়ে বারবার আসবে:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Time sharing</strong> — একজন কিছুক্ষণ ব্যবহার করে, তারপর
+      আরেকজন। CPU এভাবেই ভাগ হয়। Network link ও।
+    </li>
+    <li>
+      <strong>Space sharing</strong> — resource টা ভাগ করে দেওয়া হয়।
+      Disk এভাবে ভাগ হয়: একটা block একটা file কে দিলে, সেটা মুছে না
+      ফেলা পর্যন্ত অন্য file পাবে না। Memory ও মূলত space-shared।
+    </li>
+  </ul>
+
+  <p>
+    এই পার্থক্যটা কেন কাজের? কারণ দুটোর failure mode আলাদা।
+    Time-shared resource শেষ হলে সবাই <em>ধীর</em> হয় (CPU contention)।
+    Space-shared resource শেষ হলে কাজ <em>ব্যর্থ</em> হয় —
+    <code>ENOSPC</code>, বা OOM kill। তাই capacity planning এ
+    দুটোকে আলাদা করে ভাবতে হয়।
+  </p>
+
+  <div class="qs">
+    <h2 id="c2-q">প্রশ্ন</h2>
+    <ol>
+      <li>
+        একটা process <code>/proc/&lt;pid&gt;/maps</code> এ দেখাচ্ছে
+        <code>VmSize: 4 GB</code> কিন্তু <code>VmRSS: 80 MB</code>।
+        আরেকটা দেখাচ্ছে <code>VmSize: 200 MB</code>,
+        <code>VmRSS: 190 MB</code>। কোনটা OOM kill হওয়ার ঝুঁকিতে বেশি,
+        আর কেন? আপনার উত্তরে "বুক করা" আর "সত্যিই পাওয়া" এর পার্থক্যটা
+        ব্যবহার করুন।
+      </li>
+      <li>
+        State machine এ BLOCKED থেকে সরাসরি RUNNING এ কোনো তীর নেই —
+        I/O শেষ হলে process আগে READY তে যায়। এই বাড়তি ধাপটা কেন?
+        সরাসরি RUNNING করে দিলে কী সমস্যা হতো?
+      </li>
+      <li>
+        আপনার container এ node হলো PID 1, আর সে একটা shell script
+        spawn করে যেটা নিজে আরও child বানিয়ে মরে যায়। কয়েক দিন পর
+        <code>fork()</code> ব্যর্থ হতে শুরু করল <code>EAGAIN</code> দিয়ে।
+        কী ঘটেছে, আর <code>--init</code> ঠিক কোন কাজটা করে যেটা node
+        করছিল না?
+      </li>
+      <li>
+        <code>ps</code> এ একটা process <code>D</code> state এ আটকে আছে,
+        আর <code>kill -9</code> দিয়েও মরছে না। কেন <code>SIGKILL</code>
+        কাজ করছে না? <code>/proc/&lt;pid&gt;/wchan</code> পড়ে আপনি কী
+        তথ্য পাবেন যা সিদ্ধান্ত নিতে সাহায্য করবে?
+      </li>
+      <li>
+        Chapter 1 এ দেখেছেন OS "মিথ্যা বলে"। এই chapter এর
+        <code>/proc</code> অংশ দেখে বলুন: container এর ভিতরে
+        <code>/proc/cpuinfo</code> host এর core দেখানো — এটা কি
+        abstraction নাকি leak? আপনার runtime কোন প্রশ্নটা জিজ্ঞেস করলে
+        সঠিক উত্তর পেত?
+      </li>
+      <li>
+        Time sharing আর space sharing এর পার্থক্য ব্যবহার করে বলুন:
+        Kubernetes এ CPU limit ছাড়িয়ে গেলে pod throttled হয়, কিন্তু
+        memory limit ছাড়ালে pod <em>মারা যায়</em>। এই অসমতা কেন —
+        এটা Kubernetes এর নকশার খামখেয়াল, নাকি resource দুটোর
+        প্রকৃতিগত পার্থক্য?
+      </li>
+    </ol>
+  </div>
+
+</section>
+
   <!-- @@CHAPTERS@@ -->
     </div>
   </main>

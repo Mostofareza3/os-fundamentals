@@ -1,0 +1,47 @@
+/* layout.css
+   App shell: sidebar + main, wide-screen breakout, mobile drawer.
+*/
+
+.layout{display:flex; padding-top:calc(var(--topbar-h) + env(safe-area-inset-top,0px)); min-height:100vh;}
+nav.sidebar{
+  width:var(--sidebar-w); flex-shrink:0;
+  position:sticky; top:calc(var(--topbar-h) + env(safe-area-inset-top,0px));
+  align-self:flex-start;
+  height:calc(100vh - var(--topbar-h) - env(safe-area-inset-top,0px));
+  overflow-y:auto; padding:var(--s-5) var(--s-3) var(--s-16);
+  border-right:1px solid var(--border-soft); background:var(--bg-soft);
+}
+main{flex:1; min-width:0; display:flex; justify-content:center;}
+.page{
+  width:100%; max-width:var(--measure);
+  padding:var(--s-10) var(--s-6) var(--s-16);
+}
+/* On wide screens let code blocks, diagrams and tables use more width
+   than the prose column, since they are read as units, not line by line. */
+@media(min-width:1500px){
+  .page{max-width:var(--measure-wide);}
+  .page > section.chapter > p,
+  .page > section.chapter > ul,
+  .page > section.chapter > ol,
+  .page > section.chapter > .box,
+  .page > section.chapter > .ch-head,
+  .page > section.chapter > .qs,
+  .page > section.chapter > h2,
+  .page > section.chapter > h3,
+  .page > section.chapter > h4,
+  .page > section.chapter > .figcap{max-width:var(--measure);}
+}
+@media(max-width:1040px){
+  nav.sidebar{
+    position:fixed; left:0; top:calc(var(--topbar-h) + env(safe-area-inset-top,0px));
+    z-index:45; transform:translateX(-100%); transition:transform .22s var(--ease);
+    box-shadow:0 8px 40px var(--shadow);
+  }
+  nav.sidebar.open{transform:translateX(0);}
+  #scrim{
+    position:fixed; inset:0; z-index:40; background:var(--scrim);
+    opacity:0; pointer-events:none; transition:opacity .2s var(--ease);
+  }
+  #scrim.on{opacity:1; pointer-events:auto;}
+}
+@media(min-width:1041px){ #scrim{display:none;} }

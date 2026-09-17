@@ -1,0 +1,15 @@
+/* chapnav.css
+   Prev/next chapter footer navigation.
+*/
+
+.chnav{display:flex; gap:var(--s-3); margin-top:var(--s-12); flex-wrap:wrap;}
+.chnav a{
+  flex:1 1 220px; min-width:0; text-decoration:none; border:0;
+  padding:var(--s-4); border-radius:var(--radius);
+  background:var(--panel); border:1px solid var(--border);
+  transition:border-color .15s var(--ease);
+}
+.chnav a:hover{border-color:var(--user);}
+.chnav .dir{font-size:var(--fs-xs); color:var(--muted); text-transform:uppercase; letter-spacing:.08em;}
+.chnav .t{color:var(--heading); font-weight:var(--fw-semi); font-size:var(--fs-sm); display:block; margin-top:var(--s-1);}
+.chnav a.next{text-align:right;}
