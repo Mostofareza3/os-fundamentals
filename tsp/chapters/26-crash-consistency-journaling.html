@@ -1,0 +1,518 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 42, pdf p508–527 · + ext4 mode, Postgres WAL</span>
+  </div>
+  <h1>Crash consistency — fsck থেকে journaling</h1>
+  <p class="ch-lede">
+    Chapter 25 এ শিখলাম কীভাবে একটা লেখা নিশ্চিত করা যায়।
+    কিন্তু file system এর একটা কাজে <em>একাধিক</em> লেখা
+    লাগে — আর মাঝখানে crash হলে disk একটা অসম্ভব অবস্থায়
+    পড়ে থাকে। এর সমাধানটাই আপনার database এর WAL।
+  </p>
+</div>
+
+<p>
+  Chapter 23 এ দেখেছি একটা file এ ৪KB যোগ করতে তিনটে
+  আলাদা জায়গায় লিখতে হয়:
+</p>
+
+<pre class="ascii"><code>  একটা file এ একটা block যোগ করা:
+
+  ১. data bitmap      — block টা "দখল" চিহ্নিত করো
+  ২. inode            — size বাড়াও, block pointer বসাও
+  ৩. data block       — আসল byte গুলো লেখো
+
+  তিনটে লেখা, কিন্তু disk একসাথে একটাই atomically করে।
+  মাঝখানে power গেলে?</code></pre>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা যুক্তিগত কাজে একাধিক disk write লাগে, কিন্তু
+    crash যেকোনো মুহূর্তে হতে পারে। File system কীভাবে
+    নিশ্চিত করবে যে reboot এর পর অবস্থাটা সঙ্গত থাকবে?
+  </p>
+</div>
+
+<h2 id="c26-scenarios">কী কী ভুল হতে পারে</h2>
+
+<p>
+  তিনটে লেখার মধ্যে যেকোনো উপসেট সফল হতে পারে। প্রতিটা
+  ক্ষেত্রের পরিণতি আলাদা, আর কয়েকটা অন্যদের চেয়ে অনেক
+  খারাপ:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>কী লেখা হলো</th><th>ফলাফল</th><th>কতটা খারাপ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>শুধু <strong>data block</strong></td>
+      <td>কেউ ওই block এর কথা জানে না — data হারাল</td>
+      <td>সহনীয় (fs সঙ্গত)</td>
+    </tr>
+    <tr>
+      <td>শুধু <strong>inode</strong></td>
+      <td>inode একটা block এ point করছে যা bitmap এ মুক্ত।<br>
+          পরে কেউ ওই block পাবে → <strong>দুজনে একই block</strong></td>
+      <td><strong>মারাত্মক</strong> — data corruption</td>
+    </tr>
+    <tr>
+      <td>শুধু <strong>bitmap</strong></td>
+      <td>Block দখল দেখাচ্ছে কিন্তু কেউ ব্যবহার করছে না</td>
+      <td>space leak (সহনীয়)</td>
+    </tr>
+    <tr>
+      <td>inode + bitmap, data নয়</td>
+      <td>File এ আগের কারো আবর্জনা দেখা যাবে</td>
+      <td><strong>নিরাপত্তা সমস্যা!</strong></td>
+    </tr>
+    <tr>
+      <td>inode + data, bitmap নয়</td>
+      <td>অসঙ্গতি — block টা পরে আবার বিতরণ হতে পারে</td>
+      <td>মারাত্মক</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  এর নাম <strong>crash-consistency problem</strong>।
+  লক্ষ করুন চতুর্থ সারিটা — পুরনো data প্রকাশ হয়ে যাওয়া
+  একটা নিরাপত্তা দুর্বলতা, শুধু bug নয়। এই কারণেই
+  file system নতুন block কে শূন্য করে দেয় (demand
+  zeroing)।
+</p>
+
+<h2 id="c26-fsck">পুরনো সমাধান — fsck</h2>
+
+<p>
+  প্রথম পদ্ধতি ছিল: crash হতে দাও, তারপর reboot এ পুরো
+  file system পরীক্ষা করে সারাও।
+</p>
+
+<pre class="ascii"><code>  fsck (file system check) যা করে:
+
+  • superblock       — যুক্তিসঙ্গত দেখাচ্ছে কি?
+  • free block       — সব inode স্ক্যান করে bitmap
+                       আবার হিসাব করো
+  • inode state      — প্রতিটা inode এর type বৈধ কি?
+  • inode link       — পুরো directory tree হেঁটে
+                       link count আবার গোনো
+                       (এতিম inode → /lost+found এ)
+  • duplicate        — দুটো inode একই block দাবি করছে?
+  • directory        — "." আর ".." ঠিক আছে কি?
+
+  সমস্যা: এটা পুরো disk স্ক্যান করে।</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>fsck crash এর পর আমার file গুলো
+    সারিয়ে দেবে।"</strong>
+  </p>
+  <p>
+    <code>fsck</code> <strong>file system এর metadata</strong>
+    সঙ্গত করে — আপনার data নয়। সে নিশ্চিত করে যে
+    structure টা বৈধ, যাতে kernel crash না করে।
+  </p>
+  <p>
+    আপনার অর্ধেক-লেখা file টা অর্ধেকই থাকবে। আপনার
+    হারানো data ফেরত আসবে না। <code>/lost+found</code>
+    এ যা পাবেন সেটা নাম-হারানো inode — প্রায়ই অব্যবহার্য।
+  </p>
+  <p>
+    আর মূল সমস্যা: <strong>fsck এর সময় disk এর আকারের
+    সাথে বাড়ে</strong>। ১০TB drive এ একটা পূর্ণ fsck
+    ঘণ্টা লাগতে পারে — আর ঠিক সেই সময়ে আপনার service
+    বন্ধ। এটাই journaling এর অস্তিত্বের কারণ।
+  </p>
+</div>
+
+<h2 id="c26-journal">Journaling — লেখার আগে লেখা</h2>
+
+<p>
+  মূল ধারণা: <strong>কাজটা করার আগে লিখে রাখো কী করতে
+  যাচ্ছ</strong>। Crash হলে ওই নোট পড়ে কাজটা শেষ করা যায়,
+  বা বাতিল করা যায়।
+</p>
+
+<p>
+  এর আরেক নাম <strong>WAL (Write-Ahead Logging)</strong> —
+  আর এই নামটাই আপনার database এ ব্যবহৃত হয়।
+</p>
+
+<pre class="ascii"><code>  Disk এর layout এ একটা নতুন অংশ:
+
+  ┌────────┬──────────────────┬──────────────────────────┐
+  │ super  │     JOURNAL      │   বাকি file system       │
+  └────────┴──────────────────┴──────────────────────────┘
+              (একটা circular log)
+
+  একটা transaction:
+
+  ┌─────┬──────┬──────┬──────┬─────┐
+  │ TxB │ I[v2]│ B[v2]│ D[v2]│ TxE │
+  └─────┴──────┴──────┴──────┴─────┘
+    ▲                              ▲
+    │                              │
+   শুরুর marker              শেষের marker
+   (transaction ID)          (একই TID)
+
+  TxE থাকা মানে: পুরো transaction টা journal এ আছে।
+  TxE না থাকা মানে: অসম্পূর্ণ → পুরোটা বাতিল।</code></pre>
+
+<p>
+  ক্রমটা গুরুত্বপূর্ণ, আর এখানে একটা সূক্ষ্ম কিন্তু
+  অপরিহার্য বিস্তারিত আছে:
+</p>
+
+<pre class="ascii"><code>  ধাপ ১: journal write
+          TxB + সব metadata/data journal এ লেখো
+          ═══ fsync ═══  (chapter 25!)
+
+  ধাপ ২: journal commit
+          TxE লেখো
+          ═══ fsync ═══
+          ← এই বিন্দুর পর transaction "committed"
+
+  ধাপ ৩: checkpoint
+          আসল জায়গায় (inode, bitmap, data) লেখো
+          ═══ fsync ═══
+
+  ধাপ ৪: journal এর ওই অংশ মুক্ত করো
+
+
+  ⚠ কেন ধাপ ১ আর ২ আলাদা fsync?
+
+  যদি একসাথে পাঠানো হয়, disk reorder করতে পারে
+  (chapter 20 এর queue, chapter 21 এর FTL) —
+  তাহলে TxE আগে লেখা হয়ে যেতে পারে যখন data
+  এখনো যায়নি।
+
+  ফল: crash এ journal বলছে "committed" কিন্তu
+      ভিতরের data আবর্জনা → আমরা সেই আবর্জনা
+      বিশ্বাস করে আসল file system এ লিখব!
+
+  এই কারণেই TxE আলাদা করে, data লেখা নিশ্চিত
+  হওয়ার পরে পাঠানো হয়।</code></pre>
+
+<p>
+  Recovery টা তখন সরল আর দ্রুত:
+</p>
+
+<pre class="ascii"><code>  Reboot এর পর — শুধু JOURNAL পড়ো, পুরো disk নয়:
+
+  প্রতিটা transaction এর জন্য:
+    TxE আছে?  ──▶ হ্যাঁ: আবার চালাও (redo)
+                        → আসল জায়গায় লেখো
+                        → নিরীহ, কারণ idempotent
+              ──▶ না:   বাতিল করো (কিছুই হয়নি ধরে নাও)
+
+  সময়: journal এর আকারের সমান (MB), disk এর নয় (TB)
+  → কয়েক সেকেন্ড, ঘণ্টা নয়
+
+  এই পদ্ধতির নাম redo logging।</code></pre>
+
+<h2 id="c26-modes">ext4 এর তিনটে mode — একটা বাস্তব পছন্দ</h2>
+
+<p>
+  সব কিছু journal এ লিখলে প্রতিটা byte দুবার লেখা হয় —
+  chapter 21 এর ভাষায় WAF ২x। তাই একটা trade-off আছে,
+  আর ext4 তিনটে বিকল্প দেয়:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Mode</th><th>Journal এ যায়</th><th>গ্যারান্টি</th><th>খরচ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>data=journal</code></td>
+      <td>metadata + <strong>data</strong></td>
+      <td>সবচেয়ে শক্ত</td>
+      <td>সব data দুবার লেখা</td>
+    </tr>
+    <tr>
+      <td><code>data=ordered</code><br>(default)</td>
+      <td>শুধু metadata,<br>কিন্তু data <em>আগে</em> লেখা হয়</td>
+      <td>metadata সঙ্গত,<br>আর কোনো আবর্জনা দেখা যাবে না</td>
+      <td>মাঝারি</td>
+    </tr>
+    <tr>
+      <td><code>data=writeback</code></td>
+      <td>শুধু metadata,<br>ক্রমের কোনো নিশ্চয়তা নেই</td>
+      <td>metadata সঙ্গত,<br><strong>কিন্তু পুরনো আবর্জনা দেখা যেতে পারে</strong></td>
+      <td>সবচেয়ে কম</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <code>data=ordered</code> এর কৌশলটা সুন্দর: data টা
+  journal এ লেখা হয় না (তাই দ্বিগুণ লেখা নেই), কিন্তু
+  metadata commit করার <em>আগে</em> data লেখা নিশ্চিত করা
+  হয়। তাই inode যখন একটা block এ point করে, ওই block এ
+  সঠিক data আছেই — উপরের সেই "নিরাপত্তা সমস্যা" সারিটা
+  এভাবে বন্ধ হয়।
+</p>
+
+<pre><code># আপনার mode কোনটা
+$ mount | grep -o 'data=[a-z]*'
+data=ordered
+
+# journal এর আকার আর অবস্থা
+$ sudo dumpe2fs -h /dev/nvme0n1p2 2>/dev/null | grep -i journal
+Journal inode:            8
+Journal backup:           inode blocks
+Journal features:         journal_64bit journal_checksum_v3
+Journal size:             1024M
+
+# XFS এ একই ধারণা, আলাদা নাম
+$ sudo xfs_info /dev/nvme1n1 | grep log</code></pre>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP ext3 কে "a relatively modern journaling file
+    system" বলে। ২০২৬ এ:
+  </p>
+  <ul>
+    <li>
+      <strong>ext3 আর নেই</strong> — আলাদা driver হিসেবে
+      Linux 4.3 (২০১৫) এ সরানো হয়েছে। ext4 driver ই
+      ext3 filesystem mount করে।
+    </li>
+    <li>
+      <strong>Barrier BIO সরানো হয়েছে</strong> (kernel
+      2.6.37, ২০১০)। আজকের mechanism হলো প্রতিটা
+      request এ <code>REQ_PREFLUSH</code> আর
+      <code>REQ_FUA</code> flag। ধারণাটা একই — ক্রম
+      আরোপ করা — কিন্তু নাম আর API বদলেছে, তাই পুরনো
+      documentation বিভ্রান্তিকর।
+    </li>
+    <li>
+      <strong>Journal checksum</strong> যোগ হয়েছে
+      (<code>journal_checksum</code>) — TxE এর সাথে
+      একটা checksum রাখলে দুটো fsync এর বদলে একটায়
+      কাজ চলে, কারণ checksum মিললেই বোঝা যায় পুরো
+      transaction পৌঁছেছে। একটা সূক্ষ্ম কিন্তু
+      উল্লেখযোগ্য optimization।
+    </li>
+    <li>
+      <strong>CoW file system</strong> (btrfs, ZFS)
+      journaling <em>ব্যবহার করেই না</em> — তারা কখনো
+      জায়গায় লেখে না, তাই crash এ পুরনো version অটুট
+      থাকে। পুরো সমস্যাটাই এড়িয়ে যায়, আর তার বদলে
+      অন্য খরচ নেয় (fragmentation, GC)।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c26-wal">এটাই আপনার database এর WAL</h2>
+
+<p>
+  এখন সবচেয়ে কাজের যোগসূত্রটা: উপরের protocol টা আর
+  Postgres এর WAL <strong>একই জিনিস</strong>, একই কারণে,
+  একই ধাপে।
+</p>
+
+<pre class="ascii"><code>  File system                    Postgres
+  ─────────────────────────      ─────────────────────────
+  journal                    ↔   WAL (pg_wal/)
+  TxB / TxE                  ↔   transaction record + commit record
+  checkpoint                 ↔   CHECKPOINT
+  journal মুক্ত করা          ↔   WAL segment recycle
+  redo recovery              ↔   crash recovery (startup এ)
+  data=ordered এর ক্রম       ↔   full_page_writes
+
+  একই ধাপ:
+  ১. WAL এ লেখো + fsync       ← chapter 25 এর fdatasync
+  ২. commit record + fsync    ← এখন transaction committed,
+                                 client কে হ্যাঁ বলা যায়
+  ৩. পরে: dirty page গুলো
+     আসল data file এ লেখো     ← checkpoint
+  ৪. পুরনো WAL মুক্ত করো</code></pre>
+
+<pre><code># Postgres এর WAL এই ধাপগুলোই দেখায়
+$ psql -c "SELECT pg_current_wal_lsn(), pg_walfile_name(pg_current_wal_lsn());"
+
+# checkpoint কত ঘন ঘন হচ্ছে — খুব ঘন মানে WAL ছোট
+$ psql -c "SELECT * FROM pg_stat_bgwriter;" 
+# checkpoints_timed vs checkpoints_req:
+#   req বেশি মানে max_wal_size ছোট, checkpoint জোর করে হচ্ছে
+#   → chapter 21 এর write amplification বাড়ছে
+
+# MySQL এ একই জিনিস
+mysql&gt; SHOW ENGINE INNODB STATUS\G   -- LOG অংশ দেখুন</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার file system journaled, তাই crash এ
+    data হারাতে পারি না।"</strong>
+  </p>
+  <p>
+    Journaling <strong>file system এর metadata</strong>
+    সঙ্গত রাখে। সে নিশ্চিত করে না যে <em>আপনার
+    application এর</em> data সঠিক বা সম্পূর্ণ।
+  </p>
+  <pre><code>/* journaled fs, তবু data হারাবে */
+write(fd, "important", 9);
+/* ⚡ power loss — fsync করা হয়নি */
+
+/* Reboot: file system পুরোপুরি সঙ্গত।
+   কোনো fsck লাগেনি। কোনো corruption নেই।
+   আপনার "important" শব্দটা শুধু নেই। */</code></pre>
+  <p>
+    দুটো আলাদা গ্যারান্টি:
+  </p>
+  <ul>
+    <li>
+      <strong>Journaling</strong> → file system ভাঙবে না
+      (structural integrity)
+    </li>
+    <li>
+      <strong><code>fsync</code></strong> → আপনার data
+      টিকবে (durability)
+    </li>
+  </ul>
+  <p>
+    Chapter 25 এর পুরো বিষয়টা এই দ্বিতীয়টা নিয়ে, আর
+    journaling সেটা দেয় না। একটা journaled file system
+    এ <code>fsync</code> ছাড়া লেখা ঠিক ততটাই অস্থায়ী।
+  </p>
+</div>
+
+<h2 id="c26-torn">Torn write — একটা page ও atomic নয়</h2>
+
+<p>
+  আরেকটা সমস্যা যা প্রায়ই অনুপস্থিত থাকে। আপনি ধরে নেন
+  একটা ৪KB লেখা হয় সম্পূর্ণ হবে নয় একেবারেই হবে না।
+  সেটা নিশ্চিত নয়।
+</p>
+
+<pre class="ascii"><code>  Postgres এর page ৮KB, কিন্তু device এর sector ৫১২B বা ৪KB।
+
+  ৮KB লেখা = একাধিক device write
+
+  ⚡ মাঝখানে power loss:
+
+  ┌────────┬────────┐
+  │ নতুন   │ পুরনো  │   ← অর্ধেক-নতুন page
+  │ ৪KB    │ ৪KB    │      কোনো checksum মিলবে না,
+  └────────┴────────┘      আর কোনো version ও বৈধ নয়
+
+  এর নাম TORN PAGE বা torn write।
+
+  সমাধানগুলো:
+  • Postgres: full_page_writes = on
+      checkpoint এর পর প্রথম বদলে পুরো page টা
+      WAL এ লেখা হয় → recovery তে সেটা দিয়ে
+      page পুনর্গঠন করা যায়
+      (দাম: WAL অনেক বড় হয়, WAF বাড়ে)
+  • MySQL: doublewrite buffer
+      একই ধারণা — আগে একটা আলাদা জায়গায় লেখো
+  • btrfs/ZFS: CoW — কখনো জায়গায় লেখে না,
+      তাই torn write সম্ভবই নয়</code></pre>
+
+<pre><code># Postgres এ এই সুরক্ষা চালু আছে কি
+$ psql -c "SHOW full_page_writes;"
+ on
+
+# কিছু enterprise SSD ৪KB বা ৮KB atomic write দেয় —
+# তখন full_page_writes বন্ধ করে WAL অর্ধেক করা যায়।
+# কিন্তু drive এর datasheet এ স্পষ্ট প্রতিশ্রুতি
+# ছাড়া এটা করা বিপজ্জনক।
+$ sudo nvme id-ctrl /dev/nvme0 | grep -i awun
+awun : 0        ← atomic write unit; 0 মানে কোনো প্রতিশ্রুতি নেই</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর ধারণাগুলো storage এর বাইরেও সর্বত্র:
+  </p>
+  <ul>
+    <li>
+      <strong>Git</strong> — <code>.git/objects</code>
+      immutable, আর ref update হয় atomic rename দিয়ে।
+      একটা <code>.lock</code> file দিয়ে concurrent
+      writer আটকানো হয়। কার্যত একটা WAL-মুক্ত নকশা:
+      কখনো জায়গায় লেখে না, তাই crash এ পুরনো অবস্থা
+      অটুট — btrfs এর দর্শনের মতো।
+    </li>
+    <li>
+      <strong>Kafka</strong> — পুরো log টাই একটা WAL,
+      আর সেটাই primary data। Journal আর data আলাদা নয়।
+    </li>
+    <li>
+      <strong>etcd / Raft</strong> — distributed
+      consensus এ প্রতিটা node একটা WAL রাখে, আর
+      একটা entry "committed" বলার আগে majority তে
+      fsync হতে হয়। একই protocol, network জুড়ে।
+    </li>
+    <li>
+      <strong>SQLite</strong> এর দুটো mode: rollback
+      journal (undo logging — পুরনো মান জমিয়ে রাখে)
+      আর WAL mode (redo logging — উপরের পদ্ধতি)।
+      WAL mode এ concurrent reader আর writer সম্ভব,
+      তাই সেটাই সাধারণত পছন্দ।
+    </li>
+  </ul>
+  <p>
+    সাধারণ নীতি: <strong>একাধিক জায়গায় লেখা লাগলে,
+    আগে একটা জায়গায় নিয়তটা লিখে রাখো</strong>। এটা
+    file system, database, distributed consensus — সব
+    জায়গায় একই।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c26-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      তিনটে লেখার (bitmap, inode, data) মধ্যে "শুধু inode
+      লেখা হলো" সবচেয়ে খারাপ, আর "শুধু data লেখা হলো"
+      সহনীয়। কেন এই অসমতা? আর "inode + bitmap কিন্তু
+      data নয়" কেন একটা <em>নিরাপত্তা</em> সমস্যা?
+    </li>
+    <li>
+      Journal এ TxE আলাদা করে দ্বিতীয় fsync দিয়ে
+      পাঠানো হয়। যদি একসাথে পাঠানো হতো, ঠিক কী ভুল
+      হতে পারত? Chapter 20 এর device queue আর
+      chapter 21 এর FTL দুটোই কীভাবে এই সমস্যায়
+      অবদান রাখে?
+    </li>
+    <li>
+      <code>data=ordered</code> data কে journal এ না
+      লিখেও নিরাপত্তা সমস্যাটা বন্ধ করে। কৌশলটা কী?
+      আর <code>data=writeback</code> এ ঠিক কোন
+      পরিস্থিতিতে আপনি অন্য কারো পুরনো data দেখতে পাবেন?
+    </li>
+    <li>
+      একটা journaled file system এ <code>fsync</code>
+      ছাড়া লেখা crash এ হারায় — যদিও fs সম্পূর্ণ সঙ্গত
+      থাকে। "Structural integrity" আর "durability"
+      এই দুটো গ্যারান্টি আলাদা করে ব্যাখ্যা করুন, আর
+      বলুন কোনটা কে দেয়।
+    </li>
+    <li>
+      Postgres এর <code>checkpoints_req</code> যদি
+      <code>checkpoints_timed</code> এর চেয়ে অনেক বেশি
+      হয়, সেটা কী বলছে? Chapter 21 এর write
+      amplification এর সাথে এর সম্পর্ক কী, আর কোন
+      setting বদলাবেন?
+    </li>
+    <li>
+      Torn write সম্ভব কারণ একটা ৮KB লেখা একাধিক
+      device write এ ভাঙে। btrfs/ZFS এর CoW নকশা এই
+      সমস্যাটা সম্পূর্ণ এড়িয়ে যায় — কীভাবে? আর তার
+      বদলে তারা কোন খরচ নেয়?
+    </li>
+  </ol>
+</div>

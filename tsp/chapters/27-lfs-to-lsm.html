@@ -1,0 +1,492 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 43, pdf p528–542 · + LSM-tree, RocksDB</span>
+  </div>
+  <h1>LFS থেকে LSM-tree</h1>
+  <p class="ch-lede">
+    সব লেখা sequential করে দিলে কী হয়? ১৯৯১ সালে এই প্রশ্নের
+    উত্তর ছিল একটা file system যা প্রায় কেউ ব্যবহার করেনি।
+    কিন্তু ধারণাটা বেঁচে গেছে — আজ সেটা আপনার SSD এর firmware
+    আর আপনার database এর storage engine, দুটোতেই চলছে।
+  </p>
+</div>
+
+<p>
+  Chapter 26 এ journaling দেখেছি: data দুবার লেখা হয় —
+  একবার journal এ, একবার আসল জায়গায়। LFS একটা মৌলিক
+  প্রশ্ন করল: <strong>শুধু journal টাই যদি রাখি?</strong>
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Random write ধীর (HDD তে seek, SSD তে write
+    amplification)। যদি file system <em>কখনো</em> জায়গায়
+    না লিখে, শুধু নতুন জায়গায় append করে — তাহলে কী
+    সুবিধা হয়, আর কী নতুন সমস্যা জন্মায়?
+  </p>
+</div>
+
+<h2 id="c27-idea">LFS এর মূল ধারণা</h2>
+
+<pre class="ascii"><code>  প্রথাগত file system (ext4):
+    একটা block বদলাতে → সেই জায়গায় লেখো (in-place)
+    → random write
+
+  LFS (Log-structured File System):
+    কখনো জায়গায় লেখো না → সবসময় নতুন জায়গায়
+    → পুরো disk একটা বিশাল append-only log
+
+  ┌──────────────────────────────────────────────────────┐
+  │ [seg 0][seg 1][seg 2][seg 3][ফাঁকা...............]   │
+  └──────────────────────────────────────────────────────┘
+                            ▲
+                            └── এখানে পরের লেখা যাবে
+
+  কৌশল: ছোট ছোট লেখা RAM এ জমাও (একটা segment এ,
+        কয়েক MB), তারপর পুরো segment একসাথে লেখো।
+        → একটা বড় sequential write</code></pre>
+
+<p>
+  কিন্তু এতে একটা সমস্যা: একটা inode বদলালে সে নতুন জায়গায়
+  যায়। তাহলে তাকে খুঁজে পাব কীভাবে? Directory তো পুরনো
+  ঠিকানা রেখেছে।
+</p>
+
+<p>
+  আর directory হালনাগাদ করলে সে-ও নতুন জায়গায় যাবে, তাহলে
+  তার parent... এভাবে root পর্যন্ত। এর নাম
+  <strong>recursive update problem</strong>।
+</p>
+
+<pre class="ascii"><code>  LFS এর সমাধান — imap (inode map):
+
+  একটা indirection স্তর যোগ করো:
+
+    inode number  ──▶  imap  ──▶  inode এর বর্তমান ঠিকানা
+
+  এখন inode সরলে শুধু imap বদলায়, directory অপরিবর্তিত।
+  শৃঙ্খলটা ভেঙে গেল।
+
+  কিন্তু imap নিজে কোথায়? সেটাও log এই লেখা হয়,
+  টুকরো টুকরো করে, আর তার ঠিকানা থাকে একটা স্থির
+  জায়গায় — checkpoint region (CR):
+
+  ┌────┬─────────────────────────────────────────────┐
+  │ CR │ [seg][seg][seg: imap টুকরো + data + inode] │
+  └────┴─────────────────────────────────────────────┘
+    ▲
+    └── শুধু এটাই স্থির জায়গায়, আর মাঝে মাঝে হালনাগাদ হয়
+
+  Boot এ: CR পড়ো → imap খুঁজে নাও → সব পাওয়া গেল</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Copy-on-write file system এ একটা inode সরালে
+    তার parent, তার parent — root পর্যন্ত সব হালনাগাদ করতে
+    হবে। তাই CoW সহজাতভাবে ধীর।"</strong>
+  </p>
+  <p>
+    এটা recursive update problem, আর এর সমাধান পরিচিত:
+    <strong>একটা indirection স্তর</strong>। LFS এ সেটা
+    imap; btrfs এ root tree; ZFS এ uberblock এর শৃঙ্খল।
+  </p>
+  <p>
+    লক্ষ করুন এটা chapter 9 এর page table এর মতোই একটা
+    কৌশল — একটা mapping স্তর যোগ করলে নিচের জিনিস সরানো
+    যায় উপরের কাউকে না জানিয়ে। একই নীতি, ভিন্ন প্রসঙ্গ।
+  </p>
+</div>
+
+<h2 id="c27-cleaning">Segment cleaning — আসল খরচ</h2>
+
+<p>
+  Append-only মানে পুরনো version গুলো পড়ে থাকে। Disk
+  শেষ হওয়ার আগে সেগুলো পরিষ্কার করতে হবে।
+</p>
+
+<pre class="ascii"><code>  Segment A: [V][i][V][i]    ← ২টা live, ২টা মৃত
+  Segment B: [i][V][i][i]    ← ১টা live
+
+  Cleaning:
+    A আর B এর live block গুলো পড়ো
+    → একটা নতুন segment C তে লেখো
+    → A আর B মুক্ত করো
+
+  Segment C: [V][V][V][ ]
+
+  ⚠ এটা chapter 21 এর SSD garbage collection এর
+    হুবহু একই জিনিস — একই সমস্যা, একই সমাধান,
+    এমনকি একই নাম (cleaning / GC)।
+
+  আর একই খরচ: write amplification।
+  User কিছু লেখেনি, তবু ৩টা block লেখা হলো।</code></pre>
+
+<p>
+  Cleaning এর সময় দুটো সিদ্ধান্ত নিতে হয়:
+  <strong>কখন</strong> পরিষ্কার করব, আর <strong>কোন
+  segment</strong>? দ্বিতীয়টার উত্তর একটা সুন্দর
+  অন্তর্দৃষ্টি:
+</p>
+
+<pre class="ascii"><code>  Hot segment  — ঘন ঘন বদলায় (যেমন একটা log file)
+                 → অপেক্ষা করো! আরও block এমনিতেই
+                   মৃত হবে, তখন পরিষ্কার করা সস্তা
+
+  Cold segment — বদলায় না (যেমন একটা archive)
+                 → এখনই পরিষ্কার করো, কারণ পরে
+                   অপেক্ষা করে কোনো লাভ নেই
+
+  নীতি: hot data কে সময় দাও, cold data দ্রুত সারাও।
+
+  আর এই hot/cold আলাদা করার ধারণাটাই
+  LSM-tree এর leveled বনাম tiered compaction —
+  নিচে দেখব।</code></pre>
+
+<div class="box old">
+  <div class="box-t">LFS এর ভাগ্য — আর তার ধারণার ভাগ্য</div>
+  <p>
+    একটা <em>file system</em> হিসেবে LFS প্রায় ব্যর্থ।
+    NetBSD এ একটা implementation আছে, কিন্তু কেউ
+    উৎপাদনে ব্যবহার করে না। কারণ cleaning এর খরচটা
+    অনির্দেশ্য — ঠিক যখন disk ভরে আসে আর আপনি ব্যস্ত,
+    তখনই cleaner আপনার সাথে bandwidth এর জন্য লড়ে।
+  </p>
+  <p>
+    কিন্তু <strong>ধারণাটা সর্বত্র জিতেছে</strong>, আর
+    এটাই এই chapter পড়ার আসল কারণ:
+  </p>
+  <ul>
+    <li>
+      <strong>SSD এর FTL</strong> (chapter 21) — একটা
+      log-structured ব্যবস্থা, firmware এ। আপনার প্রতিটা
+      SSD এর ভিতরে LFS চলছে।
+    </li>
+    <li>
+      <strong>LSM-tree</strong> — RocksDB, LevelDB,
+      Cassandra, ScyllaDB, HBase, ClickHouse এর
+      storage engine। নিচে বিস্তারিত।
+    </li>
+    <li>
+      <strong>btrfs, ZFS</strong> — CoW, কখনো জায়গায়
+      লেখে না। তাই chapter 26 এর journaling ও লাগে না।
+    </li>
+    <li>
+      <strong>F2FS</strong> — flash এর জন্য বিশেষভাবে
+      বানানো log-structured fs, Android এ ব্যাপকভাবে
+      ব্যবহৃত। LFS এর সবচেয়ে সরাসরি উত্তরসূরি, আর
+      এটা সফল — কারণ নিচের device ও log-structured।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c27-lsm">LSM-tree — LFS এর আসল উত্তরসূরি</h2>
+
+<p>
+  <strong>LSM-tree (Log-Structured Merge-tree)</strong> —
+  এটাই আজকের সবচেয়ে ব্যবহৃত write-optimized storage
+  structure, আর এর প্রতিটা অংশ LFS এর একটা অংশের সাথে
+  মেলে।
+</p>
+
+<pre class="ascii"><code>  ┌─ RAM ──────────────────────────────────────────┐
+  │  memtable (একটা sorted structure, যেমন skiplist)│
+  │  সব লেখা এখানে আসে — RAM এ, তাই দ্রুত           │
+  │  সাথে একটা WAL (chapter 26!) durability এর জন্য │
+  └────────────────────┬───────────────────────────┘
+                       │ ভরে গেলে: flush
+                       ▼
+  ┌─ DISK ─────────────────────────────────────────┐
+  │ L0: [SST][SST][SST][SST]   ← সদ্য flush করা,   │
+  │                               key range overlap │
+  │                               করতে পারে          │
+  │      │ compaction                               │
+  │      ▼                                          │
+  │ L1: [SST][SST][SST]        ← sorted, no overlap │
+  │      │                        (~10× বড়)         │
+  │      ▼                                          │
+  │ L2: [SST][SST][SST][SST]   ← আরও ~10× বড়        │
+  │      ▼                                          │
+  │ L3: ...                                         │
+  └─────────────────────────────────────────────────┘
+
+  SST = Sorted String Table — একটা immutable,
+        sorted key-value file
+
+  LFS এর সাথে মিল:
+    memtable       ↔  RAM এর segment buffer
+    SSTable        ↔  disk এ লেখা segment
+    compaction     ↔  segment cleaning
+    WAL            ↔  chapter 26 এর journal
+    level          ↔  hot/cold আলাদা করার ব্যবস্থা</code></pre>
+
+<div class="codewrap"><span class="lang">text</span>
+<pre><code># A write
+put(key, value)
+  1. append to WAL, fsync      ← durability (chapter 25)
+  2. insert into memtable      ← RAM, fast
+  3. return OK                 ← done, no disk seek
+
+# A read — this is where LSM pays
+get(key)
+  1. memtable দেখো             ← পাওয়া গেলে শেষ
+  2. L0 এর প্রতিটা SST দেখো    ← overlap করে, তাই সবগুলো
+  3. L1, L2, L3... এ binary search
+     (প্রতি level এ একটাই SST হতে পারে key টা)
+  4. প্রতিটা SST এ: bloom filter → index → data block
+
+# ⚠ একটা read এ একাধিক file ছুঁতে হতে পারে
+#   এটাই read amplification</code></pre></div>
+
+<h2 id="c27-amplification">তিনটে amplification — আর ত্রিভুজটা</h2>
+
+<p>
+  এখানে সবচেয়ে গুরুত্বপূর্ণ ধারণা, আর এটাই storage
+  engine বাছার কাঠামো:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>মানে</th><th>খারাপ হলে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Write amplification</strong></td>
+      <td>১ byte লিখতে disk এ কত byte যায়</td>
+      <td>SSD ক্ষয়, bandwidth নষ্ট</td>
+    </tr>
+    <tr>
+      <td><strong>Read amplification</strong></td>
+      <td>১টা key পড়তে কতগুলো I/O</td>
+      <td>Read latency বাড়ে</td>
+    </tr>
+    <tr>
+      <td><strong>Space amplification</strong></td>
+      <td>যুক্তিগত data এর তুলনায় কত disk লাগে</td>
+      <td>Disk খরচ বাড়ে</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<pre class="ascii"><code>  RUM conjecture — তিনটেই একসাথে ভালো করা যায় না।
+  যেকোনো দুটো বেছে নাও।
+
+              write amp
+                 /\
+                /  \
+               /    \
+              /      \
+             /        \
+      read  ──────────  space
+       amp                amp
+
+  Leveled compaction (RocksDB default):
+    প্রতি level এ একটাই SST একটা key ধরে
+    → read amp কম, space amp কম
+    → কিন্তু write amp বেশি (~১০–৩০×)
+    ভালো: read-heavy workload
+
+  Tiered/universal compaction (Cassandra):
+    একই level এ একাধিক overlapping SST জমতে দাও
+    → write amp কম (~৫×)
+    → কিন্তু read amp বেশি, space amp বেশি
+    ভালো: write-heavy workload
+
+  B-tree (Postgres, MySQL):
+    জায়গায় লেখে
+    → read amp সবচেয়ে কম (~১টা I/O)
+    → write amp মাঝারি কিন্তু RANDOM
+    ভালো: read-heavy, আর range query তে শক্তিশালী</code></pre>
+
+<p>
+  এই ত্রিভুজটা মনে রাখলে "কোন database বাছব" প্রশ্নের
+  একটা কাঠামো পাওয়া যায় — আর সেটা marketing এর বাইরে।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"LSM-tree সব লেখা sequential করে, তাই এটা
+    সবসময় B-tree এর চেয়ে দ্রুত আর SSD এর জন্য ভালো।"</strong>
+  </p>
+  <p>
+    Sequential লেখা হলেও LSM এর write amplification
+    <em>বেশি</em> হতে পারে — কারণ compaction একই data
+    বারবার লেখে। Leveled compaction এ একটা byte তার
+    জীবনকালে ১০–৩০ বার লেখা হতে পারে।
+  </p>
+  <p>
+    আর এখন chapter 21 এর কথাটা যোগ করুন:
+    <strong>amplification স্তরে স্তরে গুণ হয়</strong>।
+  </p>
+  <pre><code>Application: 1 byte লিখল
+  ↓
+LSM compaction:  × ২০    → 20 byte
+  ↓
+SSD এর FTL (GC): × ৩     → 60 byte NAND এ
+
+একটা byte এর জন্য ৬০ byte flash লেখা।
+এই কারণেই write-heavy LSM workload এ SSD
+প্রত্যাশার চেয়ে অনেক দ্রুত ক্ষয়ে যায়।</code></pre>
+  <p>
+    তাই সঠিক প্রশ্ন "sequential কি না" নয়, বরং
+    <strong>"মোট কত byte লেখা হচ্ছে"</strong>। RocksDB
+    তার নিজের WAF report করে, আর সেটা দেখা উচিত।
+  </p>
+</div>
+
+<h2 id="c27-bloom">Bloom filter — read amplification এর ওষুধ</h2>
+
+<p>
+  LSM এর read সমস্যাটা মূলত "এই key টা এই SST তে আছে
+  কি?" — আর বেশিরভাগ সময় উত্তর <em>না</em>। প্রতিবার
+  disk এ গিয়ে দেখা অপচয়।
+</p>
+
+<pre class="ascii"><code>  Bloom filter — একটা probabilistic set
+
+  "key টা আছে?" প্রশ্নের উত্তর:
+    "না"       → নিশ্চিতভাবে নেই  ✓ (কোনো false negative নেই)
+    "হয়তো হ্যাঁ" → থাকতে পারে, দেখতে হবে
+
+  ┌───────────────────────────────────┐
+  │ 0 1 0 0 1 1 0 0 1 0 1 0 0 0 1 0   │  একটা bit array
+  └───────────────────────────────────┘
+     ▲     ▲       ▲
+     └─────┴───────┴── k টা hash function একটা key কে
+                       k টা bit এ map করে
+
+  insert: সব k bit ১ করো
+  query:  সব k bit ১ আছে?  না হলে নিশ্চিতভাবে নেই
+
+  খরচ: প্রতি key ~১০ bit → ~১% false positive
+       ১ কোটি key এর জন্য মাত্র ~১২ MB RAM
+
+  ফল: অপ্রয়োজনীয় disk read এর ~৯৯% বেঁচে যায়।</code></pre>
+
+<pre><code># RocksDB এ এই সংখ্যাগুলো দেখা
+$ # LOG file এ compaction statistics থাকে
+$ grep -A20 'Compaction Stats' /var/lib/rocksdb/LOG | head -25
+# W-Amp কলামটা দেখুন — level প্রতি write amplification
+
+# bloom filter কত কাজে লাগছে
+$ grep -E 'bloom.*useful|bloom.*full_positive' /var/lib/rocksdb/LOG
+
+# Cassandra এ
+$ nodetool tablestats keyspace.table | grep -i bloom
+        Bloom filter false positives: 42
+        Bloom filter false ratio: 0.00081</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর ধারণাগুলো সরাসরি আপনার database
+    পছন্দে আর tuning এ আসে:
+  </p>
+  <ul>
+    <li>
+      <strong>Postgres / MySQL</strong> — B-tree,
+      জায়গায় লেখে। Read আর range query তে শক্তিশালী।
+      Write heavy হলে chapter 26 এর
+      <code>full_page_writes</code> আর checkpoint
+      এর খরচ দেখুন।
+    </li>
+    <li>
+      <strong>RocksDB / LevelDB</strong> (Kafka Streams,
+      Flink state, CockroachDB, TiKV এর নিচে) — LSM,
+      leveled compaction। Write-heavy তে ভালো, কিন্তু
+      compaction একটা background খরচ যা আপনার p99 তে
+      দেখা যায়।
+    </li>
+    <li>
+      <strong>Cassandra / ScyllaDB</strong> — LSM,
+      tiered compaction পছন্দ করে। তাই write অত্যন্ত
+      দ্রুত, কিন্তু read এ একাধিক SST ছুঁতে হয় আর
+      disk বেশি লাগে।
+    </li>
+    <li>
+      <strong>ClickHouse</strong> — LSM-ধরনের
+      MergeTree, কিন্তু analytics এর জন্য columnar।
+      একই compaction ধারণা।
+    </li>
+  </ul>
+  <p>
+    একটা ব্যবহারিক সংকেত: <strong>আপনার LSM database এ
+    p99 latency তে নিয়মিত কাঁটা মানে সম্ভবত
+    compaction</strong>। সেটা chapter 24 এর page cache
+    আর chapter 20 এর device bandwidth নিয়ে আপনার
+    query র সাথে প্রতিযোগিতা করছে। RocksDB এ
+    <code>rate_limiter</code> দিয়ে সেটা সীমিত করা যায়।
+  </p>
+</div>
+
+<h2 id="c27-summary">একই ধারণা, চার স্তরে</h2>
+
+<pre class="ascii"><code>  "কখনো জায়গায় লিখো না, append করো, পরে পরিষ্কার করো"
+
+  ┌────────────────────────────────────────────────┐
+  │ Application:  LSM-tree (RocksDB)               │
+  │               memtable → SST → compaction      │
+  ├────────────────────────────────────────────────┤
+  │ File system:  btrfs/ZFS (CoW) বা F2FS          │
+  │               নতুন block → পুরনো মুক্ত          │
+  ├────────────────────────────────────────────────┤
+  │ Device:       SSD এর FTL                       │
+  │               নতুন page → GC                    │
+  └────────────────────────────────────────────────┘
+
+  তিনটে স্তরেই একই ধারণা, আর তিনটেই write
+  amplification যোগ করে — গুণ হয়ে।
+
+  এই কারণেই একটা LSM database চালানোর সময়
+  file system টা যদি CoW হয় (btrfs), তাহলে
+  amplification দ্বিগুণভাবে বাড়ে। অনেক
+  database এর documentation তাই ext4/XFS
+  সুপারিশ করে, btrfs নয়।</code></pre>
+
+<div class="qs">
+  <h2 id="c27-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Recursive update problem এর সমাধান একটা
+      indirection স্তর (imap)। Chapter 9 এর page table
+      এ কোন সমস্যাটা একই কৌশলে সমাধান হয়? দুটোর মধ্যে
+      সাধারণ নীতিটা এক বাক্যে বলুন।
+    </li>
+    <li>
+      LFS এর cleaning নীতি বলে "hot segment এ অপেক্ষা
+      করো, cold segment দ্রুত পরিষ্কার করো"। যুক্তিটা
+      ব্যাখ্যা করুন, আর দেখান এটা LSM এর leveled বনাম
+      tiered compaction এর সাথে কীভাবে মেলে।
+    </li>
+    <li>
+      RUM conjecture বলে write/read/space amplification
+      এর তিনটেই একসাথে ভালো করা যায় না। আপনার একটা
+      write-heavy time-series workload আছে, আর একটা
+      read-heavy OLTP। প্রতিটার জন্য কোন দুটো বেছে
+      নেবেন, আর কোন engine সেটা দেয়?
+    </li>
+    <li>
+      LSM এর লেখা sequential, তবু write amplification
+      B-tree এর চেয়ে বেশি হতে পারে। কীভাবে? আর
+      chapter 21 এর FTL যোগ করলে একটা byte এর জন্য
+      মোট কত byte NAND এ লেখা হতে পারে?
+    </li>
+    <li>
+      Bloom filter এ false negative নেই কিন্তু false
+      positive আছে। কেন এই অসমতা LSM এর জন্য ঠিক
+      সেই দিকেই কাজে লাগে যেদিকে দরকার? False negative
+      থাকলে কী ভুল হতো?
+    </li>
+    <li>
+      একটা RocksDB-ভিত্তিক service btrfs এ চলছে, আর
+      SSD দ্রুত ক্ষয়ে যাচ্ছে। তিনটে স্তরে amplification
+      চিহ্নিত করুন, আর বলুন কোন একটা পরিবর্তন সবচেয়ে
+      বেশি সাহায্য করবে।
+    </li>
+  </ol>
+</div>

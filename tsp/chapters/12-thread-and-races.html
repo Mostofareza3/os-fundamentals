@@ -1,0 +1,510 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 26–27, pdf p284–309</span>
+  </div>
+  <h1>Thread — আর যে race আপনি দেখতে পান না</h1>
+  <p class="ch-lede">
+    Chapter 1 এ <code>counter++</code> ভুল উত্তর দিয়েছিল, আর আমি
+    বলেছিলাম উত্তরটা পরে আসবে। Part 2 শুরু হচ্ছে সেখান থেকেই।
+    কিন্তু আসল সমস্যাটা ভুল উত্তর নয় — সমস্যা হলো কখনো
+    <em>ঠিক</em> উত্তরও আসে।
+  </p>
+</div>
+
+<p>
+  Part 1 এ process গুলো আলাদা ছিল। প্রত্যেকের নিজের address
+  space, তাই একজন অন্যজনের memory ছুঁতে পারত না — chapter 9 এর
+  page table সেটা নিশ্চিত করত।
+</p>
+
+<p>
+  এখন সেই সুরক্ষাটা ইচ্ছে করে সরিয়ে দিচ্ছি।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একই address space এর ভিতরে একাধিক execution চালাতে হবে —
+    তাতে কাজ ভাগ করা যায়, আর একজন I/O তে আটকে থাকলে অন্যজন
+    চলতে পারে। কিন্তু memory ভাগ করলে যে ভুল হিসাব হয়, সেটা
+    কীভাবে আটকাব?
+  </p>
+</div>
+
+<h2 id="c12-what">Thread কী — process এর সাথে পার্থক্য</h2>
+
+<p>
+  একটা <strong>thread</strong> হলো একটা process এর ভিতরে একটা
+  আলাদা execution path। তার নিজের register আছে, নিজের stack
+  আছে — কিন্তু address space টা ভাগ করা।
+</p>
+
+<pre class="ascii"><code>  একটা process, একটা thread        একটা process, দুটো thread
+  ┌──────────────────────┐         ┌──────────────────────┐
+  │  stack               │         │  stack (thread 1)    │
+  │    ↓                 │         │    ↓                 │
+  │                      │         ├──────────────────────┤
+  │                      │         │  stack (thread 2)    │ ← নতুন!
+  │      (ফাঁকা)         │         │    ↓                 │
+  │                      │         │      (ফাঁকা)         │
+  │    ↑                 │         │    ↑                 │
+  │  heap                │         │  heap      ← ভাগ করা │
+  ├──────────────────────┤         ├──────────────────────┤
+  │  static data         │         │  static data ← ভাগ   │
+  ├──────────────────────┤         ├──────────────────────┤
+  │  code                │         │  code      ← ভাগ করা │
+  └──────────────────────┘         └──────────────────────┘
+
+  লক্ষ করুন: thread 2 এর stack টা address space এর
+  মাঝখানে বসানো হয়েছে। তাই stack এর বৃদ্ধি সীমিত —
+  একটা thread এর stack অন্যটার উপর উঠে যেতে পারে না,
+  কিন্তু আকারটা আগেই ঠিক করে দিতে হয়।</code></pre>
+
+<p>
+  ওই শেষ কথাটা একটা বাস্তব সীমা: Linux এ প্রতিটা thread এর
+  stack default ৮MB (virtual, তাই আসল RAM লাগে না —
+  chapter 9 এর demand paging)। কিন্তু হাজার thread মানে
+  ৮GB virtual address space, আর সেটা ৩২-bit এ সমস্যা করত।
+</p>
+
+<pre><code># thread stack এর আকার
+$ ulimit -s
+8192                      ← KB, অর্থাৎ 8 MB
+
+# একটা process এ কত thread
+$ ls /proc/self/task | wc -l
+
+# প্রতিটা thread এর নিজের stack দেখা
+$ grep -c 'stack' /proc/self/maps</code></pre>
+
+<p>
+  Process এর PCB এর মতো (chapter 2), প্রতিটা thread এর জন্য
+  একটা <strong>TCB (Thread Control Block — একটা thread এর
+  register, stack pointer আর অবস্থা রাখার structure)</strong>
+  থাকে। Context switch এর সময় thread এর register গুলো TCB তে
+  জমা হয় — chapter 4 এর সেই একই mechanism, শুধু address space
+  বদলায় না, তাই সস্তা।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Process switch</th><th>Thread switch</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Register জমা/ফেরত</td><td>হ্যাঁ</td><td>হ্যাঁ</td></tr>
+    <tr><td>Page table root (CR3) বদল</td><td>হ্যাঁ</td><td><strong>না</strong></td></tr>
+    <tr><td>TLB এর অবস্থা</td><td>অনেকটা হারায়</td><td>অটুট থাকে</td></tr>
+    <tr><td>খরচ</td><td class="num">~৫–১০ µs</td><td class="num">~১–৫ µs</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Thread হলো lightweight process, আর এত সস্তা যে
+    যত খুশি বানানো যায়।"</strong>
+  </p>
+  <p>
+    Switch করা সস্তা, কিন্তু thread নিজে সস্তা নয়:
+  </p>
+  <ul>
+    <li>
+      প্রতিটা thread এ ৮MB virtual stack + kernel এ একটা
+      <code>task_struct</code> (~২KB) + একটা kernel stack
+      (~১৬KB)। ১০,০০০ thread মানে kernel এ ~১৮০MB।
+    </li>
+    <li>
+      Chapter 4 এ দেখেছি context switch এর <em>পরোক্ষ</em> খরচ
+      (cache ঠান্ডা হওয়া) সরাসরি খরচের চেয়ে বড়। ৪ core এ
+      ৪০০ thread মানে অবিরাম cache thrashing।
+    </li>
+    <li>
+      Linux এ <strong>kernel process আর thread আলাদা করে
+      দেখে না</strong> — দুটোই একটা <code>task_struct</code>।
+      পার্থক্য শুধু কী কী ভাগ করা হচ্ছে
+      (<code>clone()</code> এর flag)। তাই "kernel process
+      schedule করে, thread userspace এর ব্যাপার" — এটাও ভুল।
+    </li>
+  </ul>
+  <p>
+    এই কারণেই আধুনিক runtime গুলো OS thread এর উপরে নিজের
+    হালকা abstraction বানায় — Go এর goroutine (~২KB stack,
+    বাড়তে পারে), Java এর virtual thread, Rust এর async task।
+    Chapter 19 এ এই দুই স্তরের ব্যবস্থাটা দেখব।
+  </p>
+</div>
+
+<h2 id="c12-api">Thread API</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* threads_basic.c — create two threads, wait for both
+   Build: gcc -o t threads_basic.c -Wall -pthread */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;
+
+void *worker(void *arg) {
+    char *letter = (char *) arg;
+    printf("%s\n", letter);
+    return NULL;                 /* could return a value via pthread_exit */
+}
+
+int main(void) {
+    pthread_t p1, p2;
+    int rc;
+
+    rc = pthread_create(&amp;p1, NULL, worker, "A");
+    if (rc != 0) { fprintf(stderr, "create failed\n"); exit(1); }
+    rc = pthread_create(&amp;p2, NULL, worker, "B");
+    if (rc != 0) { fprintf(stderr, "create failed\n"); exit(1); }
+
+    /* Without join, main could return and kill both threads. */
+    pthread_join(p1, NULL);
+    pthread_join(p2, NULL);
+    return 0;
+}</code></pre></div>
+
+<p>
+  Chapter 3 এর <code>fork()</code>/<code>wait()</code> এর সাথে
+  মিল আছে: <code>pthread_create</code> নতুন execution শুরু করে,
+  <code>pthread_join</code> তার শেষের অপেক্ষা করে। কিন্তু একটা
+  বড় পার্থক্য: <code>fork()</code> এর child একটা copy পায়,
+  thread কিছুই copy করে না — সব ভাগ করা।
+</p>
+
+<p>
+  Return value ফেরানোর একটা ফাঁদ আছে, যেটা প্রায়ই কাটে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* WRONG — returning a pointer to a local variable */
+void *bad(void *arg) {
+    int result = 42;
+    return (void *) &amp;result;     /* result dies when the frame pops! */
+}
+
+/* RIGHT — heap, or a caller-supplied buffer */
+void *good(void *arg) {
+    int *result = malloc(sizeof(int));
+    *result = 42;
+    return result;               /* caller must free() it */
+}
+
+/* Reading it back */
+void *ret;
+pthread_join(p, &amp;ret);
+printf("%d\n", *(int *) ret);
+free(ret);</code></pre></div>
+
+<h2 id="c12-race">Race — আসল সমস্যাটা</h2>
+
+<p>
+  Chapter 1 এর সেই program টা ফিরিয়ে আনি, আর এবার পুরোটা
+  বিশ্লেষণ করি:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The canonical race. This code is BROKEN — see chapter 14
+   for why `volatile` does not fix it. */
+volatile int counter = 0;
+
+void *worker(void *arg) {
+    for (int i = 0; i &lt; 10000000; i++) {
+        counter++;               /* three machine steps, not one */
+    }
+    return NULL;
+}</code></pre></div>
+
+<pre><code>$ ./threads 10000000
+Final value : 13872451        ← 20000000 হওয়া উচিত ছিল
+
+$ ./threads 10000000
+Final value : 20000000        ← এবার ঠিক!  ← এটাই সবচেয়ে বিপজ্জনক
+
+$ ./threads 1000
+Final value : 2000            ← ছোট সংখ্যায় সবসময় ঠিক</code></pre>
+
+<p>
+  Chapter 1 এ কারণটা দেখেছি — <code>counter++</code> তিনটে
+  instruction। এখন গুরুত্বপূর্ণ কথাটা বলি:
+  <strong>মাঝে মাঝে ঠিক উত্তর আসাটাই এই bug এর সবচেয়ে
+  বিপজ্জনক দিক।</strong>
+</p>
+
+<p>
+  ভাবুন: আপনি ১০০০ iteration দিয়ে test লিখলেন, সবসময় পাস করল।
+  CI তে হাজারবার চলল, পাস করল। তারপর production এ, বেশি load এ,
+  আলাদা CPU তে — ভাঙল। আর reproduce করা যায় না।
+</p>
+
+<p>
+  পরিভাষাগুলো ঠিক করে নিই, কারণ এগুলো বাকি Part 2 এ লাগবে:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>শব্দ</th><th>মানে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Critical section</strong></td>
+      <td>যে code একটা shared resource ছোঁয়, আর একসাথে একজনের বেশি চালানো নিরাপদ নয়</td>
+    </tr>
+    <tr>
+      <td><strong>Race condition</strong></td>
+      <td>একাধিক thread প্রায় একই সময়ে critical section এ ঢুকে পড়া</td>
+    </tr>
+    <tr>
+      <td><strong>Indeterminate</strong></td>
+      <td>যে program এর ফল scheduler এর ক্রমের উপর নির্ভর করে — অর্থাৎ অনির্ধারিত</td>
+    </tr>
+    <tr>
+      <td><strong>Mutual exclusion</strong></td>
+      <td>যে গ্যারান্টি বলে একসাথে ঠিক একজনই critical section এ থাকবে</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="c12-why">কেন এটা এত কঠিন — দুটো স্বাধীন কারণ</h2>
+
+<p>
+  এখানে একটা কথা পরিষ্কার করা দরকার, কারণ বেশিরভাগ ব্যাখ্যা
+  শুধু প্রথম কারণটা বলে, আর তাতে অর্ধেক ছবি পাওয়া যায়।
+</p>
+
+<pre class="ascii"><code>  কারণ ১ — Interleaving (chapter 4 এর preemption)
+
+    timer interrupt যেকোনো instruction এর মাঝখানে আসতে পারে,
+    তাই তিন ধাপের মাঝখানে অন্য thread ঢুকে পড়তে পারে।
+
+    এটা একটা CPU তেও ঘটে।
+
+
+  কারণ ২ — Reordering আর visibility (chapter 7 এর cache)
+
+    প্রতিটা core এর নিজের cache আছে। একটা core এর লেখা
+    অন্য core কখন দেখবে তার কোনো নিশ্চয়তা নেই।
+    আরও: compiler আর CPU দুজনেই instruction এর ক্রম
+    বদলে দিতে পারে।
+
+    এটা শুধু multicore এ ঘটে, আর এটাই বেশি ভয়ংকর —
+    কারণ এখানে আপনার লেখা code আর যা চলে তা আলাদা।</code></pre>
+
+<p>
+  প্রায় সব পাঠ্যবই (OSTEP সহ) কারণ ১ নিয়ে কথা বলে আর
+  কারণ ২ প্রায় ছুঁয়ে যায় না। ফলে পাঠক ভাবে lock এর কাজ শুধু
+  "পালা ঠিক করা"। আসলে lock দুটো কাজ করে — mutual exclusion
+  <em>এবং</em> memory visibility নিশ্চিত করা।
+</p>
+
+<p>
+  পরের দুটো chapter সম্পূর্ণভাবে কারণ ২ নিয়ে: chapter 13 এ
+  hardware কী গ্যারান্টি দেয় (coherence) আর কী দেয় না
+  (consistency), তারপর chapter 14 এ programming language এর
+  স্তরে তার অর্থ কী।
+</p>
+
+<h2 id="c12-detect">Race ধরার উপায়</h2>
+
+<p>
+  যেহেতু test অবিশ্বস্ত, যন্ত্র দরকার। ThreadSanitizer
+  সম্ভবত সবচেয়ে কাজের:
+</p>
+
+<pre><code># TSan — শুধু ভুল উত্তর নয়, race নিজেই ধরে
+$ gcc -fsanitize=thread -g -O1 threads.c -o t -pthread
+$ ./t 100000
+
+WARNING: ThreadSanitizer: data race (pid=48231)
+  Write of size 4 at 0x5578... by thread T2:
+    #0 worker threads.c:9
+  Previous write of size 4 at 0x5578... by thread T1:
+    #0 worker threads.c:9
+  Location is global 'counter' of size 4</code></pre>
+
+<p>
+  লক্ষণীয়: TSan ভুল উত্তরের অপেক্ষা করে না। সে
+  <em>access pattern</em> দেখে বলে দেয় দুটো thread
+  synchronization ছাড়া একই জায়গায় লিখছে — উত্তর ঠিক এলেও।
+  এটাই পার্থক্য: <strong>test ফলাফল দেখে, TSan কারণ দেখে।</strong>
+</p>
+
+<pre><code># অন্য ভাষায় একই জিনিস
+$ go test -race ./...              # Go — built-in, ব্যবহার করুন
+$ RUSTFLAGS="-Z sanitizer=thread" cargo test   # Rust (nightly)
+$ java -XX:+UseZGC ...             # JVM এ JCStress দিয়ে litmus test
+
+# kernel এর নিজের lock checker
+$ dmesg | grep -i lockdep</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Node.js</strong> এ আপনি এই race গুলো পান না, কারণ
+    JavaScript single-threaded — একটাই event loop, তাই
+    দুটো callback কখনো একসাথে চলে না। এটা একটা বড় সরলীকরণ,
+    আর Node এর জনপ্রিয়তার একটা আসল কারণ।
+  </p>
+  <p>
+    কিন্তু সুরক্ষাটা শর্তসাপেক্ষ। <code>worker_threads</code>
+    ব্যবহার করলে আর <code>SharedArrayBuffer</code> দিয়ে data
+    ভাগ করলে আপনি ঠিক এই একই সমস্যায় ফিরে আসেন — আর তখন
+    <code>Atomics.add()</code> ব্যবহার করতে হয়,
+    <code>buf[0]++</code> নয়।
+  </p>
+  <p>
+    আর <strong>Go</strong> তে race অত্যন্ত সাধারণ, কারণ
+    goroutine বানানো এত সহজ। এই কারণেই Go team
+    <code>-race</code> কে first-class বানিয়েছে, আর CI তে
+    এটা চালানো কার্যত বাধ্যতামূলক অভ্যাস।
+  </p>
+</div>
+
+<h2 id="c12-shared">কী ভাগ করা, কী নয়</h2>
+
+<p>
+  Bug এড়ানোর সবচেয়ে কার্যকর উপায় হলো জানা কোন জিনিসটা
+  ভাগ করা আর কোনটা নয়:
+</p>
+
+<pre class="ascii"><code>  ভাগ করা (সাবধান!)          প্রতি-thread (নিরাপদ)
+  ─────────────────────      ────────────────────────
+  global variable            local variable (stack এ)
+  static variable            function parameter
+  heap (malloc করা)          register
+  খোলা file descriptor       thread-local storage
+  current directory          errno (আসলে thread-local!)
+  signal handler</code></pre>
+
+<p>
+  <code>errno</code> এর উদাহরণটা শিক্ষামূলক: এটা দেখতে একটা
+  global variable, কিন্তু আসলে thread-local — নইলে একটা
+  thread এর syscall error অন্য thread মুছে দিত। C তে
+  এটা একটা macro যা প্রতি-thread জায়গায় পৌঁছায়।
+</p>
+
+<p>
+  নিজের thread-local variable বানানো যায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* C11 — each thread gets its own copy */
+_Thread_local int my_counter = 0;
+
+/* GCC/Clang extension, same thing */
+__thread int my_other_counter = 0;</code></pre></div>
+
+<p>
+  Chapter 8 এ বলেছিলাম x86-64 এ <code>FS</code> segment এর
+  base টিকে আছে thread-local storage এর জন্য — এটাই সেই
+  ব্যবহার। Segmentation translation এর জন্য মরে গেছে, কিন্তু
+  TLS এর জন্য বেঁচে আছে।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Read-only data ভাগ করা নিরাপদ, তাই শুধু লেখার
+    সময় lock দরকার।"</strong>
+  </p>
+  <p>
+    প্রথম অংশটা সত্য: কেউ না লিখলে যত খুশি thread পড়তে পারে।
+    কিন্তু দ্বিতীয় অংশটা একটা মারাত্মক ভুল সিদ্ধান্তে নিয়ে
+    যায় — "আমি শুধু পড়ছি, তাই lock লাগবে না"।
+  </p>
+  <p>
+    যদি <em>কেউ একজন</em> লেখে, তাহলে <strong>সব পাঠককেও
+    synchronize করতে হবে</strong>। নইলে একজন পাঠক অর্ধেক-লেখা
+    অবস্থা দেখতে পারে (torn read), বা compiler তার পড়াটা
+    loop এর বাইরে তুলে নিতে পারে আর সে কখনো নতুন মান দেখবেই না।
+  </p>
+  <p>
+    C/C++ এর ভাষায়: একটা non-atomic object এ একটা লেখা আর
+    একটা পড়া যদি synchronization ছাড়া একসাথে ঘটে, সেটা
+    <strong>data race, অর্থাৎ undefined behavior</strong> —
+    শুধু "পুরনো মান পাওয়া" নয়। Chapter 14 এ এর পূর্ণ অর্থ।
+  </p>
+</div>
+
+<h2 id="c12-when">Thread কখন ব্যবহার করবেন</h2>
+
+<p>
+  Thread দুটো সম্পূর্ণ আলাদা কারণে ব্যবহার করা হয়, আর
+  কারণটা না জানলে ভুল হাতিয়ার বাছা হয়:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>কারণ</th><th>লক্ষ্য</th><th>বিকল্প</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Parallelism</strong></td>
+      <td>একাধিক core ব্যবহার করে CPU-ভারী কাজ দ্রুত করা</td>
+      <td>একাধিক process (যদি data ভাগ করতে না হয়) — বেশি নিরাপদ</td>
+    </tr>
+    <tr>
+      <td><strong>Latency hiding</strong></td>
+      <td>একজন I/O তে আটকে থাকলে অন্যজন চলুক</td>
+      <td><strong>Event loop</strong> (epoll/io_uring) — প্রায়ই ভালো, ch 19</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  দ্বিতীয় সারিটা গুরুত্বপূর্ণ: I/O concurrency এর জন্য thread
+  প্রায়ই <em>ভুল</em> পছন্দ। ১০,০০০ connection সামলাতে
+  ১০,০০০ thread লাগে না — একটা event loop যথেষ্ট, আর তাতে
+  কোনো race ও নেই। এই কারণেই nginx আর Node এই স্থাপত্য বেছেছে,
+  আর chapter 19 এ দেখব কীভাবে।
+</p>
+
+<div class="qs">
+  <h2 id="c12-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Race condition এর সবচেয়ে বিপজ্জনক দিক হলো মাঝে মাঝে ঠিক
+      উত্তর আসা। এটা testing এর কোন মৌলিক অনুমানটা ভেঙে দেয়?
+      আর TSan কীভাবে সেই সমস্যাটা এড়ায় — সে কী দেখে যা
+      একটা test দেখে না?
+    </li>
+    <li>
+      Thread switch process switch এর চেয়ে সস্তা কারণ page
+      table root বদলাতে হয় না। Chapter 10 এর TLB ব্যবহার করে
+      ব্যাখ্যা করুন ঠিক কী কী সংরক্ষিত থাকে, আর PCID থাকলে
+      এই পার্থক্যটা কতটা কমে যায়।
+    </li>
+    <li>
+      <code>errno</code> দেখতে global কিন্তু আসলে thread-local।
+      যদি এটা সত্যিই global হতো, তাহলে একটা multi-threaded
+      program এ কী ধরনের bug দেখা যেত? একটা concrete ক্রম লিখুন।
+    </li>
+    <li>
+      একটা shared config struct আছে যা startup এ একবার লেখা হয়,
+      তারপর সব thread শুধু পড়ে। এখন requirement এল: runtime এ
+      config reload করতে হবে। "পাঠকদের lock লাগবে না" যুক্তিটা
+      এখন কেন ভাঙে, আর সমাধানের দুটো ভিন্ন পথ কী হতে পারে?
+    </li>
+    <li>
+      Race এর দুটো স্বাধীন কারণ — interleaving আর
+      reordering/visibility। একটা single-core মেশিনে কোনটা
+      ঘটতে পারে আর কোনটা পারে না? এখন বলুন কেন "আমার service
+      এক core এর container এ চলে, তাই race হবে না" যুক্তিটা
+      সম্পূর্ণ নিরাপদ নয়।
+    </li>
+    <li>
+      ১০,০০০ concurrent connection সামলাতে হবে। Thread-per-connection
+      বনাম event loop — Part 1 এর কোন কোন খরচ (chapter 4 এর
+      context switch, chapter 9 এর stack, chapter 12 এর
+      task_struct) থread পদ্ধতিকে ব্যয়বহুল করে? আর কোন
+      পরিস্থিতিতে thread-per-connection তবু সঠিক পছন্দ হবে?
+    </li>
+  </ol>
+</div>

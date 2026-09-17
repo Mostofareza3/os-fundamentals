@@ -1,0 +1,505 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p4">
+    Part 4 · আজকের বাস্তবতা
+    <span class="src">· Capstone — পুরো বইটা একসাথে</span>
+  </div>
+  <h1>Runtime টা OS এর client — যেখানে সব leak করে</h1>
+  <p class="ch-lede">
+    আপনি OS এর সাথে সরাসরি কথা বলেন না। V8, JVM, Go
+    runtime বা CPython মাঝখানে থাকে, আর আপনার প্রায় প্রতিটা
+    production বিস্ময় হলো OS এর একটা mechanism runtime এর
+    আচরণে leak করা। এই শেষ chapter এ সেই leak গুলো
+    শ্রেণীবদ্ধ করব — আর ২৯টা chapter এর সব সূত্র মিলবে।
+  </p>
+</div>
+
+<p>
+  Chapter 1 এ বলেছিলাম OS আপনার program কে "সুপরিকল্পিত
+  মিথ্যা" বলে। এই বইটা ছিল সেই মিথ্যাগুলোর গঠন নিয়ে।
+  এখন শেষ প্রশ্ন: <strong>মিথ্যাটা কোথায় ফাঁস হয়?</strong>
+</p>
+
+<p>
+  আর সেটা সবসময় একই জায়গায় ফাঁস হয় — আপনার runtime আর
+  OS এর সীমানায়।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    আপনার runtime OS সম্পর্কে কিছু অনুমান করে। সেই
+    অনুমানগুলো যখন ভুল হয় — container এ, চাপে, বা
+    ভিন্ন hardware এ — তখন লক্ষণটা runtime এ দেখা যায়
+    কিন্তু কারণটা OS এ। এই দূরত্বটা কীভাবে পার হবেন?
+  </p>
+</div>
+
+<h2 id="c30-class1">শ্রেণী ১ — Container-limit blindness</h2>
+
+<p>
+  সবচেয়ে সাধারণ শ্রেণী, আর chapter 2 এ এর বীজ বপন
+  করেছিলাম: container এর ভিতরে <code>/proc</code> host
+  এর সত্য দেখায়।
+</p>
+
+<pre class="ascii"><code>  Host: 64 core, 256 GB        Container: 2 core, 1 GB
+
+  runtime যা দেখে:              বাস্তবতা:
+  ─────────────────             ──────────
+  nproc → 64                    cpu.max = 2
+  /proc/meminfo → 256 GB        memory.max = 1 GB
+
+  ফলাফল:
+    Go:     GOMAXPROCS = 64 → ৬৪টা OS thread, ২ core এর quota
+            → throttling (ch 7) + অকারণ context switch (ch 4)
+    JVM:    ForkJoinPool = 63, GC thread = 64
+            → heap sizing ও ভুল হতে পারে
+    Node:   cluster.fork() যদি os.cpus() ধরে → ৬৪টা process
+    nginx:  worker_processes auto → ৬৪
+    Python: multiprocessing.cpu_count() → 64</code></pre>
+
+<div class="codewrap"><span class="lang">bash</span>
+<pre><code># The fix, per runtime. All of them do the same thing:
+# read the cgroup, not /proc.
+
+# Go — inject the limit, or use the library
+GOMAXPROCS=2                          # or:
+# import _ "go.uber.org/automaxprocs"
+GOMEMLIMIT=900MiB                     # soft limit, pressures GC
+
+# JVM — cgroup-aware since JDK 10, but verify
+java -XX:MaxRAMPercentage=70 -jar app.jar
+java -XX:+PrintFlagsFinal -version | grep -E 'ActiveProcessor|MaxHeap'
+
+# Node
+NODE_OPTIONS=--max-old-space-size=700
+UV_THREADPOOL_SIZE=8                  # ch 19 — libuv's pool
+
+# Kubernetes: let the platform tell the runtime
+env:
+  - name: GOMAXPROCS
+    valueFrom:
+      resourceFieldRef: { resource: limits.cpu }
+  - name: GOMEMLIMIT
+    valueFrom:
+      resourceFieldRef: { resource: limits.memory }</code></pre></div>
+
+<p>
+  একটা মূল নীতি: <strong>runtime এর সীমা cgroup এর
+  সীমার চেয়ে ছোট রাখতে হবে</strong>। JVM heap = container
+  limit মানে নিশ্চিত OOM kill, কারণ heap এর বাইরেও
+  metaspace, thread stack, JIT code cache, direct
+  buffer — সব লাগে।
+</p>
+
+<h2 id="c30-class2">শ্রেণী ২ — RSS রিপোর্টিং</h2>
+
+<p>
+  "আমাদের memory leak আছে" — এই সিদ্ধান্তটা প্রায়ই
+  RSS দেখে নেওয়া হয়, আর প্রায়ই ভুল। কারণ তিনটে
+  chapter এ ছড়ানো:
+</p>
+
+<pre class="ascii"><code>  RSS বাড়ছে কিন্তু leak নেই — চারটে সম্ভাবনা:
+
+  ১. Allocator memory ধরে রেখেছে  (ch 8)
+     free() OS কে ফেরত দেয় না — পরের বার কাজে লাগবে
+     → RSS চূড়ায় ওঠে, তারপর মালভূমি
+
+  ২. MADV_FREE এর অস্পষ্টতা  (ch 10, 11)
+     jemalloc/Go runtime page টা "চাইলে নাও" বলে রাখে
+     → kernel না নেওয়া পর্যন্ত RSS এ গোনা হয়
+     → আপাত leak, আসলে নয়
+
+  ৩. Page cache  (ch 24)
+     cgroup এ file page ও memory.current এ গোনা হয়
+     → আপনার heap ছোট, তবু limit এ ধাক্কা
+
+  ৪. Fragmentation  (ch 8)
+     ১০০ MB live object ২০০ MB arena জুড়ে ছড়ানো
+     → RSS ২০০ MB, "ব্যবহৃত" ১০০ MB</code></pre>
+
+<pre><code># leak আর fragmentation আলাদা করা
+$ cat /proc/&lt;pid&gt;/smaps_rollup
+Rss:             2097152 kB
+Pss:             1998234 kB      ← ভাগ করা page এর প্রকৃত হিসাব
+Private_Dirty:   1887654 kB      ← ★ এটাই আসল "আমার" memory
+Private_Clean:     45678 kB
+
+# Private_Dirty সময়ের সাথে বাড়লে → সত্যিকারের leak
+# Rss বাড়ে কিন্তু Private_Dirty স্থির → অন্য কিছু
+
+# cgroup এ কোন খাত
+$ cat /sys/fs/cgroup/memory.stat | grep -E '^(anon|file|slab|sock) '
+
+# glibc এর arena কমানো (ch 8) — container এ সাধারণ tuning
+$ MALLOC_ARENA_MAX=2 ./app
+
+# Go — runtime এর নিজের হিসাব বনাম RSS
+$ curl localhost:6060/debug/pprof/heap?debug=1 | head -20</code></pre>
+
+<h2 id="c30-class3">শ্রেণী ৩ — GC আর paging এর সংঘর্ষ</h2>
+
+<p>
+  একটা বিশেষভাবে বিভ্রান্তিকর শ্রেণী, কারণ দুটো
+  স্বাধীন ব্যবস্থা একে অন্যের বিরুদ্ধে কাজ করে।
+</p>
+
+<pre class="ascii"><code>  GC ধরে নেয়: memory access সব সমান দামি
+
+  কিন্তু chapter 11 বলে: swap এ থাকা page ~১০০০ গুণ ধীর
+
+  সংঘর্ষ:
+
+  ১. Memory চাপ বাড়ল → kernel reclaim শুরু করল
+  ২. GC heap এর কিছু পুরনো page swap এ গেল
+  ৃ. GC চলল — সে পুরো heap হাঁটে (mark phase)
+  ৪. প্রতিটা swapped page এ একটা MAJOR FAULT
+  ৫. GC pause ২ms থেকে ২০০০ms হয়ে গেল
+  ৬. Request জমতে থাকল, আরও memory লাগল
+  ৭. আরও swap → আরও ধীর GC → মৃত্যুর সর্পিল
+
+  এই কারণেই বড় heap এর service এ swap বিপজ্জনক,
+  আর এই কারণেই Kubernetes ঐতিহাসিকভাবে swap বন্ধ
+  করতে বলত (ch 11 এ দেখেছি সেই নিষেধাজ্ঞা এখন
+  শিথিল হয়েছে, কিন্তু GC-ভিত্তিক runtime এ
+  যুক্তিটা এখনো বৈধ)।
+
+  আরেকটা রূপ — THP (ch 10):
+    GC heap এ ছোট ছোট object বদলায়
+    → THP এ প্রতিটা COW ২ MB copy
+    → Redis এর THP বন্ধ করার পরামর্শ একই কারণে</code></pre>
+
+<pre><code># GC pause আর page fault একসাথে দেখুন
+$ # JVM
+$ java -Xlog:gc*,safepoint -jar app.jar
+$ # Go
+$ GODEBUG=gctrace=1 ./app 2&gt;&amp;1 | head
+
+# একই সময়ে major fault হচ্ছে কি
+$ grep -E 'pgmajfault' /proc/vmstat
+$ cat /sys/fs/cgroup/memory.stat | grep pgmajfault
+
+# PSI — চাপের সরাসরি সংকেত (ch 11)
+$ cat /sys/fs/cgroup/memory.pressure</code></pre>
+
+<h2 id="c30-class4">শ্রেণী ৪ — Blocking যা runtime জানে না</h2>
+
+<p>
+  Chapter 19 এ দেখেছি runtime গুলো event loop বা
+  netpoller দিয়ে blocking লুকায়। কিন্তু সব blocking
+  লুকানো যায় না — আর যেটা যায় না, সেটাই সমস্যা।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Runtime</th><th>লুকায়</th><th>লুকায় না</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Node</strong></td>
+      <td>Network I/O (epoll)</td>
+      <td>CPU-ভারী JS, sync API — event loop আটকে যায়</td>
+    </tr>
+    <tr>
+      <td><strong>Go</strong></td>
+      <td>Network (netpoller), channel, sleep</td>
+      <td>File I/O, cgo call — একটা OS thread সত্যিই block হয়</td>
+    </tr>
+    <tr>
+      <td><strong>JVM (virtual thread)</strong></td>
+      <td>Network, most blocking I/O</td>
+      <td><code>synchronized</code> block, native call — carrier thread pin হয়</td>
+    </tr>
+    <tr>
+      <td><strong>Python asyncio</strong></td>
+      <td>Network</td>
+      <td>যেকোনো sync call — পুরো loop আটকায়</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<pre><code># goroutine সংখ্যা আর OS thread সংখ্যা তুলনা করুন
+$ curl -s localhost:6060/debug/pprof/goroutine?debug=1 | head -1
+goroutine profile: total 12483
+
+$ ls /proc/&lt;pid&gt;/task | wc -l
+517
+# ↑ ৫১৭টা OS thread অস্বাভাবিক বেশি —
+#   blocking syscall বা cgo এর সংকেত
+#   (স্বাভাবিক: GOMAXPROCS + কয়েকটা)
+
+# Node এ event loop কতটা আটকাচ্ছে (ch 19)
+$ # code এ: monitorEventLoopDelay() থেকে .max দেখুন
+$ # p99 latency এর সাথে সরাসরি মেলে
+
+# কোন syscall এ সময় যাচ্ছে
+$ sudo strace -c -f -p &lt;pid&gt;      # সংক্ষিপ্ত হিসাব
+$ sudo perf trace -s -p &lt;pid&gt;</code></pre>
+
+<h2 id="c30-class5">শ্রেণী ৫ — Cloud storage যা local disk এর ভান করে</h2>
+
+<p>
+  Chapter 20-25 এ ধরে নিয়েছি disk টা মেশিনের ভিতরে।
+  Cloud এ সেটা মিথ্যা, আর এই মিথ্যাটার একটা নির্দিষ্ট
+  আকার আছে।
+</p>
+
+<pre class="ascii"><code>  আপনার application যা দেখে: একটা block device
+  আসলে যা আছে: একটা network service
+
+  ┌──────────────────────────────────────────────┐
+  │  Local NVMe        EBS gp3         EFS/NFS   │
+  ├──────────────────────────────────────────────┤
+  │  ~২০–৮০ µs        ~০.৫–২ ms      ~২–১০ ms    │  latency
+  │  ~১০ লক্ষ IOPS    provisioned     provisioned│
+  │  স্থির            burst credit!   throughput │
+  │                                    mode      │
+  └──────────────────────────────────────────────┘
+
+  তিনটে ফাঁদ:
+
+  ১. fsync এখন একটা network round-trip
+     chapter 25 এর ~২০µs হয়ে গেল ~১ms
+     → একটা fsync-ভারী database ৫০ গুণ ধীর
+     → etcd/Postgres এ এটা সরাসরি throughput
+
+  ২. Burst credit শেষ হওয়ার cliff
+     ঘণ্টার পর ঘণ্টা ঠিক চলল, তারপর হঠাৎ
+     baseline এ নেমে গেল → "কোনো কারণ ছাড়া"
+     database ভেঙে পড়ল
+
+  ৩. p99 latency অনেক বেশি আর অনির্দেশ্য
+     multi-tenant network + storage backend
+     → chapter 21 এর GC pause এর সাথে যোগ হয়</code></pre>
+
+<pre><code># EBS এর সীমায় আছেন কি
+$ iostat -x 1 5
+# await বড় (ch 20) + aqu-sz বড় = queue এ আটকে আছে
+# %util বিভ্রান্তিকর (ch 20 এ দেখেছি)
+
+# fsync এর আসল খরচ মাপুন — এই নির্দিষ্ট volume এ
+$ pg_test_fsync              # ch 25 এর যন্ত্র
+
+# burst credit (CloudWatch এ BurstBalance metric)
+# → এটা monitor করা বাধ্যতামূলক, নইলে cliff অপ্রত্যাশিত</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Runtime টা OS কে abstract করে দেয়, তাই
+    আমার OS জানার দরকার নেই — runtime এর documentation
+    যথেষ্ট।"</strong>
+  </p>
+  <p>
+    Abstraction যখন কাজ করে, কথাটা সত্য — আর বেশিরভাগ
+    সময় সেটা কাজ করে। সমস্যা হলো
+    <strong>abstraction ব্যর্থ হলে লক্ষণটা runtime এ
+    দেখা যায় কিন্তু কারণটা নিচে থাকে</strong>, আর তখন
+    runtime এর documentation আপনাকে ভুল দিকে পাঠায়।
+  </p>
+  <pre><code>লক্ষণ (runtime এ)              আসল কারণ (OS এ)
+────────────────────────       ──────────────────────────
+"GC pause ২ সেকেন্ড"            swap + major fault (ch 11)
+"event loop lag বেশি"          thread pool মাত্র ৪ (ch 19)
+"memory leak আছে"              allocator arena (ch 8)
+                               বা MADV_FREE (ch 11)
+"CPU ২০% কিন্তু ধীর"            cgroup throttling (ch 7)
+"database মাঝে মাঝে ধীর"        LSM compaction (ch 27)
+                               বা EBS burst শেষ (ch 30)
+"fsync ৫০ গুণ ধীর হলো"          network storage (ch 25)</code></pre>
+  <p>
+    প্রতিটা সারিতে runtime এর profiler আপনাকে
+    "কোথায় সময় যাচ্ছে" বলবে, কিন্তু "কেন" বলবে না।
+    বাঁ দিকটা খুঁজে ডান দিকে পৌঁছানোই এই বইয়ের
+    আসল উদ্দেশ্য ছিল।
+  </p>
+</div>
+
+<h2 id="c30-method">Debug করার পদ্ধতি — স্তর চিহ্নিত করা</h2>
+
+<p>
+  পুরো বইয়ের সবচেয়ে ব্যবহারিক আউটপুট এটাই: একটা লক্ষণ
+  থেকে সঠিক স্তরে পৌঁছানো।
+</p>
+
+<pre class="ascii"><code>  "আমার service ধীর" — কোন স্তর?
+
+  ┌─ Application ─────────────────────────────────┐
+  │  আপনার code, algorithm, query                 │
+  │  যন্ত্র: profiler, APM, slow query log        │
+  ├─ Runtime ─────────────────────────────────────┤
+  │  GC pause, event loop lag, thread pool        │
+  │  যন্ত্র: gctrace, monitorEventLoopDelay,      │
+  │          pprof, JFR                           │
+  ├─ OS: CPU ─────────────────────────────────────┤
+  │  runqueue wait, throttling, context switch    │
+  │  যন্ত্র: /proc/pid/schedstat (ch 5),          │
+  │          cpu.stat (ch 7), vmstat cs           │
+  ├─ OS: Memory ──────────────────────────────────┤
+  │  page fault, reclaim, OOM, TLB                │
+  │  যন্ত্র: /proc/vmstat, PSI (ch 11),           │
+  │          perf stat dTLB (ch 10)               │
+  ├─ OS: I/O ─────────────────────────────────────┤
+  │  writeback, dirty ratio, fsync, queue         │
+  │  যন্ত্র: iostat, cachestat (ch 24),           │
+  │          biolatency, io.stat                   │
+  ├─ Device ──────────────────────────────────────┤
+  │  WAF, GC pause, SLC cliff, wear               │
+  │  যন্ত্র: nvme smart-log (ch 21)               │
+  └───────────────────────────────────────────────┘
+
+  নিয়ম: উপর থেকে নিচে নামুন, আর প্রতিটা স্তরে
+        একটা সংখ্যা দিয়ে হয় বাদ দিন নয় নিশ্চিত করুন।
+        অনুমান করবেন না — মাপুন।</code></pre>
+
+<div class="codewrap"><span class="lang">bash</span>
+<pre><code># A first-pass triage script — one number per layer
+#!/bin/bash
+PID=${1:?usage: triage.sh PID}
+CG=/sys/fs/cgroup
+
+echo "── CPU ──"
+awk '{printf "runqueue wait: %.1f ms\n", $2/1e6}' /proc/$PID/schedstat
+grep -E 'nr_throttled|throttled_usec' $CG/cpu.stat 2>/dev/null
+
+echo "── Memory ──"
+grep -E '^(Rss|Pss|Private_Dirty)' /proc/$PID/smaps_rollup
+grep -E '^(anon|file) ' $CG/memory.stat 2>/dev/null
+cat $CG/memory.pressure 2>/dev/null | head -1
+awk '/pgmajfault/ {print "major faults:", $2}' /proc/vmstat
+
+echo "── I/O ──"
+grep -E 'read_bytes|write_bytes' /proc/$PID/io
+grep -E '^(Dirty|Writeback):' /proc/meminfo
+
+echo "── Threads ──"
+echo "os threads: $(ls /proc/$PID/task | wc -l)"
+grep ctxt /proc/$PID/status</code></pre></div>
+
+<h2 id="c30-fullcircle">পুরো বৃত্ত</h2>
+
+<p>
+  Chapter 1 এ চারটে ভুল ধারণা দিয়ে শুরু করেছিলাম।
+  এখন প্রতিটার পূর্ণ উত্তর আছে:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Chapter 1 এর প্রশ্ন</th><th>উত্তর কোথায়</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>malloc</code> syscall নয়</td>
+      <td>ch 4 (syscall এর দাম), ch 8 (allocator এর গঠন)</td>
+    </tr>
+    <tr>
+      <td>Interleaved output ≠ parallel</td>
+      <td>ch 4 (timer interrupt), ch 7 (cgroup quota)</td>
+    </tr>
+    <tr>
+      <td><code>volatile</code> synchronization নয়</td>
+      <td>ch 13 (coherence vs consistency), ch 14 (memory model)</td>
+    </tr>
+    <tr>
+      <td><code>write()</code> ফেরা ≠ disk এ</td>
+      <td>ch 24 (page cache), ch 25 (durability contract)</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  আর কয়েকটা সূত্র পুরো বই জুড়ে চলেছে:
+</p>
+
+<pre class="ascii"><code>  ১. Mechanism বনাম policy  (ch 1 → সর্বত্র)
+     "কীভাবে সম্ভব" আর "কোনটা উচিত" আলাদা।
+     Production এ আপনি প্রায় সবসময় policy বদলান।
+
+  ২. Indirection একটা স্তর যোগ করলে জিনিস সরানো যায়
+     page table (ch 9) · imap (ch 27) · FTL (ch 21)
+     · open file table (ch 22) · namespace (ch 29)
+
+  ৩. Cache সর্বত্র, আর প্রতিটার একটা coherence প্রশ্ন
+     CPU cache (ch 13) · TLB (ch 10) · page cache (ch 24)
+     · dentry cache (ch 23) · bloom filter (ch 27)
+
+  ৪. Amplification স্তরে স্তরে গুণ হয়
+     LSM × filesystem × FTL (ch 21, 27) — ৬০ গুণ সহজেই
+
+  ৫. Time-shared resource শেষ হলে ধীর হয়,
+     space-shared শেষ হলে ব্যর্থ হয়   (ch 2 → ch 7, 11)
+     CPU throttle বনাম OOM kill — একই অসমতা
+
+  ৬. যা মাপা যায় না তা tune করা যায় না
+     প্রতিটা chapter এ /proc, /sys, perf বা একটা
+     benchmark ছিল — সেটাই আসল হাতিয়ার</code></pre>
+
+<div class="box note">
+  <div class="box-t">শেষ কথা</div>
+  <p>
+    এই বইটা OSTEP এর ভিত্তিতে, কিন্তু OSTEP এর চেয়ে
+    ভিন্ন লক্ষ্যে: আপনি kernel লিখবেন না, কিন্তু
+    আপনার code kernel এর উপর চলবে — আর যখন কিছু
+    অদ্ভুত ঘটবে, আপনাকে জানতে হবে <em>কোথায়</em>
+    তাকাতে হবে।
+  </p>
+  <p>
+    যা মনে রাখার মতো তা তিনটে বাক্যে: <strong>OS
+    একটা resource manager যে illusion বিক্রি করে;
+    প্রতিটা illusion এর একটা দাম আছে; আর সেই দাম
+    মাপা যায়।</strong> বাকিটা বিস্তারিত — আর
+    বিস্তারিত অংশ বদলায়, কিন্তু এই তিনটে বদলায় না।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c30-q">শেষ প্রশ্ন</h2>
+  <ol>
+    <li>
+      Container-limit blindness এর সমাধান হলো cgroup
+      পড়া, <code>/proc</code> নয়। কিন্তু কেন kernel
+      শুরুতেই <code>/proc/cpuinfo</code> কে
+      namespace-সচেতন করেনি? (সূত্র: কোন কোন জিনিস
+      ভেঙে যেত, আর <code>lxcfs</code> কী করে?)
+    </li>
+    <li>
+      RSS বাড়ছে — চারটে সম্ভাব্য কারণের মধ্যে কোনটা
+      সত্যিকারের leak তা <code>smaps_rollup</code> এর
+      কোন একটা field দিয়ে আলাদা করবেন, আর কেন সেটাই
+      সঠিক field?
+    </li>
+    <li>
+      GC আর swap এর মৃত্যুর সর্পিলটা ধাপে ধাপে বর্ণনা
+      করুন। এখন বলুন <code>GOMEMLIMIT</code> (soft) আর
+      <code>memory.max</code> (hard) এর মধ্যে কোনটা
+      এই সর্পিল আটকাতে বেশি কার্যকর, আর কেন।
+    </li>
+    <li>
+      একটা Go service এ ১২,০০০ goroutine কিন্তু ৫১৭টা
+      OS thread। এটা কী বলছে, আর কোন দুটো জিনিস এই
+      অবস্থা তৈরি করতে পারে? Chapter 19 এর netpoller
+      কেন এখানে সাহায্য করছে না?
+    </li>
+    <li>
+      EBS এ burst credit শেষ হওয়াটা একটা cliff, ধীরে
+      অবনতি নয়। আপনার database ঘণ্টার পর ঘণ্টা ঠিক
+      চলার পর হঠাৎ ভেঙে পড়ল। Chapter 25 এর fsync আর
+      chapter 20 এর queue depth ব্যবহার করে লক্ষণগুলো
+      পূর্বানুমান করুন, আর বলুন কোন metric আগে থেকে
+      সতর্ক করত।
+    </li>
+    <li>
+      স্তর-চিহ্নিতকরণের তালিকাটা ব্যবহার করে একটা
+      পরিস্থিতি সমাধান করুন: আপনার API এর p50 ৫ms,
+      p99 ১২০০ms। Application profiler কিছু দেখাচ্ছে
+      না। উপর থেকে নিচে নেমে প্রতিটা স্তরে <em>একটা
+      নির্দিষ্ট সংখ্যা</em> বলুন যা আপনি দেখবেন, আর
+      সেটা কী মান হলে আপনি ওই স্তরে থামবেন।
+    </li>
+  </ol>
+</div>

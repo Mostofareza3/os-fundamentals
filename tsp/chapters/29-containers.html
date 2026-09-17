@@ -1,0 +1,588 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p4">
+    Part 4 · আজকের বাস্তবতা
+    <span class="src">· OSTEP Appendix B উল্টে দিয়ে · + namespace, cgroup, overlayfs</span>
+  </div>
+  <h1>Container আসলে কী — namespace, cgroup, overlayfs</h1>
+  <p class="ch-lede">
+    Container একটা জিনিস নয়। এটা কয়েকটা স্বাধীন kernel
+    feature এর একটা সমন্বয়, আর প্রতিটা এই বইয়ের একটা
+    আলাদা chapter থেকে আসছে। "Container" বলে কোনো
+    syscall নেই — আর সেটা জানা থাকলে অনেক অদ্ভুত আচরণ
+    ব্যাখ্যা হয়ে যায়।
+  </p>
+</div>
+
+<p>
+  Part 1–3 জুড়ে container বারবার এসেছে — cgroup
+  throttling (ch 7), `/proc` এ host এর core দেখা (ch 2),
+  PID 1 আর zombie (ch 2), memory.max আর OOM (ch 11),
+  page cache limit এ গোনা (ch 24)। এখন পুরো ছবিটা।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা process কে বিশ্বাস করাতে হবে যে সে একটা আলাদা
+    মেশিনে একা চলছে, আর তার resource ব্যবহারও সীমিত
+    রাখতে হবে — কিন্তু একটা পূর্ণ OS চালানোর খরচ ছাড়া।
+    Kernel কোন কোন mechanism দিয়ে এটা করে?
+  </p>
+</div>
+
+<h2 id="c29-not">Container যা নয়</h2>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Container একটা হালকা virtual machine।"</strong>
+  </p>
+  <p>
+    এটা সবচেয়ে প্রচলিত ভুল ছবি, আর এটা ভুল সিদ্ধান্তে
+    নিয়ে যায় (বিশেষত নিরাপত্তার ব্যাপারে)।
+  </p>
+  <pre class="ascii"><code>  VM:                          Container:
+
+  ┌──────────┐ ┌──────────┐    ┌──────────┐ ┌──────────┐
+  │  app     │ │  app     │    │  app     │ │  app     │
+  ├──────────┤ ├──────────┤    └──────────┘ └──────────┘
+  │ guest OS │ │ guest OS │         │            │
+  │ (নিজের   │ │ (নিজের   │         └─────┬──────┘
+  │  kernel) │ │  kernel) │               │
+  ├──────────┤ ├──────────┤    ┌──────────▼──────────┐
+  │ virtual hardware      │    │  একটাই HOST KERNEL  │
+  ├───────────────────────┤    ├─────────────────────┤
+  │  hypervisor (KVM)     │    │  hardware           │
+  ├───────────────────────┤    └─────────────────────┘
+  │  hardware             │
+  └───────────────────────┘     process মাত্র — শুধু
+                                সীমিত দৃষ্টি আর সীমিত
+  আলাদা kernel, আলাদা          resource সহ
+  memory, hardware সীমানা</code></pre>
+  <p>
+    Container এর ভিতরের process গুলো <strong>host এর
+    kernel এই চলে</strong>। <code>ps aux</code> host এ
+    চালালে আপনি container এর process দেখতে পাবেন —
+    তারা শুধু সাধারণ process।
+  </p>
+  <pre><code># host থেকে container এর process দেখা
+$ ps -eo pid,comm,cgroup | grep docker | head -3
+# একই kernel, একই scheduler (chapter 5-7), একই
+# page table ব্যবস্থা (chapter 9)
+
+# container এর ভিতরের PID আর host এর PID আলাদা
+$ docker exec mycontainer ps -e     # PID 1, 12, 15...
+$ ps -ef | grep -c containerd-shim  # host এ অন্য সংখ্যা</code></pre>
+  <p>
+    এর সরাসরি পরিণতি: <strong>একটা kernel দুর্বলতা
+    container এর সীমানা ভেদ করতে পারে</strong>, কারণ
+    সীমানাটা kernel এর ভিতরেই আঁকা। VM এ hypervisor
+    একটা দ্বিতীয় স্তর দেয়। এই কারণেই বহু-tenant
+    পরিবেশে (যেমন একটা public FaaS) container এর
+    ভিতরে VM ব্যবহার করা হয় — Firecracker, gVisor,
+    Kata।
+  </p>
+</div>
+
+<h2 id="c29-namespace">Namespace — দৃষ্টি সীমিত করা</h2>
+
+<p>
+  প্রথম উপাদান: process কে <em>কম</em> দেখাও। প্রতিটা
+  namespace একটা নির্দিষ্ট global resource এর আলাদা
+  copy দেয়।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Namespace</th><th>কী আলাদা করে</th><th>না থাকলে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>PID</strong></td>
+      <td>Process ID space — container এ নিজের PID 1</td>
+      <td>একটা container অন্যের process <code>kill</code> করতে পারত</td>
+    </tr>
+    <tr>
+      <td><strong>NET</strong></td>
+      <td>Interface, route, port, firewall</td>
+      <td>দুটো container একই port ব্যবহার করতে পারত না</td>
+    </tr>
+    <tr>
+      <td><strong>MNT</strong></td>
+      <td>Mount point এর গাছ</td>
+      <td>সবাই host এর পুরো filesystem দেখত</td>
+    </tr>
+    <tr>
+      <td><strong>UTS</strong></td>
+      <td>Hostname, domain name</td>
+      <td>সবার একই hostname</td>
+    </tr>
+    <tr>
+      <td><strong>IPC</strong></td>
+      <td>Shared memory, semaphore, message queue</td>
+      <td>Chapter 17 এর primitive গুলো ভাগ হয়ে যেত</td>
+    </tr>
+    <tr>
+      <td><strong>USER</strong></td>
+      <td>UID/GID mapping</td>
+      <td>container এর root = host এর root</td>
+    </tr>
+    <tr>
+      <td><strong>CGROUP</strong></td>
+      <td>cgroup এর দৃষ্টি</td>
+      <td>নিজের limit এর বাইরে দেখা যেত</td>
+    </tr>
+    <tr>
+      <td><strong>TIME</strong></td>
+      <td>Boot/monotonic clock offset (Linux 5.6+)</td>
+      <td>—</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  গুরুত্বপূর্ণ: এগুলো <strong>স্বাধীন</strong>। আপনি
+  শুধু network namespace আলাদা করে বাকিটা ভাগ করতে
+  পারেন — আর Kubernetes এর pod ঠিক এটাই করে:
+</p>
+
+<pre class="ascii"><code>  একটা Kubernetes Pod:
+
+  ┌─────────── একই NET + IPC namespace ───────────┐
+  │                                                │
+  │  ┌──────────────┐      ┌──────────────┐        │
+  │  │ container A  │      │ sidecar      │        │
+  │  │ (আপনার app)  │      │ (proxy/log)  │        │
+  │  │              │      │              │        │
+  │  │ নিজের MNT    │      │ নিজের MNT    │  ← আলাদা
+  │  │ নিজের PID*   │      │ নিজের PID*   │
+  │  └──────────────┘      └──────────────┘        │
+  │         │                     │                │
+  │         └──── localhost ──────┘   ← একই network!
+  │                                                │
+  └────────────────────────────────────────────────┘
+
+  এই কারণেই sidecar pattern কাজ করে — Envoy বা
+  একটা log shipper আপনার app এর সাথে localhost এ
+  কথা বলতে পারে, যদিও filesystem আলাদা।
+
+  * shareProcessNamespace: true দিলে PID ও ভাগ হয়</code></pre>
+
+<p>
+  নিজে হাতে একটা "container" বানানো যায় — কোনো Docker
+  ছাড়া, শুধু namespace দিয়ে:
+</p>
+
+<pre><code># unshare দিয়ে হাতে-কলমে
+$ sudo unshare --pid --fork --mount-proc --uts --net --mount bash
+
+# এখন আপনি একটা "container" এ:
+# hostname bwadhonukdl
+# ps -e দেখাবে শুধু কয়েকটা process, PID 1 থেকে
+# ip addr দেখাবে শুধু lo
+
+# একটা process কোন namespace এ আছে
+$ ls -l /proc/self/ns/
+lrwxrwxrwx 1 ... cgroup -> 'cgroup:[4026531835]'
+lrwxrwxrwx 1 ... ipc -> 'ipc:[4026531839]'
+lrwxrwxrwx 1 ... mnt -> 'mnt:[4026531841]'
+lrwxrwxrwx 1 ... net -> 'net:[4026531840]'
+lrwxrwxrwx 1 ... pid -> 'pid:[4026531836]'
+#                            ↑ এই সংখ্যাটাই namespace এর পরিচয়;
+#                              একই সংখ্যা মানে একই namespace
+
+# চলমান container এর namespace এ ঢোকা
+$ sudo nsenter -t &lt;host_pid&gt; -n -p -m bash</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The syscalls underneath. "Container" is not one of them. */
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+
+/* clone() with namespace flags — this is what a runtime calls */
+int flags = CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWNS
+          | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWUSER
+          | SIGCHLD;
+pid_t pid = clone(child_fn, stack_top, flags, NULL);
+
+/* Join an existing namespace (what nsenter/docker exec do) */
+int fd = open("/proc/1234/ns/net", O_RDONLY);
+setns(fd, CLONE_NEWNET);
+
+/* Leave namespaces from the current process */
+unshare(CLONE_NEWNS);</code></pre></div>
+
+<p>
+  লক্ষ করুন <code>clone()</code> — chapter 3 এর
+  <code>fork()</code> এর সাধারণীকৃত রূপ। Chapter 12 এ
+  বলেছিলাম Linux এ process আর thread একই
+  <code>task_struct</code>, পার্থক্য শুধু কী ভাগ করা
+  হচ্ছে। Container সেই একই ধারণার আরেকটা বিন্দু:
+  <strong>কম ভাগ করা = thread, বেশি আলাদা করা =
+  container</strong>।
+</p>
+
+<h2 id="c29-cgroup">cgroup — resource সীমিত করা</h2>
+
+<p>
+  Namespace দেখা সীমিত করে; cgroup <em>ব্যবহার</em>
+  সীমিত করে। Chapter 7 আর 11 এ এর দুটো দিক দেখেছি,
+  এখন পূর্ণ ছবি:
+</p>
+
+<pre class="ascii"><code>  /sys/fs/cgroup/           ← cgroup v2, একটাই গাছ
+  ├── cpu.max               "200000 100000" = 2 core (ch 7)
+  ├── cpu.weight            আপেক্ষিক ভাগ = ticket (ch 6)
+  ├── cpu.stat              nr_throttled ← throttling এর প্রমাণ
+  ├── memory.max            কঠিন সীমা → OOM (ch 11)
+  ├── memory.high           নরম সীমা → reclaim চাপ
+  ├── memory.current        এখন কত (page cache সহ! ch 24)
+  ├── memory.stat           anon/file/slab/sock আলাদা করে
+  ├── memory.pressure       PSI (ch 11)
+  ├── io.max                IOPS আর bandwidth সীমা
+  ├── io.stat
+  ├── pids.max              কতগুলো process (fork bomb আটকায়)
+  └── mypod/                nested — গাছের যেকোনো স্তরে সীমা
+      └── container-a/</code></pre>
+
+<p>
+  <code>io.max</code> টা নতুন — আমরা এটা আলোচনা করিনি।
+  এটা chapter 20-21 এর device bandwidth কে ভাগ করে:
+</p>
+
+<pre><code># একটা cgroup কে 100 IOPS আর 10 MB/s এ সীমিত করা
+$ echo "259:0 riops=100 wiops=100 rbps=10485760 wbps=10485760" \
+    | sudo tee /sys/fs/cgroup/mypod/io.max
+#     ↑ major:minor device number
+
+# কে কত I/O করছে
+$ cat /sys/fs/cgroup/mypod/io.stat
+
+# ⚠ io.max শুধু direct I/O আর writeback এ ভালো কাজ করে।
+#   Page cache এর কারণে buffered write এর হিসাব জটিল
+#   (chapter 24) — লেখাটা cgroup A করল কিন্তু disk এ
+#   গেল অনেক পরে, হয়তো অন্য প্রসঙ্গে।</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"cgroup limit দিয়ে দিলে container টা
+    সম্পূর্ণ isolated।"</strong>
+  </p>
+  <p>
+    কয়েকটা জিনিস cgroup এর আওতার বাইরে, আর সেগুলোই
+    "noisy neighbor" সমস্যার উৎস:
+  </p>
+  <ul>
+    <li>
+      <strong>CPU cache আর memory bandwidth</strong> —
+      chapter 13 এর সেই ভাগ করা L3। একটা container
+      cache ধুয়ে দিলে অন্যরা ধীর হয়, আর কোনো cgroup
+      knob এটা আটকায় না। (Intel RDT / AMD QoS দিয়ে
+      কিছু নিয়ন্ত্রণ সম্ভব, কিন্তু বিরল।)
+    </li>
+    <li>
+      <strong>TLB আর branch predictor</strong> —
+      chapter 10 এর সেই ভাগ করা structure।
+    </li>
+    <li>
+      <strong>Kernel lock</strong> — chapter 15-16 এর
+      contention। একটা container যদি প্রচুর syscall
+      করে, kernel এর ভিতরে lock এর জন্য সবাই লড়ে।
+    </li>
+    <li>
+      <strong>Device queue</strong> — chapter 20 এর
+      NVMe queue। <code>io.max</code> সাহায্য করে,
+      কিন্তু latency এর নিশ্চয়তা দেয় না।
+    </li>
+  </ul>
+  <p>
+    তাই isolation একটা <em>মাত্রা</em>, একটা binary
+    অবস্থা নয় — আর নিচে সেই মাত্রাটাই দেখব।
+  </p>
+</div>
+
+<h2 id="c29-overlayfs">overlayfs — image layer</h2>
+
+<p>
+  তৃতীয় উপাদান: filesystem। Container image গুলো
+  স্তরে স্তরে সাজানো, আর সেটা সম্ভব করে
+  <strong>overlayfs</strong> — একটা union filesystem।
+</p>
+
+<pre class="ascii"><code>  ┌─────────────────────────────────────────────┐
+  │  merged/  ← container যা দেখে                │
+  └─────────────────────────────────────────────┘
+         ▲
+         │ union
+  ┌──────┴──────────────────────────────────────┐
+  │  upperdir/   ← লেখার স্তর (read-write)      │
+  │              container এর সব পরিবর্তন এখানে │
+  ├─────────────────────────────────────────────┤
+  │  lowerdir/   ← image layer (read-only)      │
+  │    layer 3: আপনার app                       │
+  │    layer 2: npm install                     │
+  │    layer 1: apt-get install                 │
+  │    layer 0: base image (debian)             │
+  └─────────────────────────────────────────────┘
+
+  পড়া:  উপর থেকে নিচে খোঁজা, প্রথম যেখানে পাওয়া যায়
+  লেখা: upperdir এ — কিন্তু COPY_UP লাগে!</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"overlayfs এ লেখা একটা সাধারণ file
+    system এর মতোই দ্রুত।"</strong>
+  </p>
+  <p>
+    একটা lower layer এর file এ প্রথমবার লিখতে গেলে
+    overlayfs পুরো file টা upperdir এ
+    <strong>copy</strong> করে — <code>copy_up</code>।
+    একটা byte বদলাতে ১GB copy হতে পারে।
+  </p>
+  <pre><code># container এ একটা 1GB log file এর এক লাইন বদলান
+# → পুরো 1GB upperdir এ copy হবে
+
+# আর chapter 21 এর ভাষায়:
+copy_up:          × ১ (পুরো file)
+  ↓
+FTL এর GC:        × ৩
+  = একটা byte এর জন্য ৩ GB flash লেখা</code></pre>
+  <p>
+    এই কারণেই:
+  </p>
+  <ul>
+    <li>
+      <strong>যা বদলায় তা volume এ রাখুন</strong> —
+      database data, log, upload। Volume গুলো
+      overlayfs এর বাইরে, সরাসরি host filesystem এ।
+    </li>
+    <li>
+      <strong>Layer এর ক্রম গুরুত্বপূর্ণ</strong> —
+      যা কম বদলায় তা নিচে (dependency), যা বেশি
+      বদলায় তা উপরে (আপনার code)। তাহলে rebuild এ
+      cache কাজে লাগে।
+    </li>
+    <li>
+      <strong>Chapter 2 এর cold start</strong> — একটা
+      নতুন node এ image layer গুলো page-cache-cold,
+      তাই প্রথম request ধীর। ছোট image আর কম layer
+      সরাসরি সাহায্য করে।
+    </li>
+  </ul>
+  <pre><code># overlayfs এর স্তর দেখা
+$ mount | grep overlay
+overlay on /var/lib/docker/overlay2/xxx/merged type overlay
+  (rw,lowerdir=...:...:...,upperdir=...,workdir=...)
+
+# একটা container কত লিখেছে (upperdir এর আকার)
+$ sudo du -sh /var/lib/docker/overlay2/*/diff | sort -rh | head</code></pre>
+</div>
+
+<h2 id="c29-security">চতুর্থ উপাদান — নিরাপত্তা সীমানা</h2>
+
+<p>
+  Namespace আর cgroup isolation দেয়, কিন্তু
+  <em>আক্রমণের</em> বিরুদ্ধে যথেষ্ট নয়। তাই আরও কয়েকটা
+  স্তর:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Mechanism</th><th>কী করে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>capabilities</strong></td>
+      <td>root এর ক্ষমতাকে ~৪০টা টুকরোয় ভাগ করা। Container সাধারণত অল্প কয়েকটা পায় (chapter 4 এর binary user/kernel বিভাজনের সূক্ষ্মতর রূপ)।</td>
+    </tr>
+    <tr>
+      <td><strong>seccomp-bpf</strong></td>
+      <td>কোন syscall করা যাবে তার filter। Docker এর default profile ~৪৪টা syscall আটকায়।</td>
+    </tr>
+    <tr>
+      <td><strong>user namespace</strong></td>
+      <td>container এর root (uid 0) = host এর একটা সাধারণ unprivileged uid। সবচেয়ে গুরুত্বপূর্ণ একক সুরক্ষা।</td>
+    </tr>
+    <tr>
+      <td><strong>AppArmor / SELinux</strong></td>
+      <td>MAC — কোন file/resource ছোঁয়া যাবে।</td>
+    </tr>
+    <tr>
+      <td><strong>read-only rootfs</strong></td>
+      <td>Image layer এ লেখা সম্পূর্ণ বন্ধ।</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<pre><code># আপনার container এ কী চালু আছে
+$ grep -E 'Seccomp|CapEff' /proc/self/status
+Seccomp:        2                ← 2 = filter mode চালু
+CapEff: 00000000a80425fb         ← effective capability mask
+
+$ capsh --decode=00000000a80425fb | tr ',' '\n' | head -5
+
+# Docker এ কঠোর করা
+$ docker run \
+    --user 1000:1000 \           # root নয়
+    --read-only \                # rootfs read-only
+    --cap-drop=ALL \             # সব capability ফেলে দাও
+    --security-opt=no-new-privileges \
+    --tmpfs /tmp \               # লেখার দরকার হলে tmpfs
+    myimage</code></pre>
+
+<h2 id="c29-vm">VM — আর OSTEP এর appendix</h2>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো — পুরো appendix টাই</div>
+  <p>
+    OSTEP এর VMM appendix পুরোপুরি <strong>Disco</strong>
+    (১৯৯৭, MIPS) এর উপর তৈরি — software
+    trap-and-emulate আর shadow page table দিয়ে।
+    সেটা একটা মেশিন model যা x86 এ কখনো ছিল না, আর
+    আজকের বাস্তবতা সম্পূর্ণ আলাদা:
+  </p>
+  <ul>
+    <li>
+      <strong>Hardware virtualization</strong> — Intel
+      VT-x / AMD-V। CPU এর একটা নতুন mode
+      (chapter 4 এর ring এর উপরে "ring -1")। Guest
+      সরাসরি চলে; শুধু privileged operation এ
+      hypervisor এ trap করে। কোনো binary translation
+      নেই।
+    </li>
+    <li>
+      <strong>EPT / NPT</strong> (nested paging) —
+      দুই স্তরের page table, hardware এ। Guest এর
+      page table guest-physical দেয়, EPT সেটাকে
+      host-physical এ অনুবাদ করে। Chapter 9 এর
+      translation, দুবার — আর shadow page table এর
+      পুরো জটিলতা অপ্রয়োজনীয় হয়ে গেছে।
+    </li>
+    <li>
+      <strong>virtio / SR-IOV</strong> — device
+      virtualization, chapter 20 এর DMA আর IOMMU
+      ব্যবহার করে।
+    </li>
+  </ul>
+  <p>
+    তাই classical trap-and-emulate আজ একটা ঐতিহাসিক
+    টীকা মাত্র। আর যেটা বেশি গুরুত্বপূর্ণ —
+    container আর VM এর মধ্যে আজ একটা <em>বর্ণালী</em>
+    আছে, দুটো বিকল্প নয়।
+  </p>
+</div>
+
+<pre class="ascii"><code>  Isolation এর বর্ণালী — দুর্বল থেকে শক্ত:
+
+  ┌────────────────────────────────────────────────────┐
+  │ process        একই kernel, কোনো namespace নেই      │
+  │ (কম isolation) শুধু user/permission সীমানা          │
+  ├────────────────────────────────────────────────────┤
+  │ container      namespace + cgroup + seccomp        │
+  │                একই kernel  ← আক্রমণের পৃষ্ঠ = kernel│
+  ├────────────────────────────────────────────────────┤
+  │ gVisor         userspace এ একটা syscall layer      │
+  │                host kernel কম ছোঁয়া হয়            │
+  ├────────────────────────────────────────────────────┤
+  │ Kata / Firecracker                                 │
+  │                প্রতিটা container একটা micro-VM এ   │
+  │                নিজের kernel, ~১২৫ms boot           │
+  ├────────────────────────────────────────────────────┤
+  │ full VM        নিজের kernel, নিজের সব              │
+  │ (বেশি isolation) hypervisor এর সীমানা               │
+  └────────────────────────────────────────────────────┘
+
+  খরচ উপরে থেকে নিচে বাড়ে, isolation ও।
+  AWS Lambda আর Fargate Firecracker ব্যবহার করে —
+  কারণ তারা অবিশ্বস্ত, বহু-tenant code চালায়।</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর সবচেয়ে কাজের অংশ হলো
+    <strong>debugging এর দৃষ্টিভঙ্গি</strong>। Container
+    এ কিছু অদ্ভুত লাগলে প্রশ্নটা হলো "কোন উপাদানটা এই
+    আচরণ ঘটাচ্ছে?":
+  </p>
+  <pre><code># ধীর? throttled? → cgroup (ch 7)
+$ cat /sys/fs/cgroup/cpu.stat | grep throttled
+
+# OOM kill? → cgroup memory (ch 11, 24)
+$ cat /sys/fs/cgroup/memory.events
+$ cat /sys/fs/cgroup/memory.stat | grep -E '^(anon|file)'
+
+# runtime ভুল core সংখ্যা দেখছে? → namespace এর সীমা (ch 2)
+$ nproc ; cat /sys/fs/cgroup/cpu.max
+
+# zombie জমছে? → PID namespace + PID 1 (ch 2, 3)
+$ ps -eo pid,ppid,stat | awk '$3 ~ /^Z/'
+# সমাধান: docker run --init
+
+# disk দ্রুত ভরছে? → overlayfs copy_up (এই chapter)
+$ sudo du -sh /var/lib/docker/overlay2/*/diff | sort -rh | head -3
+
+# syscall আটকাচ্ছে? → seccomp
+$ grep Seccomp /proc/self/status
+$ strace -f ./app 2>&1 | grep EPERM
+
+# network পৌঁছাচ্ছে না? → NET namespace
+$ sudo nsenter -t &lt;pid&gt; -n ip addr
+$ sudo nsenter -t &lt;pid&gt; -n ss -tlnp</code></pre>
+  <p>
+    প্রতিটা লক্ষণ একটা নির্দিষ্ট উপাদানে ফিরে যায়, আর
+    প্রতিটা উপাদান এই বইয়ের একটা chapter। "Container
+    অদ্ভুত করছে" এর বদলে "cgroup memory accounting
+    page cache গুনছে" — এটাই পার্থক্য।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c29-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Container এর process গুলো host এর kernel এ চলে।
+      এই একটা তথ্য থেকে দুটো পরিণতি বের করুন — একটা
+      performance সংক্রান্ত (কী ভাগ করা হচ্ছে যা
+      cgroup সীমিত করে না), আরেকটা নিরাপত্তা সংক্রান্ত।
+    </li>
+    <li>
+      একটা Kubernetes pod এ দুটো container একই NET
+      namespace ভাগ করে কিন্তু আলাদা MNT। এই নির্দিষ্ট
+      সমন্বয়টা কোন pattern সম্ভব করে, আর কেন উল্টোটা
+      (একই MNT, আলাদা NET) কম কাজে লাগত?
+    </li>
+    <li>
+      overlayfs এ একটা 1GB file এর এক byte বদলালে
+      কী হয়? Chapter 21 এর write amplification যোগ
+      করে মোট flash লেখার হিসাব করুন, আর বলুন এর
+      তিনটে প্রশমন কৌশল কী।
+    </li>
+    <li>
+      cgroup CPU আর memory সীমিত করে, কিন্তু L3 cache
+      আর memory bandwidth করে না। Chapter 13 ব্যবহার
+      করে ব্যাখ্যা করুন কেন এটা একটা বাস্তব "noisy
+      neighbor" সমস্যা, আর কেন এটা cgroup দিয়ে
+      সমাধান করা কঠিন।
+    </li>
+    <li>
+      Chapter 12 এ শিখেছি Linux এ process আর thread
+      একই <code>task_struct</code>, পার্থক্য শুধু
+      কী ভাগ করা হচ্ছে। Container কে এই একই
+      বর্ণালীতে কোথায় বসাবেন? <code>clone()</code>
+      এর flag দিয়ে উত্তর দিন।
+    </li>
+    <li>
+      AWS Lambda container নয়, Firecracker micro-VM
+      ব্যবহার করে। কোন নির্দিষ্ট প্রয়োজনটা এই
+      সিদ্ধান্তের কারণ, আর তার জন্য তারা কী খরচ
+      দিচ্ছে? Isolation কে "মাত্রা" হিসেবে দেখে
+      উত্তর দিন।
+    </li>
+  </ol>
+</div>

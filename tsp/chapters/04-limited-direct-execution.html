@@ -1,0 +1,702 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 6, pdf p69–82</span>
+  </div>
+  <h1>Limited Direct Execution — trap, syscall, context switch</h1>
+  <p class="ch-lede">
+    OS কে দুটো পরস্পরবিরোধী কাজ করতে হয়: আপনার code কে পূর্ণ গতিতে
+    আসল hardware এ চালাতে হবে, আবার নিয়ন্ত্রণও হারানো যাবে না।
+    সমাধানটা hardware আর software এর একটা সূক্ষ্ম চুক্তি — আর সেই
+    চুক্তির দাম আপনি প্রতিটা syscall এ দেন।
+  </p>
+</div>
+
+<p>
+  Chapter 2 এ দেখেছি OS একটা program কে process বানায়। কিন্তু একটা
+  প্রশ্ন এড়িয়ে গিয়েছিলাম: <em>চালানোর সময়</em> OS কী করে?
+</p>
+
+<p>
+  সহজ উত্তর হতো: কিছুই না। Program কে CPU দিয়ে দাও, সে চলুক।
+  এর নাম <strong>direct execution</strong> — সরাসরি চালানো। এটা
+  দ্রুত, কারণ কোনো মধ্যস্থতা নেই:
+</p>
+
+<pre class="ascii"><code>  OS                              Program
+  ────────────────────────────    ──────────────────
+  process list এ entry বানাও
+  memory allocate করো
+  program টা load করো
+  argc/argv দিয়ে stack সাজাও
+  register পরিষ্কার করো
+  main() এ call করো ──────────▶
+                                  main() চলছে
+                                  ...
+                   ◀────────────  main() থেকে return
+  memory free করো
+  list থেকে সরাও</code></pre>
+<p class="figcap">Direct execution — সীমা ছাড়া। দ্রুত, কিন্তু অচল।</p>
+
+<p>
+  সরল দেখাচ্ছে। কিন্তু এই নকশায় দুটো মৌলিক সমস্যা আছে, আর সেই
+  দুটোর সমাধানেই এই chapter:
+</p>
+
+<ol>
+  <li>
+    <strong>Program যা খুশি করতে পারবে।</strong> সে সরাসরি disk পড়তে
+    পারবে, অন্য process এর memory দেখতে পারবে। তাহলে file permission
+    বলে কিছু থাকে না।
+  </li>
+  <li>
+    <strong>OS নিয়ন্ত্রণ ফেরত পাবে না।</strong> Program যদি
+    <code>while(1){}</code> চালায়, CPU চিরকাল তার। Time sharing
+    অসম্ভব।
+  </li>
+</ol>
+
+<p>
+  তাই নামটা <strong>Limited</strong> Direct Execution — সরাসরি
+  চালানো, কিন্তু সীমা সহ। এই "limited" অংশটা কীভাবে বসানো হয়, সেটাই
+  আসল বিষয়।
+</p>
+
+<h2 id="c4-modes">সমস্যা ১ — কে কী করতে পারবে</h2>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Process কে I/O আর অন্য সীমাবদ্ধ কাজ করতে দিতে হবে, কিন্তু
+    পুরো মেশিনের নিয়ন্ত্রণ দেওয়া যাবে না। Hardware আর OS একসাথে
+    কীভাবে এটা করবে?
+  </p>
+</div>
+
+<p>
+  সমাধান: processor এর দুটো <strong>mode</strong> থাকে।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>User mode</th><th>Kernel mode</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>কে চলে</strong></td>
+      <td>আপনার application</td>
+      <td>OS kernel</td>
+    </tr>
+    <tr>
+      <td><strong>I/O করতে পারে?</strong></td>
+      <td>না</td>
+      <td>হ্যাঁ</td>
+    </tr>
+    <tr>
+      <td><strong>যেকোনো physical page?</strong></td>
+      <td>না</td>
+      <td>হ্যাঁ</td>
+    </tr>
+    <tr>
+      <td><strong>x86-64 নাম</strong></td>
+      <td>ring 3</td>
+      <td>ring 0</td>
+    </tr>
+    <tr>
+      <td><strong>নিয়ম ভাঙলে</strong></td>
+      <td>exception → সাধারণত process মারা যায়</td>
+      <td>—</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  User mode এ থাকা code যদি একটা privileged instruction চালাতে যায়,
+  processor একটা exception তোলে, আর OS সাধারণত process টাকে মেরে ফেলে।
+</p>
+
+<p>
+  কিন্তু তাহলে আপনার program disk থেকে পড়বে কীভাবে? তার তো
+  privilege নেই। এখানেই <strong>system call</strong> আসে।
+</p>
+
+<h2 id="c4-trap">Trap — সীমানা পার হওয়ার একমাত্র দরজা</h2>
+
+<p>
+  System call চালাতে program একটা বিশেষ <strong>trap</strong>
+  instruction চালায়। এই instruction একসাথে দুটো কাজ করে:
+  kernel এ লাফ দেয়, <em>এবং</em> privilege level বাড়িয়ে kernel mode
+  করে দেয়। কাজ শেষে OS একটা <strong>return-from-trap</strong>
+  instruction চালায়, যেটা user program এ ফেরে আর privilege নামিয়ে
+  দেয়।
+</p>
+
+<pre class="ascii"><code>  user mode                     kernel mode
+  ─────────────────────────     ─────────────────────────
+  read(fd, buf, 4096)
+      │
+      │ libc: argument গুলো register এ বসায়
+      │       syscall number বসায় (x86-64: rax)
+      │
+    syscall ─────────────────▶  1. register গুলো kernel stack এ জমা
+      │                         2. privilege → kernel mode
+      │                         3. trap table দেখে handler এ লাফ
+      │                              │
+      │                         4. sys_read() চলল
+      │                              │ permission check
+      │                              │ page cache / disk
+      │                              │
+      │                         5. return value rax এ
+      │  ◀─────────────────────  6. return-from-trap
+      │                             register ফেরত, privilege নামল
+  return value নিয়ে চলা শুরু</code></pre>
+<p class="figcap">
+  একটা syscall এর পুরো পথ। প্রতিটা ধাপের দাম আছে।
+</p>
+
+<p>
+  Hardware কে এখানে যত্নবান হতে হয়: trap নেওয়ার সময় caller এর
+  যথেষ্ট register জমা রাখতে হবে, নইলে ফেরার পথে program এর অবস্থা
+  পুনর্গঠন করা যাবে না। x86 এ processor program counter, flag আর
+  আরও কিছু register প্রতি-process একটা
+  <strong>kernel stack</strong> এ push করে; return-from-trap সেগুলো
+  pop করে আবার বসিয়ে দেয়।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>read()</code> একটা সাধারণ function call এর মতো
+    দেখতে, তাই সম্ভবত এটা আসলে syscall নয়" —</strong> বা উল্টোটা,
+    <strong>"এটা syscall, তাই C এ এর জন্য বিশেষ syntax আছে"।</strong>
+  </p>
+  <p>
+    দুটোই না। <code>read()</code> সত্যিই একটা সাধারণ procedure call —
+    কিন্তু সেটা C library এর ভিতরে যায়, আর সেখানে লুকিয়ে আছে trap
+    instruction টা। libc এর ওই অংশটা হাতে লেখা assembly, কারণ
+    kernel এর সাথে একটা নির্দিষ্ট calling convention মানতে হয়:
+    কোন register এ কোন argument, আর কোথায় syscall number।
+  </p>
+  <p>
+    এই কারণেই আপনাকে assembly লিখতে হয় না — কেউ আগেই লিখে রেখেছে।
+    আর এই কারণেই chapter 1 এর সেই পার্থক্যটা গুরুত্বপূর্ণ:
+    <code>malloc()</code> library call, কিন্তু তার ভিতরে দরকার হলে
+    <code>mmap()</code> syscall হয়। দেখতে একই রকম, খরচ আলাদা।
+  </p>
+</div>
+
+<h2 id="c4-trap-table">Trap table — কেন আপনি ঠিকানা বলতে পারেন না</h2>
+
+<p>
+  একটা প্রশ্ন বাকি: trap হলে kernel এর <em>কোন</em> code চলবে?
+</p>
+
+<p>
+  Calling process নিশ্চয়ই ঠিকানা বলতে পারে না — তাহলে সে kernel এর
+  যেকোনো জায়গায় লাফ দিতে পারত। ভাবুন: file পড়ার code এ লাফ দেওয়া,
+  কিন্তু permission check এর ঠিক <em>পরে</em>। পুরো protection ভেঙে যেত।
+</p>
+
+<p>
+  তাই kernel boot এর সময় একটা <strong>trap table</strong> বসিয়ে দেয়।
+  Boot হয় privileged mode এ, তাই তখন hardware কে যা খুশি বলা যায়।
+  OS প্রথম কাজগুলোর একটা হলো hardware কে জানানো: disk interrupt হলে
+  কোন code, keyboard interrupt হলে কোন code, syscall হলে কোন code।
+  এই ঠিকানাগুলোর নাম <strong>trap handler</strong>।
+</p>
+
+<pre class="ascii"><code>  Boot (kernel mode)                    Hardware
+  ──────────────────────────────        ─────────────────────────
+  trap table initialize করো ──────────▶ handler ঠিকানা মনে রাখো:
+                                          syscall  → 0xffff8...
+                                          timer    → 0xffff8...
+                                          page fault → 0xffff8...
+                                          keyboard → 0xffff8...
+
+  এরপর থেকে trap হলে hardware নিজেই ঠিক handler এ যায়।
+  Process শুধু একটা NUMBER দিতে পারে (syscall number),
+  কোনো ঠিকানা নয়।</code></pre>
+
+<p>
+  তাই process বলতে পারে "syscall নম্বর ০" (অর্থাৎ
+  <code>read</code>), কিন্তু "এই ঠিকানায় লাফ দাও" বলতে পারে না।
+  সীমানাটা সংখ্যার — আর সংখ্যাগুলো kernel এর নিজের তালিকায় বাঁধা।
+</p>
+
+<p>
+  Trap table বসানোর instruction টাও নিজে privileged। অর্থাৎ user
+  mode থেকে trap table বদলানো যায় না — নইলে পুরো ব্যবস্থাটাই
+  অর্থহীন হতো।
+</p>
+
+<h2 id="c4-cost">Syscall এর আসল দাম</h2>
+
+<p>
+  Chapter 1 এ সংখ্যাগুলো বলেছিলাম, এখন কারণটা স্পষ্ট। একটা syscall এ
+  যা যা হয়: register জমা, privilege পরিবর্তন, trap table lookup,
+  handler চালানো, argument যাচাই, তারপর সব উল্টো করে ফেরা।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>কাজ</th><th>আনুমানিক খরচ</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>সাধারণ function call</td><td class="num">~১–২ ns</td></tr>
+    <tr><td>vDSO দিয়ে <code>clock_gettime()</code></td><td class="num">~২০–২৫ ns</td></tr>
+    <tr><td>সরল syscall (<code>getpid</code>)</td><td class="num">~৫০–১০০ ns</td></tr>
+    <tr><td>একই syscall, Spectre mitigation সহ</td><td class="num">~২০০–৪০০ ns</td></tr>
+    <tr><td>Context switch (thread)</td><td class="num">~১–৫ µs</td></tr>
+    <tr><td>Context switch (process, TLB সহ)</td><td class="num">~৫–১০ µs</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  নিজে মেপে দেখা যায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* syscall_cost.c — compare a real syscall against a vDSO call
+   Build: gcc -O2 -o syscall_cost syscall_cost.c */
+#include &lt;stdio.h&gt;
+#include &lt;time.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/syscall.h&gt;
+
+#define N 1000000
+
+static double elapsed_ns(struct timespec a, struct timespec b) {
+    return (b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec);
+}
+
+int main(void) {
+    struct timespec t0, t1;
+
+    /* getpid() via glibc — may be cached, so force the real syscall */
+    clock_gettime(CLOCK_MONOTONIC, &amp;t0);
+    for (int i = 0; i &lt; N; i++) syscall(SYS_getpid);
+    clock_gettime(CLOCK_MONOTONIC, &amp;t1);
+    printf("real syscall     : %.1f ns/op\n", elapsed_ns(t0, t1) / N);
+
+    /* clock_gettime goes through the vDSO — no ring transition */
+    struct timespec junk;
+    clock_gettime(CLOCK_MONOTONIC, &amp;t0);
+    for (int i = 0; i &lt; N; i++) clock_gettime(CLOCK_MONOTONIC, &amp;junk);
+    clock_gettime(CLOCK_MONOTONIC, &amp;t1);
+    printf("vDSO clock_gettime: %.1f ns/op\n", elapsed_ns(t0, t1) / N);
+
+    return 0;
+}</code></pre></div>
+
+<p>
+  আপনার মেশিনে mitigation কী চালু আছে তা দেখা যায়:
+</p>
+
+<pre><code>$ grep . /sys/devices/system/cpu/vulnerabilities/*
+.../meltdown:Mitigation: PTI
+.../spectre_v2:Mitigation: Retpolines; IBPB: conditional; ...
+.../spec_store_bypass:Mitigation: Speculative Store Bypass disabled
+
+# syscall গুলো গুনে দেখা
+$ strace -c -f ./your-program 2>&amp;1 | tail -20</code></pre>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP (২০১৫) এ syscall এর খরচ আছে, কিন্তু
+    <strong>Meltdown/Spectre এর পরের বাস্তবতা নেই</strong> — সেটা
+    ২০১৮ এর ঘটনা।
+  </p>
+  <p>
+    Meltdown আবিষ্কারের আগে একটা optimization সর্বজনীন ছিল: kernel
+    এর পুরো memory প্রতিটা process এর page table এ map করা থাকত,
+    শুধু privilege bit দিয়ে সুরক্ষিত। এতে syscall সস্তা হতো, কারণ
+    page table বদলাতে হতো না।
+  </p>
+  <p>
+    Meltdown দেখিয়ে দিল ওই bit টা speculative execution দিয়ে পাশ
+    কাটানো যায়। উত্তর হলো <strong>KPTI (Kernel Page Table
+    Isolation — user mode এ থাকার সময় kernel এর mapping প্রায়
+    পুরোটাই address space থেকে সরিয়ে রাখা)</strong>। ফল: প্রতিটা
+    syscall এ এখন page table root (CR3) বদলাতে হয়, আর TLB এর
+    কিছু অংশ হারাতে হয়। Syscall-ভারী workload এ ৫–৩০% ধীর।
+  </p>
+  <p>
+    এর একটা সরাসরি ফল আপনার কাজে: <strong>syscall কমানো এখন আগের
+    চেয়ে বেশি লাভজনক</strong>। এই কারণেই <code>io_uring</code> এর
+    মতো interface — যেটা একটা syscall এ শত শত I/O জমা দেয় — এত
+    গুরুত্বপূর্ণ হয়ে উঠেছে। Chapter 19 এ সেটা বিস্তারিত।
+  </p>
+</div>
+
+<h2 id="c4-control">সমস্যা ২ — নিয়ন্ত্রণ ফেরত পাওয়া</h2>
+
+<p>
+  এখন দ্বিতীয় সমস্যা। Process চলছে, মানে CPU তার হাতে। OS তো
+  চলছেই না। তাহলে OS কীভাবে আবার নিয়ন্ত্রণ পাবে?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Process চলার সময় CPU তার দখলে। OS তখন চলছেই না। তাহলে OS
+    কীভাবে process টাকে থামিয়ে অন্যটায় সরে যাবে?
+  </p>
+</div>
+
+<h3 id="c4-coop">ভুল উত্তর — সহযোগিতার উপর ভরসা</h3>
+
+<p>
+  একটা পুরনো পদ্ধতি ছিল: ধরে নাও process নিজে মাঝে মাঝে CPU ছেড়ে
+  দেবে। Syscall করলে তো kernel এ আসছেই — সেই সুযোগে OS সিদ্ধান্ত নেবে।
+  আর কিছু system একটা <code>yield()</code> syscall দিত, যার একমাত্র
+  কাজ ছিল "আমি এখন ছেড়ে দিচ্ছি" বলা।
+</p>
+
+<p>
+  এর নাম <strong>cooperative scheduling</strong>, আর সমস্যাটা
+  স্পষ্ট: process যদি সহযোগিতা না করে? একটা
+  <code>while(1){}</code> loop, কোনো syscall ছাড়া — সে চিরকাল CPU
+  ধরে রাখবে। একমাত্র সমাধান reboot।
+</p>
+
+<p>
+  এটা কাল্পনিক সমস্যা নয়। Mac OS 9 আর তার আগের সব version এভাবেই
+  চলত। একটা application এর একটা infinite loop পুরো মেশিন অচল করে
+  দিত। Chapter 1 এর ইতিহাসে এটাকেই "একধাপ পিছিয়ে যাওয়া" বলেছিলাম।
+</p>
+
+<h3 id="c4-timer">ঠিক উত্তর — timer interrupt</h3>
+
+<p>
+  সমাধানটা hardware থেকে আসে: একটা <strong>timer interrupt</strong>।
+  OS boot এর সময় timer কে চালু করে বলে "প্রতি N millisecond এ আমাকে
+  ডাকো"। Interrupt এলে চলমান process থেমে যায়, আর kernel এর
+  interrupt handler চলে।
+</p>
+
+<pre class="ascii"><code>  Boot এ:  timer চালু করো, প্রতি 1–10 ms এ interrupt
+
+  চলার সময়:
+
+  Process A চলছে ────────────────┐
+                                 │  ⏰ timer interrupt!
+                                 ▼
+                    kernel: handler চলল
+                    ┌────────────────────────┐
+                    │ scheduler কে জিজ্ঞেস:  │
+                    │ A চালিয়ে যাব, নাকি     │
+                    │ B তে সরব?              │
+                    └────────────┬───────────┘
+                                 │  সিদ্ধান্ত: B
+                                 ▼
+                       context switch
+                                 │
+  Process B চলছে ◀───────────────┘</code></pre>
+<p class="figcap">
+  Timer interrupt — OS এর নিয়ন্ত্রণ ফেরত পাওয়ার একমাত্র নির্ভরযোগ্য উপায়।
+</p>
+
+<p>
+  এখন process এর সহযোগিতা লাগে না। এর নাম
+  <strong>preemptive scheduling</strong> — process কে জিজ্ঞেস না করেই
+  সরিয়ে দেওয়া। Timer চালু করার instruction টাও privileged, তাই
+  user code সেটা বন্ধ করতে পারে না।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Timer interrupt প্রতি 1ms এ হয়, তাই আমার process
+    সেকেন্ডে ১০০০ বার থামে — এটা প্রচুর overhead।"</strong>
+  </p>
+  <p>
+    আধুনিক Linux এ এটা আর সত্য নয়। কয়েকটা কারণে:
+  </p>
+  <ul>
+    <li>
+      Kernel <strong>tickless</strong> mode এ চলতে পারে
+      (<code>CONFIG_NO_HZ_IDLE</code>, বা
+      <code>NO_HZ_FULL</code>)। CPU যদি idle থাকে বা একটামাত্র
+      runnable task থাকে, periodic tick বন্ধই থাকে — বিদ্যুৎ বাঁচে।
+    </li>
+    <li>
+      Scheduler টা <strong>high-resolution timer</strong> দিয়ে
+      ঠিক যখন দরকার তখন interrupt চায়, অন্ধভাবে প্রতি tick এ নয়।
+    </li>
+    <li>
+      প্রতিটা interrupt এ context switch হয় না। Handler চলে,
+      scheduler দেখে "এখনো A এর সময় বাকি", আর A তেই ফিরে যায়।
+      এটা সস্তা।
+    </li>
+  </ul>
+  <pre><code># আপনার kernel এর tick config
+$ grep -E 'CONFIG_HZ|NO_HZ' /boot/config-$(uname -r)
+
+# আসলে কত context switch হচ্ছে (cs কলাম)
+$ vmstat 1 5
+
+# একটা process এর নিজের হিসাব
+$ grep ctxt /proc/self/status
+voluntary_ctxt_switches:    12     ← নিজে ছেড়ে দিয়েছে (I/O wait)
+nonvoluntary_ctxt_switches: 3      ← preempt করা হয়েছে</code></pre>
+  <p>
+    ওই দুটো সংখ্যার পার্থক্যটা কাজের: voluntary বেশি মানে আপনার
+    process I/O তে অপেক্ষা করছে; nonvoluntary বেশি মানে CPU
+    নিয়ে প্রতিযোগিতা হচ্ছে (বা আপনি throttled — chapter 7)।
+  </p>
+</div>
+
+<h2 id="c4-ctxsw">Context switch — ঠিক কী সরে</h2>
+
+<p>
+  Scheduler যখন বলে "B চালাও", তখন kernel একটা
+  <strong>context switch</strong> করে। কাজটা ধারণাগতভাবে সরল:
+  A এর register গুলো তার PCB তে জমা রাখো, B এর PCB থেকে register
+  ফিরিয়ে আনো, আর B এর stack এ ফেরত যাও।
+</p>
+
+<p>
+  xv6 এর switch code টা মূল ধারণাটা পরিষ্কার দেখায়:
+</p>
+
+<div class="codewrap"><span class="lang">asm</span>
+<pre><code># xv6 swtch: save one context, restore another.
+# void swtch(struct context **old, struct context *new);
+# On entry: %eax = old, %edx = new
+
+  movl 4(%esp), %eax        # eax = &amp;old
+  movl 8(%esp), %edx        # edx = new
+
+  # Save the OUTGOING context's callee-saved registers.
+  # The return address is already on the stack, put there by `call`.
+  popl 0(%eax)              # save return addr as saved eip
+  movl %esp, 4(%eax)        # save stack pointer
+  movl %ebx, 8(%eax)
+  movl %ecx, 12(%eax)
+  movl %edx, 16(%eax)
+  movl %esi, 20(%eax)
+  movl %edi, 24(%eax)
+  movl %ebp, 28(%eax)
+
+  # Load the INCOMING context.
+  movl 28(%edx), %ebp
+  movl 24(%edx), %edi
+  movl 20(%edx), %esi
+  movl 16(%edx), %edx
+  movl 12(%edx), %ecx
+  movl 8(%edx), %ebx
+  movl 4(%edx), %esp        # switch stacks — we are now on B's stack
+  pushl 0(%edx)             # push B's saved eip
+  ret                       # "return" into B, wherever it left off</code></pre></div>
+
+<p>
+  শেষ দুটো লাইন লক্ষ করুন। <code>esp</code> বদলানোর পর আমরা আর
+  A এর stack এ নেই, B এর stack এ। তারপর B এর জমা রাখা
+  instruction pointer push করে <code>ret</code> — অর্থাৎ B যেখানে
+  থেমেছিল সেখানে "return" করা। এই একটা <code>ret</code> instruction
+  ই process switch টা সম্পন্ন করে।
+</p>
+
+<p>
+  কিন্তু বাস্তব খরচ শুধু এই register গুলো নয়। দুই ধরনের খরচ আছে:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ধরন</th><th>কী</th><th>দাম</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>সরাসরি</strong></td>
+      <td>register জমা/ফেরত, scheduler এর হিসাব, page table root বদল (process হলে)</td>
+      <td>~১–৫ µs</td>
+    </tr>
+    <tr>
+      <td><strong>পরোক্ষ</strong></td>
+      <td>cache ঠান্ডা হয়ে যাওয়া, TLB entry হারানো, branch predictor এর শিক্ষা নষ্ট</td>
+      <td>অনেক বেশি, মাপা কঠিন</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  পরোক্ষ খরচটাই বড়। Process A চলার সময় cache তার data দিয়ে ভরে
+  উঠেছিল; B চলার পর সেই data সরে যায়। A ফিরে এলে তাকে আবার
+  memory থেকে সব আনতে হয়। এই কারণেই scheduler
+  <strong>cache affinity</strong> এর চেষ্টা করে — একটা process কে
+  যথাসম্ভব একই CPU তে রাখা। Chapter 7 এ এটা multicore এর সাথে দেখব।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই খরচগুলোই ব্যাখ্যা করে কেন <strong>thread pool</strong> এর
+    আকার গুরুত্বপূর্ণ। ৪ core এ ৪০০টা thread চালালে কাজ ১০০ গুণ
+    দ্রুত হয় না — বরং context switch আর cache thrashing এ সময়
+    নষ্ট হয়। এই কারণেই Node এর single-threaded event loop অনেক
+    workload এ thread-per-request এর চেয়ে ভালো: সে context switch
+    এড়িয়ে যায়।
+  </p>
+  <p>
+    <strong>Postgres</strong> এ <code>max_connections</code> বেশি
+    রাখলে একই সমস্যা — প্রতিটা connection একটা process, আর হাজার
+    process মানে scheduler এর উপর চাপ। তাই PgBouncer এর মতো
+    connection pooler ব্যবহার করা হয়: কম process, বেশি client।
+  </p>
+  <p>
+    <strong>Go</strong> এই সমস্যাটার সমাধান দিয়েছে goroutine দিয়ে —
+    goroutine switch করতে kernel এ যেতেই হয় না, runtime নিজেই
+    userspace এ করে, তাই খরচ ~১০০ns এর কম। Chapter 19 এ এই
+    two-level scheduling দেখব।
+  </p>
+</div>
+
+<h2 id="c4-concurrent">Interrupt এর সময় আরেকটা interrupt?</h2>
+
+<p>
+  একটা প্রশ্ন স্বাভাবিকভাবেই আসে: OS যখন একটা interrupt সামলাচ্ছে,
+  তখন আরেকটা এলে কী হয়?
+</p>
+
+<p>
+  সরল উত্তর: handler চলার সময় OS interrupt
+  <strong>disable</strong> করতে পারে। কিন্তু এটা বেশিক্ষণ রাখা
+  বিপজ্জনক — সেই সময়ে আসা interrupt হারিয়ে যেতে পারে।
+</p>
+
+<p>
+  তাই আধুনিক kernel দুটো স্তরে কাজ ভাগ করে:
+</p>
+
+<pre class="ascii"><code>  Interrupt আসল
+       │
+       ▼
+  ┌─────────────────────────────┐
+  │ top half (hard IRQ)         │  interrupt বন্ধ, খুব দ্রুত
+  │ - device থেকে data সরাও     │  শুধু জরুরি কাজ
+  │ - "পরে করতে হবে" চিহ্নিত করো│
+  └──────────────┬──────────────┘
+                 │  interrupt আবার চালু
+                 ▼
+  ┌─────────────────────────────┐
+  │ bottom half (softirq/       │  বাকি কাজ, interrupt চালু অবস্থায়
+  │ tasklet/workqueue)          │  এখানে ঘুমানোও যায় (workqueue)
+  └─────────────────────────────┘</code></pre>
+
+<p>
+  Network packet প্রক্রিয়াকরণ এর সেরা উদাহরণ: top half শুধু
+  packet টা queue তে রাখে, আর পুরো TCP প্রক্রিয়া চলে softirq তে।
+  <code>top</code> এ <code>si</code> কলামটা (software interrupt)
+  এই সময়টাই দেখায় — network-ভারী server এ এটা উঁচু হওয়া স্বাভাবিক।
+</p>
+
+<pre><code># interrupt কোন CPU তে কতবার হচ্ছে
+$ cat /proc/interrupts | head
+
+# softirq এর হিসাব
+$ cat /proc/softirqs | head -5</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Interrupt disable থাকলে interrupt হারায় না, শুধু
+    দেরিতে আসে।"</strong>
+  </p>
+  <p>
+    এটা নির্ভর করে interrupt কীভাবে সংকেত দেয় তার উপর, আর
+    পার্থক্যটা বাস্তব। <strong>Level-triggered</strong> interrupt
+    এ device একটা line ধরে রাখে যতক্ষণ কেউ সাড়া না দেয় — তাই
+    দেরি হলেও হারায় না। কিন্তু <strong>edge-triggered</strong>
+    সংকেত একবারই আসে; সেই মুহূর্তে কেউ না শুনলে সংকেতটা চলে যায়।
+  </p>
+  <p>
+    এই কারণেই device driver গুলো interrupt unmask করার পর
+    status register আবার পড়ে দেখে — "আমি শোনার আগে কিছু ঘটে
+    গিয়েছিল কি?" OSTEP এর সাধারণ শিক্ষাটা এখানে সঠিক: যে
+    ঘটনার সংকেত একবারই আসে, সেটা না শুনলে মিস হয়ে যায়।
+  </p>
+</div>
+
+<h2 id="c4-summary">পুরো ছবিটা</h2>
+
+<p>
+  Limited Direct Execution এর দুটো স্তম্ভ, আর দুটোরই ভিত্তি
+  hardware এর সহযোগিতা:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>সমস্যা</th><th>Hardware দেয়</th><th>OS করে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Program যা খুশি করবে</td>
+      <td>user/kernel mode, privileged instruction, trap ও return-from-trap</td>
+      <td>Boot এ trap table বসায়, syscall number যাচাই করে</td>
+    </tr>
+    <tr>
+      <td>OS নিয়ন্ত্রণ পাবে না</td>
+      <td>Timer interrupt</td>
+      <td>Timer চালু করে, handler এ scheduler ডাকে, context switch করে</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  লক্ষ করুন দুটোই <strong>mechanism</strong> — chapter 2 এর সেই
+  পার্থক্যটা। "কীভাবে switch করা যায়" এটা mechanism। "কাকে পরে
+  চালানো উচিত" — সেটা policy, আর সেটাই পরের chapter।
+</p>
+
+<div class="qs">
+  <h2 id="c4-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Trap instruction চালানোর সময় process একটা syscall
+      <em>number</em> দেয়, কোনো ঠিকানা নয়। যদি ঠিকানা দিতে দেওয়া
+      হতো, তাহলে একজন আক্রমণকারী ঠিক কী করতে পারত? আপনার
+      উত্তরে permission check এর অবস্থানটা ব্যবহার করুন।
+    </li>
+    <li>
+      Cooperative scheduling এ একটা <code>while(1){}</code> মেশিন
+      আটকে দেয়। কিন্তু preemptive scheduling এও একটা process
+      পুরো মেশিন কার্যত অচল করে দিতে পারে — কীভাবে? (সূত্র:
+      timer interrupt টা কোন mode এ handle হয়, আর সেখানে
+      কতক্ষণ থাকা যায়।)
+    </li>
+    <li>
+      <code>/proc/self/status</code> এ voluntary context switch
+      ১২,০০০ আর nonvoluntary ৩০। আরেকটা process এ উল্টো — ২০ আর
+      ৫০,০০০। দুটো process কী ধরনের কাজ করছে, আর কোনটার
+      performance সমস্যা হলে আপনি প্রথমে কোথায় তাকাবেন?
+    </li>
+    <li>
+      KPTI প্রতিটা syscall এ CR3 বদলাতে বাধ্য করে, তাই syscall
+      ধীর হয়েছে। এখন ভাবুন একটা program যা প্রতি
+      <code>read()</code> এ ৪KB পড়ে, বনাম আরেকটা যা প্রতি
+      <code>read()</code> এ ৬৪KB পড়ে। KPTI এর আপেক্ষিক ক্ষতি
+      কোনটার বেশি, আর কেন? এটা থেকে buffer size নিয়ে কী সিদ্ধান্ত?
+    </li>
+    <li>
+      Context switch এর পরোক্ষ খরচ (cache, TLB) সরাসরি খরচের চেয়ে
+      বড়। তাহলে একটা 4-core মেশিনে 8টা thread বনাম 800টা thread —
+      দুটোতেই একই মোট কাজ থাকলে কেন দ্বিতীয়টা ধীর হবে? আপনার
+      উত্তরে "কাজ" আর "কাজ শেষ করার সময়" আলাদা করুন।
+    </li>
+    <li>
+      Network-ভারী একটা server এ <code>top</code> দেখাচ্ছে
+      <code>si</code> (softirq) ৩৫%, কিন্তু আপনার application এর
+      নিজের CPU ব্যবহার কম। এই সময়টা কোথায় যাচ্ছে, আর এটা
+      top half না bottom half? কেন এই কাজটা top half এ করা হয় না?
+    </li>
+  </ol>
+</div>

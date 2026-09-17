@@ -1,0 +1,605 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 21, 22, 23 · pdf p241–276</span>
+  </div>
+  <h1>Physical memory শেষ হলে — swap, reclaim, OOM</h1>
+  <p class="ch-lede">
+    এখন পর্যন্ত ধরে নিয়েছি physical memory যথেষ্ট আছে। নেই। RAM
+    ভরে গেলে কী বের করা হবে, কে সিদ্ধান্ত নেয়, আর কেন আপনার pod
+    ঠিক ওই মুহূর্তে মারা যায় — এটাই Part 1 এর শেষ অংশ, আর
+    production এ সবচেয়ে বেশি ভুল বোঝা অংশ।
+  </p>
+</div>
+
+<p>
+  Chapter 9-10 এ ধরে নিয়েছিলাম প্রতিটা page এর জন্য একটা frame
+  আছে। বাস্তবে RAM সীমিত, আর সব process এর সব page একসাথে
+  রাখার জায়গা নেই।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Physical memory এর চেয়ে বেশি page দরকার হলে OS কী করবে?
+    কোন page বের করবে, কীভাবে সিদ্ধান্ত নেবে, আর ভুল সিদ্ধান্তের
+    দাম কত?
+  </p>
+</div>
+
+<h2 id="c11-mechanism">Mechanism — present bit আর swap</h2>
+
+<p>
+  পুরো ব্যবস্থাটা দাঁড়িয়ে আছে PTE এর একটা bit এর উপর, যেটা
+  chapter 9 এ দেখেছি: <strong><code>P</code> (present)</strong>।
+</p>
+
+<pre class="ascii"><code>  P = 1 →  page টা RAM এ আছে, PFN বৈধ, সরাসরি ব্যবহার করো
+
+  P = 0 →  page টা RAM এ নেই → page fault
+           তখন PTE এর বাকি bit গুলো অন্য অর্থ বহন করে:
+           সেখানে থাকে swap slot এর ঠিকানা
+
+  ┌────────────────────────────────────────┐
+  │  P=1:  [ PFN | flags | 1 ]             │  RAM এ
+  │  P=0:  [ swap offset | type | 0 ]      │  disk এ
+  └────────────────────────────────────────┘
+     একই ৬৪ bit, দুটো সম্পূর্ণ আলাদা অর্থ</code></pre>
+
+<p>
+  এটা একটা মিতব্যয়ী নকশা: page RAM এ না থাকলে PFN রাখার দরকার
+  নেই, তাই ওই bit গুলোতেই disk এর ঠিকানা রাখা হয়।
+</p>
+
+<p>
+  Page fault এর পুরো পথটা chapter 9 এ দেখেছি। এখন যে শাখাটা
+  গুরুত্বপূর্ণ:
+</p>
+
+<pre class="ascii"><code>  access → P=0 → page fault → kernel
+
+  kernel:
+    ১. PTE থেকে swap offset পড়ো
+    ২. একটা free frame দরকার
+         │
+         ├── free frame আছে? → ব্যবহার করো
+         │
+         └── নেই? → কাউকে বের করতে হবে (reclaim)
+                    → dirty হলে আগে disk এ লেখো
+                    → তারপর frame টা নাও
+    ৩. disk থেকে page পড়ো  ← ধীর! process BLOCKED
+    ৪. PTE হালনাগাদ করো: PFN বসাও, P=1
+    ৫. process কে READY করো, instruction আবার চালাও</code></pre>
+
+<p>
+  ধাপ ৩ টাই আসল দাম। এটা একটা <strong>major fault</strong> —
+  chapter 10 এর table এ দেখেছি NVMe তে ~২০–১০০µs, HDD তে
+  ~১০ms। CPU এর দৃষ্টিতে এটা অনন্তকাল।
+</p>
+
+<h2 id="c11-watermark">কখন reclaim শুরু হয়</h2>
+
+<p>
+  OS memory একেবারে শেষ হওয়া পর্যন্ত অপেক্ষা করে না — তাহলে
+  প্রতিটা allocation একটা disk write এর জন্য আটকে থাকত। বরং
+  দুটো সীমা রাখে:
+</p>
+
+<pre class="ascii"><code>  free memory
+      ▲
+      │
+  HW ─┼─────────────────  high watermark
+      │    ╲              এখানে পৌঁছালে background reclaim
+      │     ╲             থেমে যায়
+      │      ╲
+  LW ─┼───────╲─────────  low watermark
+      │        ╲          এর নিচে নামলে kswapd জেগে ওঠে,
+      │         ╲         background এ page বের করতে থাকে
+  min ┼──────────╲──────  এর নিচে নামলে direct reclaim:
+      │                   allocation করা thread নিজেই
+      ▼                   reclaim করতে বাধ্য হয় → stall!
+
+  background reclaim (kswapd)  → আপনার latency তে দেখা যায় না
+  direct reclaim               → আপনার thread আটকে থাকে</code></pre>
+
+<p>
+  এই পার্থক্যটা গুরুত্বপূর্ণ। <code>kswapd</code> নামের একটা
+  kernel thread আগে থেকেই page বের করে রাখে, তাই allocation
+  দ্রুত হয়। কিন্তু চাহিদা খুব দ্রুত বাড়লে
+  <strong>direct reclaim</strong> হয় — যে thread memory চাইছে,
+  সে নিজেই page বের করার কাজ করতে বাধ্য হয়। এটা সরাসরি
+  latency spike।
+</p>
+
+<pre><code># direct reclaim হচ্ছে কি (এই সংখ্যা বাড়া মানে চাপ)
+$ grep -E 'pgscan_direct|pgsteal_direct|pgscan_kswapd' /proc/vmstat
+
+# watermark গুলো
+$ grep -A3 'Node 0, zone   Normal' /proc/zoneinfo | head -6</code></pre>
+
+<h2 id="c11-policy">Policy — কোন page বের করব</h2>
+
+<p>
+  এখন আসল প্রশ্ন। লক্ষ্য: যেটা আর লাগবে না সেটা বের করো।
+  কিন্তু ভবিষ্যৎ জানা যায় না।
+</p>
+
+<h3 id="c11-opt">আদর্শ — OPT</h3>
+
+<p>
+  তত্ত্বগতভাবে সেরা নীতি: যে page <em>সবচেয়ে দূর ভবিষ্যতে</em>
+  লাগবে, সেটা বের করো। এর নাম OPT বা Belady's algorithm।
+</p>
+
+<p>
+  এটা বাস্তবায়নযোগ্য নয় — ভবিষ্যৎ জানতে হয়। কিন্তু এটা একটা
+  মাপকাঠি হিসেবে অমূল্য: আপনার আসল নীতি OPT এর কত কাছে,
+  সেটাই বলে দেয় আর কতটা উন্নতি সম্ভব।
+</p>
+
+<h3 id="c11-compare">বাস্তব নীতিগুলোর তুলনা</h3>
+
+<p>
+  একটা reference stream ধরে তুলনা করা যাক — cache এ ৩টা page
+  রাখার জায়গা আছে:
+</p>
+
+<pre class="ascii"><code>  access:  0  1  2  0  1  3  0  3  1  2  1  1
+
+  FIFO (যে আগে এসেছে, সে আগে যাবে):
+    hit rate ≈ 36%
+
+  LRU (সবচেয়ে বেশিক্ষণ অব্যবহৃত):
+    hit rate ≈ 54%
+
+  OPT (আদর্শ):
+    hit rate ≈ 63%
+
+  Random:
+    hit rate ≈ 40% (গড়ে)</code></pre>
+
+<p>
+  LRU ভালো করে কারণ সে locality কে কাজে লাগায় — যা সাম্প্রতিক
+  অতীতে ব্যবহৃত হয়েছে, তা শিগগিরই আবার লাগবে। Chapter 10 এর
+  temporal locality, শুধু আলাদা মাপে।
+</p>
+
+<p>
+  একটা মজার বিষয়: FIFO তে <strong>Belady's anomaly</strong>
+  ঘটতে পারে — cache বড় করলে hit rate <em>কমে</em> যায়।
+  LRU তে এটা অসম্ভব, কারণ LRU এর একটা "stack property" আছে:
+  N আকারের cache এ যা থাকে, N+1 আকারের cache এ তার সবটাই থাকে।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"LRU সেরা বাস্তব নীতি, kernel LRU ব্যবহার করে,
+    তাই আমার application এও LRU cache বানানো উচিত।"</strong>
+  </p>
+  <p>
+    <strong>কোনো kernel সত্যিকারের LRU ব্যবহার করে না</strong> —
+    করতে পারে না। সত্যিকারের LRU এর জন্য প্রতিটা memory access
+    এ একটা list হালনাগাদ করতে হবে। প্রতিটা load/store এ।
+    সেটা memory কে কয়েকগুণ ধীর করে দিত।
+  </p>
+  <p>
+    বাস্তবে যা হয়: hardware শুধু <code>A</code> (accessed) bit
+    সেট করে (chapter 9), আর kernel সেটা দেখে একটা
+    <em>আনুমানিক</em> LRU চালায় — clock algorithm বা দুই-list
+    পদ্ধতি। "সবচেয়ে পুরনো" নয়, "সম্প্রতি ছোঁয়া হয়নি"।
+  </p>
+  <p>
+    আর application স্তরে LRU প্রায়ই ভুল পছন্দ:
+    একবার-স্ক্যান করা বড় data (table scan, log প্রক্রিয়াকরণ)
+    LRU cache সম্পূর্ণ ধুয়ে দেয় — যে page গুলো আর কখনো লাগবে
+    না, সেগুলোই সব জায়গা নিয়ে নেয়। এই কারণেই Postgres
+    clock-sweep ব্যবহার করে, আর আধুনিক cache LFU-ঘেঁষা
+    (Redis এর <code>allkeys-lfu</code>, বা TinyLFU/W-TinyLFU)।
+  </p>
+</div>
+
+<h2 id="c11-linux">Linux এ আসলে কী হয়</h2>
+
+<p>
+  Linux এর reclaim দুটো list এর উপর দাঁড়ানো:
+</p>
+
+<pre class="ascii"><code>  ┌──────────────────────────────────────────────┐
+  │  ACTIVE list    — সাম্প্রতিক ব্যবহৃত         │
+  │  ┌────┬────┬────┬────┐                       │
+  │  │ p1 │ p2 │ p3 │ p4 │                       │
+  │  └────┴────┴────┴────┘                       │
+  │         │ দুবার ছোঁয়া হলে উপরে ওঠে           │
+  │         │ না ছোঁয়া হলে নিচে নামে ↓          │
+  │  ┌──────▼───────────────┐                    │
+  │  │  INACTIVE list       │  ← reclaim এখান    │
+  │  │  ┌────┬────┬────┐    │    থেকে শুরু করে   │
+  │  │  │ p5 │ p6 │ p7 │    │                    │
+  │  │  └────┴────┴────┘    │                    │
+  │  └──────────────────────┘                    │
+  └──────────────────────────────────────────────┘
+
+  আর প্রতিটা list দুই ধরনের page এর জন্য আলাদা:
+    anon  — process এর নিজের memory (heap, stack) → swap এ যায়
+    file  — file থেকে আসা page (page cache)      → শুধু ফেলে দেওয়া যায়
+                                                    (dirty হলে আগে লেখা)</code></pre>
+
+<p>
+  <code>anon</code> আর <code>file</code> page এর পার্থক্যটা
+  গুরুত্বপূর্ণ: file page ফেলে দেওয়া সস্তা (disk এ কপি আছেই),
+  কিন্তু anon page বের করতে swap এ লিখতে হয়। তাই kernel
+  স্বাভাবিকভাবে file page আগে বের করে।
+</p>
+
+<p>
+  কতটা anon এর দিকে ঝুঁকবে, সেটা একটা knob:
+</p>
+
+<pre><code># 0 = anon page যতটা সম্ভব এড়াও, 100 = সমানভাবে দেখো
+# আধুনিক default 60, কিন্তু cgroup এ আলাদা করে দেওয়া যায়
+$ sysctl vm.swappiness
+vm.swappiness = 60
+
+# এই মুহূর্তে কোন list এ কত আছে
+$ grep -E 'Active|Inactive' /proc/meminfo
+Active(anon):    2451232 kB
+Inactive(anon):   184020 kB
+Active(file):    1203344 kB
+Inactive(file):  4821092 kB</code></pre>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP এই chapter শেষ করে একটা পরামর্শ দিয়ে: thrashing এর
+    সবচেয়ে ভালো সমাধান হলো <em>"buy more memory"</em>।
+    ২০২৬ এ এটা সম্ভবত পুরো বইয়ের সবচেয়ে পুরনো বাক্য।
+  </p>
+  <p>
+    আপনি memory কিনতে পারেন না। আপনার সীমা একটা
+    <code>memory.max</code> বা একটা instance SKU, আর দুটোই
+    আপনার হাতের বাইরে। Memory এখন datacenter এর সবচেয়ে
+    বড় খরচের খাত, তাই পুরো একটা প্রযুক্তি-শ্রেণী তৈরি হয়েছে
+    <em>ইচ্ছাকৃত overcommit</em> এর জন্য:
+  </p>
+  <ul>
+    <li>
+      <strong>zswap / zram</strong> — swap করার আগে page টা
+      compress করে RAM এই রাখা। Disk এ যাওয়ার চেয়ে ১০০ গুণ
+      দ্রুত।
+    </li>
+    <li>
+      <strong>KSM (Kernel Samepage Merging)</strong> — একই
+      বিষয়বস্তুর page গুলো খুঁজে এক করে দেওয়া। একই container
+      image থেকে চলা বহু pod এ কাজে লাগে।
+    </li>
+    <li>
+      <strong>MGLRU (Multi-Gen LRU)</strong> — Linux 6.1 থেকে
+      পাওয়া, পুরনো দুই-list পদ্ধতির বদলে একাধিক প্রজন্ম।
+      উল্লেখযোগ্যভাবে ভালো সিদ্ধান্ত নেয়, বিশেষত চাপে।
+    </li>
+    <li>
+      <strong>PSI (Pressure Stall Information)</strong> — নিচে
+      দেখব, thrashing মাপার আধুনিক উপায়।
+    </li>
+  </ul>
+  <p>
+    অর্থাৎ replacement policy এক দশক অপ্রাসঙ্গিক ছিল (RAM
+    সস্তা ছিল), তারপর আগের চেয়ে বেশি প্রাসঙ্গিক হয়ে উঠেছে।
+  </p>
+  <pre><code># MGLRU চালু আছে কি
+$ cat /sys/kernel/mm/lru_gen/enabled
+0x0007                   ← শূন্য নয় মানে চালু
+
+# zswap
+$ cat /sys/module/zswap/parameters/enabled</code></pre>
+</div>
+
+<h2 id="c11-thrashing">Thrashing আর PSI</h2>
+
+<p>
+  <strong>Thrashing</strong> হলো সেই অবস্থা যখন system তার
+  বেশিরভাগ সময় page আনা-নেওয়ায় ব্যয় করে, আসল কাজে নয়।
+  Working set RAM এর চেয়ে বড় হলে এটা হয়।
+</p>
+
+<p>
+  পুরনো লক্ষণ ছিল CPU কম কিন্তু disk ব্যস্ত। কিন্তু এটা মাপার
+  একটা সরাসরি উপায় এখন আছে, আর এটা OSTEP এ নেই:
+</p>
+
+<pre><code>$ cat /proc/pressure/memory
+some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+
+# some = অন্তত একটা task memory এর জন্য আটকে আছে (% সময়)
+# full = সব task আটকে — কেউ এগোচ্ছে না
+
+# cgroup-ভিত্তিক (container এর নিজের চাপ)
+$ cat /sys/fs/cgroup/memory.pressure</code></pre>
+
+<p>
+  <strong>PSI</strong> হলো thrashing এর আধুনিক সংকেত।
+  <code>some</code> ১০% এর উপরে মানে memory চাপ সত্যিকারের
+  latency ঘটাচ্ছে; <code>full</code> শূন্যের উপরে মানে
+  system কার্যত থেমে আছে। Kubernetes এর কিছু autoscaler
+  এখন এটাই ব্যবহার করে, কারণ memory usage এর শতকরা হিসাবের
+  চেয়ে এটা অনেক ভালো সংকেত।
+</p>
+
+<h2 id="c11-cgroup">Container এ — memory.max আর OOM</h2>
+
+<p>
+  এবার সেই অংশ যা production এ সবচেয়ে বেশি কাটে। Chapter 7 এ
+  CPU limit দেখেছি — ছাড়ালে throttle হয়, অর্থাৎ ধীর হয়।
+  Memory সম্পূর্ণ আলাদা।
+</p>
+
+<pre class="ascii"><code>  ┌─────────────────────────────────────────────────┐
+  │  memory.high  = 900M   ← নরম সীমা               │
+  │     ছাড়ালে: reclaim এর চাপ বাড়ে, allocation     │
+  │     ধীর হয় (throttle), কিন্তু process বাঁচে     │
+  ├─────────────────────────────────────────────────┤
+  │  memory.max   = 1G     ← কঠিন সীমা              │
+  │     ছাড়ালে: reclaim চেষ্টা, ব্যর্থ হলে          │
+  │     ►► OOM kill ◄◄                              │
+  └─────────────────────────────────────────────────┘
+
+  CPU limit ছাড়ালে  →  ধীর হও (throttle)
+  Memory limit ছাড়ালে →  মরে যাও (SIGKILL)
+
+  কারণ: CPU time-shared — পরে পাওয়া যায়।
+        Memory space-shared — এখনই লাগবে, নইলে কাজ অসম্ভব।
+        (Chapter 2 এর time vs space sharing)</code></pre>
+
+<p>
+  এই অসমতাটা Kubernetes এর খামখেয়াল নয় — এটা resource দুটোর
+  প্রকৃতিগত পার্থক্য, আর chapter 2 এ time sharing বনাম space
+  sharing হিসেবে এটা শুরু করেছিলাম।
+</p>
+
+<pre><code># container এ আসল সীমা আর বর্তমান ব্যবহার
+$ cat /sys/fs/cgroup/memory.max
+1073741824
+$ cat /sys/fs/cgroup/memory.current
+812334592
+
+# OOM কতবার হয়েছে, আর reclaim এর চাপ
+$ cat /sys/fs/cgroup/memory.events
+low 0
+high 4821          ← memory.high ছাড়িয়েছে 4821 বার
+max 12             ← memory.max এ ধাক্কা খেয়েছে 12 বার
+oom 3              ← OOM অবস্থা 3 বার
+oom_kill 3         ← 3 বার kill হয়েছে
+
+# বিস্তারিত হিসাব — anon, file, kernel আলাদা করে
+$ cat /sys/fs/cgroup/memory.stat | head -12</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার container এ 1GB limit, heap 600MB, তাই
+    400MB headroom আছে।"</strong>
+  </p>
+  <p>
+    না। <code>memory.max</code> আপনার heap গোনে না —
+    সে <strong>cgroup এর মোট charge</strong> গোনে, আর তাতে
+    অনেক কিছু আছে যা আপনি হিসাবে রাখেন না:
+  </p>
+  <ul>
+    <li><strong>Page cache</strong> — আপনার পড়া/লেখা file গুলো (এটাই প্রায়ই সবচেয়ে বড় অংশ)</li>
+    <li><strong>Anonymous memory</strong> — heap, stack, সব thread এর stack</li>
+    <li><strong>Kernel memory</strong> — socket buffer, dentry, inode cache, page table নিজে</li>
+    <li><strong>tmpfs / shm</strong> — <code>/dev/shm</code> এ কিছু রাখলে সেটাও</li>
+  </ul>
+  <p>
+    তাই একটা service যেটা প্রচুর file পড়ে, তার page cache
+    limit ভরিয়ে OOM ঘটাতে পারে — যদিও heap ছোট।
+    সৌভাগ্যক্রমে page cache reclaimable, তাই kernel আগে
+    সেটাই বের করে। কিন্তু হিসাবটা আপনার মাথায় থাকা দরকার।
+  </p>
+  <pre><code># আসলে কী charge হচ্ছে
+$ cat /sys/fs/cgroup/memory.stat | grep -E '^(anon|file|slab|sock|kernel)'
+anon 524288000        ← heap, stack
+file 268435456        ← page cache!
+slab 41943040         ← kernel structure
+sock 8388608          ← network buffer</code></pre>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Swap থাকা মানে system খারাপ — যেকোনো swap ব্যবহার
+    সমস্যার চিহ্ন, তাই <code>swapoff -a</code> করে দেওয়া
+    উচিত।"</strong>
+  </p>
+  <p>
+    Swap সম্পূর্ণ বন্ধ করা প্রায়ই পরিস্থিতি <em>খারাপ</em> করে।
+    কারণ swap না থাকলে kernel এর reclaim করার একটাই উপায়
+    থাকে: file page (page cache) ফেলে দেওয়া। ফলে আপনার
+    কখনো-ব্যবহৃত-না-হওয়া anon page গুলো RAM দখল করে বসে
+    থাকে, আর যে page cache টা সত্যিই কাজে লাগছিল সেটা বারবার
+    বেরিয়ে যায় — অর্থাৎ বেশি disk I/O, বেশি major fault।
+  </p>
+  <p>
+    আরও: swap না থাকলে OOM kill <em>আগে</em> আসে, কারণ
+    kernel এর হাতে বিকল্প কম।
+  </p>
+  <p>
+    আসল নিয়মটা হলো: <strong>swap এর <em>পরিমাণ</em> নয়,
+    swap এর <em>হার</em> দেখুন।</strong> কিছু page swap এ পড়ে
+    থাকা সুস্থ — সেগুলো লাগছে না। কিন্তু প্রতি সেকেন্ডে
+    হাজার page আনা-নেওয়া হচ্ছে মানে thrashing।
+  </p>
+  <pre><code># si/so = swap in/out প্রতি সেকেন্ডে — এটাই আসল সংকেত
+$ vmstat 1 5
+procs -----------memory---------- ---swap-- -----io----
+ r  b   swpd   free  buff  cache   si   so    bi    bo
+ 1  0 524288 102400 20480 819200    0    0     0     0   ← সুস্থ
+ 4  2 524288  40960  8192 204800  892 1024  4821  5102   ← thrashing!</code></pre>
+  <p>
+    Kubernetes ঐতিহাসিকভাবে swap বন্ধ করতে বলত (kubelet চলতই
+    না), কিন্তু ১.২২ থেকে NodeSwap feature এসেছে আর ১.৩০+ এ
+    এটা আরও পরিণত — কারণ সম্পূর্ণ নিষেধাজ্ঞা ভুল ছিল।
+  </p>
+</div>
+
+<h2 id="c11-oomkill">OOM killer — কাকে মারে, কেন</h2>
+
+<p>
+  Reclaim ব্যর্থ হলে kernel কাউকে মারতে বাধ্য হয়। সিদ্ধান্তটা
+  একটা score এর ভিত্তিতে:
+</p>
+
+<pre class="ascii"><code>  oom_score ← মূলত process এর memory ব্যবহারের অনুপাত
+              (cgroup এ: ওই cgroup এর মধ্যে সবচেয়ে বড়)
+
+  সমন্বয় করা যায়:
+    oom_score_adj = -1000  →  কখনো মারবে না (অনাক্রম্য)
+    oom_score_adj =     0  →  স্বাভাবিক
+    oom_score_adj = +1000  →  সবার আগে মারো
+
+  ফল: সাধারণত সবচেয়ে বড় process টাই মরে —
+       যেটা প্রায়ই আপনার মূল application,
+       কোনো ছোট sidecar নয়।</code></pre>
+
+<pre><code># কে মরার সম্ভাবনায় এগিয়ে
+$ for p in /proc/[0-9]*; do
+    printf "%s %s %s\n" "$(cat $p/oom_score 2>/dev/null)" \
+      "${p#/proc/}" "$(cat $p/comm 2>/dev/null)"
+  done | sort -rn | head -5
+
+# কেন মরল — dmesg এ পূর্ণ হিসাব থাকে
+$ dmesg | grep -i -A5 'killed process'
+
+# container এ exit code 137 = 128 + 9 (SIGKILL)
+$ kubectl get pod mypod -o jsonpath='{.status.containerStatuses[0].lastState}'
+# reason: OOMKilled</code></pre>
+
+<p>
+  Chapter 3 এ exit code 137 এর কথা বলেছিলাম — এখানে তার
+  উৎসটা সম্পূর্ণ হলো: <code>128 + 9</code>, অর্থাৎ
+  <code>SIGKILL</code>, আর container এ সেটা প্রায় সবসময়
+  OOM killer।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Runtime এর heap সীমা আর cgroup এর সীমা আলাদা</strong>,
+    আর প্রথমটা দ্বিতীয়টার চেয়ে বড় হলে OOM kill অনিবার্য।
+    এটাই container এ সবচেয়ে সাধারণ memory bug:
+  </p>
+  <pre><code># ভুল: JVM heap = limit, কিন্তু JVM এর heap-বহির্ভূত
+# memory (metaspace, thread stack, JIT, direct buffer) ও লাগে
+limits.memory: 1Gi
+JAVA_OPTS: -Xmx1g          ← OOM kill নিশ্চিত
+
+# ঠিক: heap কে limit এর একটা অংশ রাখো
+limits.memory: 1Gi
+JAVA_OPTS: -XX:MaxRAMPercentage=70   ← cgroup পড়ে হিসাব করে
+
+# Node
+limits.memory: 1Gi
+NODE_OPTIONS: --max-old-space-size=700
+
+# Go — GOMEMLIMIT (1.19+), soft limit, GC কে চাপ দেয়
+env:
+  - name: GOMEMLIMIT
+    value: "900MiB"</code></pre>
+  <p>
+    <strong>Go এর <code>GOMEMLIMIT</code></strong> বিশেষভাবে
+    উল্লেখযোগ্য: এটা একটা <em>soft</em> limit — ছাড়ালে GC
+    আরও আগ্রাসীভাবে চলে, মারা যায় না। এটা cgroup এর
+    <code>memory.high</code> এর সমতুল্য দর্শন, আর অনেক সময়
+    এটাই সঠিক হাতিয়ার।
+  </p>
+  <p>
+    আর <strong>RSS দেখে memory leak সিদ্ধান্ত নেওয়া
+    বিপজ্জনক</strong>: chapter 8 এ দেখেছি <code>free()</code>
+    করলে RSS কমে না। তার উপরে <code>MADV_FREE</code> ব্যবহার
+    করা allocator (jemalloc, Go runtime) page টা kernel কে
+    "চাইলে নিতে পারো" বলে রাখে — RSS তখনো গোনা হয়, যতক্ষণ
+    kernel সত্যিই নেয়নি। তাই leak খুঁজতে
+    <code>smaps_rollup</code> এর <code>Pss</code> আর
+    <code>Private_Dirty</code> দেখা ভালো।
+  </p>
+</div>
+
+<h2 id="c11-part1">Part 1 শেষ — যা দাঁড়াল</h2>
+
+<p>
+  এগারোটা chapter এ আমরা virtualization এর পুরো স্তম্ভটা
+  দেখলাম। সবকিছু একটা শিকলে বাঁধা:
+</p>
+
+<pre class="ascii"><code>  একটা program চালানো হলো
+       │
+       ├─ process তৈরি (ch 2)  — PCB, state machine
+       ├─ fork/exec (ch 3)     — COW দিয়ে সস্তা copy
+       ├─ trap ও LDE (ch 4)    — নিয়ন্ত্রণ না হারিয়ে চালানো
+       │
+       ├─ scheduling (ch 5-7)  — কে, কখন, কোথায়, কতটুকু
+       │      MLFQ → EEVDF → cgroup
+       │
+       ├─ address space (ch 8) — illusion + allocator
+       ├─ translation (ch 9)   — VPN→PFN, page table
+       ├─ TLB (ch 10)          — নইলে ৫ গুণ ধীর
+       └─ reclaim/OOM (ch 11)  — RAM শেষ হলে
+
+  প্রতিটা স্তরে একই কাঠামো ফিরে এসেছে:
+    mechanism (কীভাবে সম্ভব) বনাম policy (কোনটা উচিত)
+    আর hardware এর সহযোগিতা ছাড়া কোনোটাই সম্ভব নয়।</code></pre>
+
+<p>
+  Part 2 এ আমরা একটা ভিন্ন সমস্যায় যাব। এখন পর্যন্ত process
+  গুলো আলাদা ছিল — আলাদা address space, আলাদা memory। কিন্তু
+  একই memory ভাগ করে একাধিক execution চললে? সেখানে chapter 1
+  এর সেই <code>counter++</code> ফিরে আসবে, আর এবার আমরা
+  সম্পূর্ণ উত্তর দেব।
+</p>
+
+<div class="qs">
+  <h2 id="c11-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      PTE তে <code>P=0</code> হলে বাকি bit গুলো swap offset
+      রাখে। এই পুনর্ব্যবহারটা মিতব্যয়ী, কিন্তু একটা
+      নিরাপত্তা প্রশ্ন তোলে: ওই bit গুলোতে যদি এমন একটা
+      physical address থাকে যা সত্যিই বিদ্যমান, আর CPU
+      speculatively সেটা পড়ে ফেলে? (এটাই L1TF দুর্বলতার মূল।
+      Linux এর সমাধান কী হতে পারে বলে আপনার মনে হয়?)
+    </li>
+    <li>
+      Background reclaim (kswapd) আর direct reclaim এর
+      পার্থক্য আপনার p99 latency তে কীভাবে দেখা যায়?
+      <code>/proc/vmstat</code> এর কোন সংখ্যাগুলো দেখে আপনি
+      বলতে পারবেন কোনটা ঘটছে?
+    </li>
+    <li>
+      কোনো kernel সত্যিকারের LRU চালায় না। যদি চালাত, তাহলে
+      প্রতিটা memory access এ কী অতিরিক্ত কাজ লাগত? সেই খরচটা
+      hardware এ করা সম্ভব ছিল কি — আর <code>A</code> bit
+      পদ্ধতিটা কী কী তথ্য হারায়?
+    </li>
+    <li>
+      একটা container এ heap ৬০০MB, <code>memory.max</code>
+      ১GB, তবু OOM kill হচ্ছে। <code>memory.stat</code> এ
+      আপনি কোন চারটা খাত দেখবেন, আর প্রতিটার জন্য সমাধান
+      কী আলাদা হবে?
+    </li>
+    <li>
+      Swap বন্ধ করলে OOM kill আগে আসে — কেন? আপনার উত্তরে
+      anon আর file page এর পার্থক্যটা ব্যবহার করুন, আর বলুন
+      কেন "swap আছে মানে খারাপ" এর বদলে "swap এর হার" দেখা
+      উচিত।
+    </li>
+    <li>
+      CPU limit ছাড়ালে throttle, memory limit ছাড়ালে kill।
+      Chapter 2 এর time sharing বনাম space sharing দিয়ে এই
+      অসমতা ব্যাখ্যা করুন। এখন ভাবুন disk I/O — সেটা কোন
+      শ্রেণীর, আর cgroup এ <code>io.max</code> ছাড়ালে কী
+      হওয়া উচিত বলে আপনার মনে হয়?
+    </li>
+  </ol>
+</div>

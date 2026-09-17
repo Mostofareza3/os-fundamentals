@@ -1,0 +1,616 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 28, pdf p310–332 · + futex, MCS, container-এ spin</span>
+  </div>
+  <h1>Lock — spin থেকে futex</h1>
+  <p class="ch-lede">
+    Chapter 12–14 এ সমস্যাটা দেখেছি। এখন প্রথম সমাধান: lock।
+    কিন্তু "lock নাও, কাজ করো, ছাড়ো" এর পিছনে একটা hardware
+    instruction, একটা syscall, আর একটা সূক্ষ্ম দুই-পথের নকশা
+    আছে — আর container এ সেই নকশাটা কেন গুরুত্বপূর্ণ।
+  </p>
+</div>
+
+<p>
+  Lock এর interface টা নির্মমভাবে সরল:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_lock(&amp;m);      /* critical section এ ঢোকো */
+counter++;                    /* এখন নিরাপদ */
+pthread_mutex_unlock(&amp;m);    /* বেরোও */</code></pre></div>
+
+<p>
+  এটা chapter 12 এর সেই race সারিয়ে দেয়, আর chapter 14 এর
+  ভাষায়: unlock একটা release, পরের lock একটা acquire — তাই
+  <strong>lock দুটো কাজ করে</strong>, mutual exclusion
+  <em>এবং</em> memory visibility।
+</p>
+
+<p>
+  কিন্তু <code>pthread_mutex_lock</code> এর ভিতরে কী আছে?
+  সেটাই এই chapter।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা lock বানাতে হবে যা তিনটে শর্ত মানে: (১) সত্যিই
+    mutual exclusion দেয়, (২) ন্যায্য — কেউ অনির্দিষ্টকাল
+    অপেক্ষা করবে না, (৩) দ্রুত — বিশেষত যখন কোনো প্রতিযোগিতা
+    নেই। Hardware থেকে কী সাহায্য দরকার?
+  </p>
+</div>
+
+<h2 id="c15-naive">প্রথম চেষ্টা — শুধু একটা flag</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* BROKEN — this is the bug, shown deliberately */
+typedef struct { int flag; } lock_t;
+
+void lock(lock_t *l) {
+    while (l-&gt;flag == 1)        /* (a) কেউ ধরে আছে? অপেক্ষা করো */
+        ;
+    l-&gt;flag = 1;                /* (b) এখন আমি ধরলাম */
+}
+
+void unlock(lock_t *l) {
+    l-&gt;flag = 0;
+}</code></pre></div>
+
+<p>
+  সমস্যা: (a) আর (b) এর মাঝখানে। দুটো thread একসাথে
+  <code>flag == 0</code> দেখতে পারে, দুজনেই পাস করতে পারে,
+  দুজনেই <code>flag = 1</code> করতে পারে — আর দুজনেই
+  critical section এ ঢুকে পড়বে।
+</p>
+
+<p>
+  লক্ষ করুন এটা <em>ঠিক সেই একই আকৃতি</em> যা chapter 14 এ
+  check-then-act হিসেবে দেখেছি। Lock বানাতে গিয়ে আমরা সেই
+  সমস্যাটাই আবার তৈরি করলাম — কিন্তু এবার আরও ছোট মাপে।
+</p>
+
+<p>
+  এখানেই মূল অন্তর্দৃষ্টি: <strong>software দিয়ে এটা সমাধান
+  করা যায় না</strong>। "পরীক্ষা করো আর সেট করো" — এই দুটো
+  কাজ একসাথে, অবিভাজ্যভাবে করতে হবে, আর সেটা hardware কেই
+  দিতে হবে।
+</p>
+
+<h2 id="c15-tas">Hardware এর সাহায্য — test-and-set</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* What the hardware instruction does, expressed in C.
+   The point is that all of this happens ATOMICALLY —
+   no thread can observe a half-finished state.
+   x86: xchg     SPARC: ldstub     ARM: ldxr/stxr pair */
+int TestAndSet(int *old_ptr, int new) {
+    int old = *old_ptr;      /* পুরনো মান নাও */
+    *old_ptr = new;          /* নতুন মান বসাও */
+    return old;              /* পুরনোটা ফেরত দাও */
+}</code></pre></div>
+
+<p>
+  এই একটা instruction দিয়ে একটা কাজ করা lock বানানো যায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* A correct spin lock. Simple, and a scalability disaster —
+   see below for why. */
+typedef struct { int flag; } lock_t;
+
+void lock(lock_t *l) {
+    /* Keep swapping 1 in. If we get 0 back, the lock was free
+       and is now ours. If we get 1 back, someone holds it. */
+    while (TestAndSet(&amp;l-&gt;flag, 1) == 1)
+        ;                        /* spin */
+}
+
+void unlock(lock_t *l) {
+    l-&gt;flag = 0;
+}</code></pre></div>
+
+<p>
+  কেন এটা কাজ করে: swap টা atomic, তাই দুটো thread একসাথে
+  <code>0</code> ফেরত পেতে পারে না। ঠিক একজন পায়।
+</p>
+
+<p>
+  আরেকটা hardware primitive, যেটা আরও নমনীয় — chapter 14 এ
+  দেখেছি:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* CAS — the foundation of most lock-free code */
+int CompareAndSwap(int *ptr, int expected, int new) {
+    int actual = *ptr;
+    if (actual == expected)
+        *ptr = new;
+    return actual;               /* caller checks if it matched */
+}
+
+/* A lock built from CAS */
+void lock(lock_t *l) {
+    while (CompareAndSwap(&amp;l-&gt;flag, 0, 1) == 1)
+        ;
+}</code></pre></div>
+
+<h2 id="c15-spin-bad">Spin lock কেন বিপর্যয়</h2>
+
+<p>
+  উপরের lock টা <em>সঠিক</em>, কিন্তু আধুনিক multicore এ
+  এটা একটা পাঠ্যপুস্তকীয় scalability বিপর্যয়। কারণটা
+  chapter 13 এর coherence protocol এ:
+</p>
+
+<pre class="ascii"><code>  চারটে core spin করছে একই flag এর উপর:
+
+  প্রতিটা TestAndSet একটা LEখা — তাই প্রতিবার
+  cache line এর EXCLUSIVE ownership দরকার।
+
+  core 0: line চাইল (M) ──┐
+  core 1: line চাইল (M) ──┤  line টা চার core এর মধ্যে
+  core 2: line চাইল (M) ──┤  অবিরাম ping-pong করছে
+  core 3: line চাইল (M) ──┘
+
+  N টা spinner → O(N) coherence traffic
+  আর lock holder নিজেও ধীর হয়ে যায়, কারণ তার
+  নিজের memory access গুলো এই ট্রাফিকে আটকে যায়!
+
+  ফলাফল: thread বাড়ালে throughput কমে।</code></pre>
+
+<p>
+  প্রথম সংশোধন — <strong>test-and-test-and-set (TTAS)</strong>:
+  লেখার আগে শুধু পড়ে দেখো।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* TTAS — spin on a plain read (shared state, no ownership
+   transfer), and only attempt the expensive atomic when the
+   lock looks free. */
+void lock(lock_t *l) {
+    for (;;) {
+        /* Cheap phase: read-only spin. The line stays in S
+           state on every core — no coherence traffic. */
+        while (atomic_load_explicit(&amp;l-&gt;flag, memory_order_relaxed) == 1)
+            cpu_relax();                  /* hint to the CPU */
+
+        /* Expensive phase: try once. */
+        if (atomic_exchange_explicit(&amp;l-&gt;flag, 1,
+                                     memory_order_acquire) == 0)
+            return;
+    }
+}
+
+/* cpu_relax: tell the core we are spinning, so it can save
+   power and avoid memory-order speculation penalties.
+   x86: PAUSE     ARM64: YIELD / WFE */
+static inline void cpu_relax(void) {
+#if defined(__x86_64__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#endif
+}</code></pre></div>
+
+<p>
+  <code>PAUSE</code> instruction টা গুরুত্বপূর্ণ আর প্রায়ই
+  বাদ পড়ে: এটা CPU কে জানায় "আমি একটা spin loop এ আছি",
+  যাতে সে power বাঁচাতে পারে আর memory-order speculation এর
+  জরিমানা এড়াতে পারে। এটা না দিলে spin loop উল্লেখযোগ্যভাবে
+  বেশি ক্ষতিকর।
+</p>
+
+<p>
+  তবু TTAS এ একটা সমস্যা থাকে: lock ছাড়ার মুহূর্তে সব
+  spinner একসাথে ঝাঁপিয়ে পড়ে (thundering herd)। এর সমাধান
+  <strong>queue lock</strong> — প্রত্যেকে নিজের আলাদা
+  জায়গায় অপেক্ষা করে:
+</p>
+
+<pre class="ascii"><code>  MCS lock — প্রতিটা waiter এর নিজের node
+
+  tail ──────────────────────────┐
+                                  ▼
+  ┌────────┐    ┌────────┐    ┌────────┐
+  │ node A │───▶│ node B │───▶│ node C │
+  │ locked │    │ locked │    │ locked │
+  │ =false │    │ =true  │    │ =true  │
+  └────────┘    └────────┘    └────────┘
+   (ধরে আছে)     (অপেক্ষা)     (অপেক্ষা)
+
+  প্রত্যেকে নিজের node এর `locked` field এ spin করে —
+  আলাদা cache line, তাই কোনো ping-pong নেই।
+  A ছাড়ার সময় শুধু B এর field টা false করে।
+
+  → O(1) coherence traffic per handoff
+  → FIFO ন্যায্যতা বিনামূল্যে
+
+  Linux kernel এর qspinlock এই ধারণার উপর তৈরি।</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Spin lock দ্রুত কারণ context switch এড়ায়, তাই
+    userspace এ spin lock ব্যবহার করা উচিত।"</strong>
+  </p>
+  <p>
+    Spin lock এর পুরো যুক্তি একটা অনুমানের উপর দাঁড়িয়ে:
+    <em>lock holder এই মুহূর্তে চলছে আর শিগগিরই ছাড়বে</em>।
+    Kernel এর ভিতরে এই অনুমান বৈধ — critical section ছোট, আর
+    কেউ preempt করে না।
+  </p>
+  <p>
+    Userspace এ অনুমানটা মিথ্যা হতে পারে, আর container এ
+    সেটা নিয়মিত হয়। Chapter 7 এ দেখেছি
+    <code>cpu.max</code> quota শেষ হলে সব thread throttled হয়:
+  </p>
+  <pre><code>thread A: lock ধরল
+          ⚡ quota শেষ → throttled, 90ms স্থবির
+thread B: spin করছে... নিজের quota পুড়িয়ে...
+          → throttling আরও খারাপ করছে
+          → একটা মাইক্রোসেকেন্ডের critical section
+            ৯০ মিলিসেকেন্ডের স্থবিরতা হয়ে গেল</code></pre>
+  <p>
+    এই ঘটনার নাম <strong>lock-holder preemption</strong>, আর
+    virtualized বা container পরিবেশে এটাই spin lock কে
+    বিপজ্জনক করে। Single-CPU এর বিশ্লেষণটা শুধু নিরাশাবাদী
+    নয় — ভুল।
+  </p>
+  <p>
+    সঠিক পছন্দ প্রায় সবসময় একটা <strong>ঘুমিয়ে-পড়া
+    mutex</strong>, আর সেটাই futex।
+  </p>
+</div>
+
+<h2 id="c15-futex">Futex — দুই পথের নকশা</h2>
+
+<p>
+  প্রশ্নটা হলো: spin করা অপচয়, কিন্তু প্রতিবার kernel এ
+  গিয়ে ঘুমানোও অপচয় (chapter 4 এ দেখেছি syscall ~৫০–৪০০ns)।
+  উত্তর: <strong>দুটো পথ রাখো</strong>।
+</p>
+
+<p>
+  <strong>Futex (Fast Userspace muTEX — একটা kernel
+  mechanism যা শুধু প্রতিযোগিতা হলেই syscall করে,
+  নইলে পুরোটা userspace এ থাকে)</strong>।
+</p>
+
+<pre class="ascii"><code>  lock() এর দুটো পথ:
+
+  FAST PATH — কোনো প্রতিযোগিতা নেই (সাধারণ ক্ষেত্র)
+  ┌────────────────────────────────────────────┐
+  │  একটা atomic CAS userspace এর একটা word এ  │
+  │  সফল → lock পেয়ে গেলাম                     │
+  │                                            │
+  │  খরচ: ~১৫–২৫ ns                            │
+  │  কোনো syscall নেই, কোনো ring transition নেই│
+  │  kernel জানেই না lock টা আছে!              │
+  └────────────────────────────────────────────┘
+
+  SLOW PATH — প্রতিযোগিতা আছে
+  ┌────────────────────────────────────────────┐
+  │  ১. কিছুক্ষণ spin (adaptive — নিচে দেখুন)  │
+  │  ২. তবু না পেলে:                            │
+  │       futex(FUTEX_WAIT, &addr, expected)    │
+  │     → kernel thread টাকে ঘুম পাড়ায়        │
+  │     → CPU অন্য কাজে লাগে                    │
+  │                                            │
+  │  unlock করলে:                               │
+  │       futex(FUTEX_WAKE, &addr, 1)           │
+  │                                            │
+  │  খরচ: ~১–১০ µs (context switch সহ)         │
+  └────────────────────────────────────────────┘</code></pre>
+
+<p>
+  মূল কৌশলটা হলো: <strong>uncontended ক্ষেত্রে kernel
+  সম্পূর্ণ অনুপস্থিত</strong>। একটা mutex যা কেউ প্রতিযোগিতা
+  করছে না, সেটা কার্যত একটা atomic operation এর সমান দামি।
+</p>
+
+<p>
+  এটা যাচাই করা যায়:
+</p>
+
+<pre><code># uncontended: strace এ কোনো futex syscall দেখা যাবে না
+$ strace -c -f -e trace=futex ./single-threaded-locking
+# (কোনো output নেই — fast path এ kernel এ যায়ইনি)
+
+# contended: futex call দেখা যাবে
+$ strace -c -f -e trace=futex ./contended-locking
+% time     seconds  usecs/call     calls    errors syscall
+100.00    0.482173         241      2001       12 futex
+
+# কোথায় contention হচ্ছে তা খুঁজতে
+$ perf lock record ./prog &amp;&amp; perf lock report</code></pre>
+
+<p>
+  Slow path এ যাওয়ার আগে কতক্ষণ spin করা উচিত? উত্তরটা
+  সংখ্যা থেকেই আসে:
+</p>
+
+<pre class="ascii"><code>  spin এর খরচ প্রতি iteration:     ~কয়েক ns
+  ঘুম + জাগার খরচ (park/unpark):   ~১–১০ µs
+
+  নিয়ম: প্রত্যাশিত অপেক্ষা যদি park+unpark এর খরচের
+        চেয়ে কম হয়, তাহলে spin করো। নইলে ঘুমাও।
+
+  এটাই two-phase বা ADAPTIVE lock।
+  glibc এর pthread_mutex এ এটা আছে (PTHREAD_MUTEX_ADAPTIVE_NP),
+  আর Linux kernel এর mutex ও lock holder চলছে কি না দেখে
+  সিদ্ধান্ত নেয় — চললে spin, না চললে ঘুম।</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* A futex-backed mutex, stripped to the essentials.
+   This is roughly what glibc does. */
+#include &lt;linux/futex.h&gt;
+#include &lt;sys/syscall.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;stdatomic.h&gt;
+
+#define UNLOCKED   0
+#define LOCKED     1
+#define CONTENDED  2     /* locked, and someone is waiting */
+
+static int futex(atomic_int *addr, int op, int val) {
+    return syscall(SYS_futex, addr, op, val, NULL, NULL, 0);
+}
+
+void mutex_lock(atomic_int *m) {
+    int c = UNLOCKED;
+    /* FAST PATH: one CAS. No syscall if it succeeds. */
+    if (atomic_compare_exchange_strong(m, &amp;c, LOCKED))
+        return;
+
+    /* SLOW PATH */
+    do {
+        /* Mark it contended so unlock knows to wake us.
+           If it is already CONTENDED, or we can flip
+           LOCKED -> CONTENDED, then sleep. */
+        if (c == CONTENDED ||
+            atomic_compare_exchange_strong(m, &amp;c, CONTENDED)) {
+            /* Sleep only if the value is still CONTENDED —
+               the kernel rechecks, which closes the race
+               between our test and the sleep. */
+            futex(m, FUTEX_WAIT_PRIVATE, CONTENDED);
+        }
+        c = UNLOCKED;
+    } while (!atomic_compare_exchange_strong(m, &amp;c, CONTENDED));
+}
+
+void mutex_unlock(atomic_int *m) {
+    /* If it was contended, someone is asleep — wake one. */
+    if (atomic_fetch_sub(m, 1) != LOCKED) {
+        atomic_store(m, UNLOCKED);
+        futex(m, FUTEX_WAKE_PRIVATE, 1);
+    }
+}</code></pre></div>
+
+<p>
+  ওই "kernel rechecks" অংশটা futex এর আসল চাতুর্য। একটা
+  সুস্পষ্ট race আছে: আপনি দেখলেন lock ব্যস্ত, ঘুমাতে যাচ্ছেন,
+  কিন্তু ঠিক তখনই holder ছেড়ে দিল — আপনি চিরকাল ঘুমিয়ে
+  থাকবেন। Futex এটা এড়ায় প্রত্যাশিত মানটা syscall এ পাঠিয়ে:
+  kernel ঘুম পাড়ানোর ঠিক আগে মান যাচাই করে, আর বদলে গেলে
+  সাথে সাথে ফেরত পাঠায়।
+</p>
+
+<h2 id="c15-fairness">ন্যায্যতা আর starvation</h2>
+
+<p>
+  Test-and-set lock এ কোনো ক্রম নেই — যে আগে swap করতে
+  পারল, সে পেল। তাই একটা thread দুর্ভাগ্যবশত বারবার হারতে
+  পারে। এর নাম <strong>starvation</strong>, আর chapter 5 এ
+  MLFQ তে একই সমস্যা দেখেছি।
+</p>
+
+<p>
+  সমাধান — <strong>ticket lock</strong>, ব্যাংকের লাইনের মতো:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Ticket lock — FIFO order, no starvation.
+   Each arrival takes a ticket; the holder serves in order. */
+typedef struct {
+    atomic_int ticket;    /* next ticket to hand out */
+    atomic_int turn;      /* ticket currently being served */
+} ticket_lock_t;
+
+void lock(ticket_lock_t *l) {
+    /* fetch_and_add: take my number, atomically */
+    int my = atomic_fetch_add(&amp;l-&gt;ticket, 1);
+    while (atomic_load(&amp;l-&gt;turn) != my)
+        cpu_relax();
+}
+
+void unlock(ticket_lock_t *l) {
+    atomic_fetch_add(&amp;l-&gt;turn, 1);    /* next in line */
+}</code></pre></div>
+
+<p>
+  এখন ক্রম নিশ্চিত: প্রত্যেকে ঠিক একবার অপেক্ষা করে, আর
+  আগে-আসা আগে-পাওয়া। দাম: কম নমনীয়তা, আর সব waiter একই
+  <code>turn</code> variable এ spin করে (MCS এটাই সারায়)।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Lock ধীর, তাই যত কম lock তত ভালো — একটা বড়
+    lock দিয়ে সবকিছু ঢেকে দিলে সহজ আর দ্রুত।"</strong>
+  </p>
+  <p>
+    Uncontended lock ধীর নয় — ~২০ns, প্রায় একটা atomic
+    operation এর সমান। যা ধীর, তা হলো <em>contention</em>।
+  </p>
+  <p>
+    আর একটা বড় lock (coarse-grained) ঠিক সেই contention
+    তৈরি করে। এটাই chapter 7 এর SQMS এর সেই global lock —
+    ৪ core এ চলে, ৯৬ core এ ভেঙে পড়ে।
+  </p>
+  <p>
+    সঠিক প্রশ্নটা হলো "কত lock" নয়, বরং:
+    <strong>একই lock এর জন্য কতজন প্রতিযোগিতা করছে, আর
+    critical section কতক্ষণের?</strong> দুটোই ছোট রাখা লক্ষ্য।
+    Chapter 16 এ দেখব কীভাবে data structure ভেঙে contention
+    কমানো যায়।
+  </p>
+</div>
+
+<h2 id="c15-mistakes">যে ভুলগুলো সবাই করে</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* ১. Error path এ unlock ভুলে যাওয়া */
+int bad(void) {
+    pthread_mutex_lock(&amp;m);
+    if (something_wrong())
+        return -1;                /* ← lock ধরা রইল, চিরকাল! */
+    pthread_mutex_unlock(&amp;m);
+    return 0;
+}
+
+/* ঠিক: একটাই exit point, বা RAII/defer */
+int good(void) {
+    int rc = 0;
+    pthread_mutex_lock(&amp;m);
+    if (something_wrong()) { rc = -1; goto out; }
+    /* ... */
+out:
+    pthread_mutex_unlock(&amp;m);
+    return rc;
+}
+
+/* ২. Critical section এ blocking কাজ করা */
+pthread_mutex_lock(&amp;m);
+write(fd, buf, 4096);             /* ← disk I/O, ~১০০µs লক ধরে!
+                                     সবাই অপেক্ষা করছে */
+pthread_mutex_unlock(&amp;m);
+
+/* ঠিক: data টা copy করে নিয়ে lock ছেড়ে দিন, তারপর I/O */
+
+/* ৩. একই thread এ দুবার lock (non-recursive mutex এ deadlock) */
+pthread_mutex_lock(&amp;m);
+helper();                         /* helper ও lock করে → deadlock */
+pthread_mutex_unlock(&amp;m);</code></pre></div>
+
+<p>
+  আধুনিক ভাষাগুলো প্রথম সমস্যাটা type system দিয়ে সারিয়ে দেয়:
+</p>
+
+<div class="codewrap"><span class="lang">rust</span>
+<pre><code>// Rust — the lock owns the data; you cannot touch it unlocked,
+// and the guard unlocks on every exit path including panics.
+use std::sync::Mutex;
+
+let counter = Mutex::new(0);
+{
+    let mut n = counter.lock().unwrap();
+    *n += 1;
+}   // ← guard dropped here, unlock is automatic</code></pre></div>
+
+<div class="codewrap"><span class="lang">go</span>
+<pre><code>// Go — defer runs on every return path
+mu.Lock()
+defer mu.Unlock()
+// ... whatever happens, including panic, the unlock runs</code></pre></div>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Postgres</strong> এর ভিতরে দুই ধরনের আছে:
+    <em>spinlock</em> (অতি ছোট critical section এর জন্য,
+    কয়েক instruction) আর <em>LWLock</em> (lightweight lock,
+    যেটা ঘুমিয়ে পড়ে)। <code>pg_stat_activity</code> এ
+    <code>wait_event_type = 'LWLock'</code> দেখলে সেটা
+    ঠিক এই chapter এর contention — আর সেটা প্রায়ই
+    <code>WALWrite</code> বা <code>BufferContent</code>।
+  </p>
+  <p>
+    <strong>Redis</strong> single-threaded বলে lock এড়িয়ে
+    যায় (Node এর মতো) — এটাই তার সরলতার মূল। ৬.০ থেকে
+    I/O thread যোগ হয়েছে, কিন্তু command execution এখনো
+    একটাই thread।
+  </p>
+  <p>
+    <strong>JVM</strong> এ <code>synchronized</code> একটা
+    সুন্দর উদাহরণ: JVM প্রথমে "biased locking" চেষ্টা করত
+    (একই thread বারবার lock নিলে প্রায় শূন্য খরচ), তারপর
+    thin lock (CAS spin), তারপর fat lock (OS mutex)।
+    JDK 15 এ biased locking সরানো হয়েছে, কারণ আধুনিক
+    workload এ জটিলতাটা আর লাভজনক ছিল না।
+  </p>
+</div>
+
+<h2 id="c15-summary">সংখ্যাগুলো</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ঘটনা</th><th>খরচ</th><th>টীকা</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Uncontended mutex lock/unlock</td><td class="num">~১৫–২৫ ns</td><td>শুধু CAS, কোনো syscall নেই</td></tr>
+    <tr><td>Atomic operation (uncontended)</td><td class="num">~৫–২০ ns</td><td>তুলনামূলকভাবে একই মাপ</td></tr>
+    <tr><td>Contended atomic</td><td class="num">~১০০–৫০০ ns</td><td>cache line transfer, chapter 13</td></tr>
+    <tr><td>futex sleep + wake</td><td class="num">~১–১০ µs</td><td>context switch সহ</td></tr>
+    <tr><td>Spin, holder throttled</td><td class="num">~১০০ ms</td><td><strong>container এ বিপর্যয়</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটাই এই chapter এর সারকথা। প্রথম চারটে সারির মধ্যে
+  পার্থক্য আছে কিন্তু সবই সহনীয় মাপে। শেষ সারিটা অন্য
+  মহাবিশ্বে — আর সেটা ঘটে শুধু যখন আপনি spin lock ব্যবহার
+  করেন এমন পরিবেশে যেখানে holder কে জোর করে থামানো যায়।
+</p>
+
+<div class="qs">
+  <h2 id="c15-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Naive flag-ভিত্তিক lock এর bug টা chapter 14 এর
+      check-then-act এর একই আকৃতি। এই পুনরাবৃত্তিটা কী
+      বলে — কেন software-শুধু সমাধান অসম্ভব, আর hardware
+      ঠিক কোন নতুন ক্ষমতাটা যোগ করে?
+    </li>
+    <li>
+      TAS থেকে TTAS এ যাওয়ার লাভটা chapter 13 এর MESI
+      অবস্থাগুলো দিয়ে ব্যাখ্যা করুন। Read-only spin এ
+      cache line কোন অবস্থায় থাকে, আর প্রতিটা atomic
+      লেখায় কোন অবস্থায় যায়?
+    </li>
+    <li>
+      Futex এর fast path এ kernel জানেই না lock টা আছে।
+      তাহলে একটা process যদি lock ধরে রেখে মরে যায়,
+      kernel কীভাবে জানবে waiter দের জাগাতে হবে? (সূত্র:
+      এই সমস্যার একটা নাম আছে — robust mutex।)
+    </li>
+    <li>
+      Adaptive lock এর নিয়ম: প্রত্যাশিত অপেক্ষা যদি
+      park+unpark এর চেয়ে কম হয় তবে spin করো। কিন্তু
+      container এ quota throttling থাকলে "প্রত্যাশিত
+      অপেক্ষা" এর অনুমান কীভাবে ভেঙে যায়? Kernel এর
+      mutex এই সমস্যাটা কীভাবে এড়ায়?
+    </li>
+    <li>
+      Ticket lock starvation সারায় কিন্তু সব waiter একই
+      <code>turn</code> variable এ spin করে। MCS lock
+      এটা সারায় প্রতিটা waiter কে নিজের node দিয়ে।
+      Chapter 13 এর false sharing এর সাথে এই নকশার
+      সম্পর্কটা কী?
+    </li>
+    <li>
+      "Critical section এ I/O করবেন না" — কেন? একটা
+      ৪KB <code>write()</code> এর সময় lock ধরে রাখলে
+      চারটে thread এর throughput এ কী হবে, সংখ্যা দিয়ে
+      হিসাব করুন (ধরুন write ~১০০µs, critical section
+      এর বাকি কাজ ~১µs)।
+    </li>
+  </ol>
+</div>

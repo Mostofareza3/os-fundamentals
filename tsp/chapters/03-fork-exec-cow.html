@@ -1,0 +1,607 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 5, pdf p58–68 · + ch 23 এর COW</span>
+  </div>
+  <h1>fork, exec, wait — আর COW এর ফাঁদ</h1>
+  <p class="ch-lede">
+    একটা function যা দুবার return করে। একটা যা কখনো return করে না।
+    এই অদ্ভুত জোড়াটাই UNIX এর সবচেয়ে সফল design সিদ্ধান্ত — আর
+    এর ভিতরের copy-on-write mechanism টা না বুঝলে Redis এর memory
+    spike বা threaded process এ fork এর deadlock কোনোটাই ব্যাখ্যা করা যায় না।
+  </p>
+</div>
+
+<p>
+  Chapter 2 এ দেখেছি process কী। এখন প্রশ্ন: নতুন process কীভাবে বানানো হয়?
+  বেশিরভাগ ভাষায় থাকত একটা <code>createProcess(program, args)</code>।
+  UNIX সেটা করেনি। বরং কাজটা <strong>দুটো আলাদা system call</strong> এ
+  ভেঙেছে, আর সেই ভাঙাটাই shell, pipe, redirection — সবকিছু সম্ভব করেছে।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Process তৈরি আর নিয়ন্ত্রণের জন্য OS কোন interface দেবে? এমনভাবে
+    যাতে ব্যবহার করা সহজ হয়, আবার শক্তিশালীও হয়?
+  </p>
+</div>
+
+<h2 id="c3-fork">fork() — যে call দুবার ফেরে</h2>
+
+<p>
+  <code>fork()</code> সম্ভবত আপনার দেখা সবচেয়ে অদ্ভুত system call।
+  এটা কোনো argument নেয় না, আর এর return statement একবার লেখা থাকলেও
+  <em>দুটো process এ</em> ফেরে।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* p1.c — the strangest call you will make */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(int argc, char *argv[]) {
+    printf("hello world (pid:%d)\n", (int) getpid());
+
+    int rc = fork();
+    if (rc &lt; 0) {                 /* fork failed */
+        fprintf(stderr, "fork failed\n");
+        exit(1);
+    } else if (rc == 0) {         /* child: fork() returned 0 */
+        printf("hello, I am child (pid:%d)\n", (int) getpid());
+    } else {                      /* parent: fork() returned child's pid */
+        printf("hello, I am parent of %d (pid:%d)\n", rc, (int) getpid());
+    }
+    return 0;
+}</code></pre></div>
+
+<pre><code>$ ./p1
+hello world (pid:29146)
+hello, I am parent of 29147 (pid:29146)
+hello, I am child (pid:29147)</code></pre>
+
+<p>
+  লক্ষ করুন <code>hello world</code> একবারই ছাপা হয়েছে। Child
+  <code>main()</code> থেকে শুরু করে না — সে জন্মায় ঠিক সেই জায়গায়,
+  যেন সে নিজেই <code>fork()</code> ডেকেছিল। তার PC, register, stack,
+  address space — সব parent এর মতো।
+</p>
+
+<p>
+  একটাই পার্থক্য: <strong>return value</strong>। Parent পায় child এর
+  PID, child পায় <code>0</code>। এই একটা সংখ্যার ভিত্তিতেই আপনি দুটো
+  path লেখেন।
+</p>
+
+<pre class="ascii"><code>              ./p1 চলছে (pid 29146)
+                      │
+                 printf("hello world")
+                      │
+                   fork()
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+    parent (29146)          child (29147)
+    rc = 29147              rc = 0
+          │                       │
+    else branch             if (rc==0) branch
+          │                       │
+   "I am parent of 29147"   "I am child"</code></pre>
+<p class="figcap">
+  একটা call, দুটো return। কোন branch চলবে তা rc এর মান ঠিক করে।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>fork()</code> parent এর পুরো memory copy করে,
+    তাই ২GB এর process fork করলে ২GB লাগবে।"</strong>
+  </p>
+  <p>
+    OSTEP নিজেই লেখে child পায় "its own copy of the address space"।
+    Interface এর দিক থেকে কথাটা সত্য — child যা লেখে parent দেখে না।
+    কিন্তু <strong>implementation</strong> হিসেবে এটা বিভ্রান্তিকর, আর
+    এই ভুল ছবিটা তিন ধরনের production সমস্যার মূলে।
+  </p>
+  <p>
+    বাস্তবে kernel কিছুই copy করে না। সে দুটো process কেই
+    <em>একই physical page</em> এ point করিয়ে দেয়, আর সব page কে
+    read-only চিহ্নিত করে। এর নাম
+    <strong>COW (Copy-on-Write — page গুলো ভাগ করে রাখা হয়, আর কেউ
+    লিখতে গেলে তখনই সেই page টার copy বানানো হয়)</strong>।
+    কেউ লিখতে গেলে hardware একটা <strong>protection fault</strong>
+    তোলে, kernel তখন ওই একটা page copy করে, দুজনকে আলাদা করে দেয়।
+  </p>
+  <p>
+    মানে <code>fork()</code> এর খরচ address space এর আকারের সাথে বাড়ে
+    না — বাড়ে page table এর আকারের সাথে (আর লেখার পরিমাণের সাথে)।
+    ২GB process fork করা তাই সস্তা — <em>যদি</em> কেউ বেশি না লেখে।
+  </p>
+</div>
+
+<h2 id="c3-cow">COW — কীভাবে কাজ করে</h2>
+
+<pre class="ascii"><code>  fork() এর ঠিক পরে — কোনো copy হয়নি:
+
+    parent PTE            physical            child PTE
+    ┌──────────┐          ┌────────┐          ┌──────────┐
+    │ page A   │────────▶ │ frame  │ ◀────────│ page A   │
+    │ RO, COW  │          │   7a   │          │ RO, COW  │
+    └──────────┘          └────────┘          └──────────┘
+                        refcount = 2
+
+  child লিখল page A তে:
+
+    1. CPU write করতে গেল → PTE read-only → protection fault
+    2. kernel দেখল page টা COW-চিহ্নিত, refcount > 1
+    3. নতুন frame allocate করল, বিষয়বস্তু copy করল
+    4. child এর PTE কে নতুন frame এ, read-write করে দিল
+    5. parent এর refcount 1 হলো → তার PTE ও read-write হলো
+
+    parent PTE            physical            child PTE
+    ┌──────────┐          ┌────────┐          ┌──────────┐
+    │ page A   │────────▶ │ frame  │          │ page A   │
+    │ RW       │          │   7a   │          │ RW       │
+    └──────────┘          └────────┘          └──────┬───┘
+                          ┌────────┐                 │
+                          │ frame  │ ◀───────────────┘
+                          │   c3   │  (copy)
+                          └────────┘</code></pre>
+<p class="figcap">
+  COW: fault না হওয়া পর্যন্ত কোনো copy নেই। খরচটা লেখার সময়ে সরে গেছে।
+</p>
+
+<p>
+  এখানে একটা সূক্ষ্ম কিন্তু গুরুত্বপূর্ণ কথা: <strong>fault টা পড়ার
+  সময় হয় না, লেখার সময় হয়</strong>। তাই যে page গুলো কেউ কখনো লেখে না
+  (যেমন program এর code) সেগুলো চিরকাল ভাগ করা থাকে। এই কারণেই একই
+  binary এর ১০০টা copy চললেও code এর জন্য RAM একবারই লাগে —
+  chapter 1 এ যে ভুল ধারণাটা দেখেছিলাম ("প্রতিটা process এর আলাদা
+  physical memory"), তার উত্তর এটাই।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Redis <code>BGSAVE</code></strong> — Redis যখন disk এ
+    snapshot লেখে, সে <code>fork()</code> করে child কে লিখতে দেয়।
+    ২GB dataset হলেও fork তাৎক্ষণিক, কারণ COW। কিন্তু snapshot চলার
+    সময় যদি আপনার application প্রচুর key লিখতে থাকে, প্রতিটা লেখা
+    একটা page কে আলাদা করে দেয় — আর memory ব্যবহার বাড়তে থাকে,
+    সবচেয়ে খারাপ ক্ষেত্রে দ্বিগুণ। এই কারণেই Redis এর documentation
+    বলে snapshot এর সময় memory headroom রাখতে, আর এই কারণেই
+    <code>vm.overcommit_memory=1</code> এর পরামর্শ দেওয়া হয়।
+  </p>
+  <p>
+    <strong>Postgres</strong> প্রতিটা client connection এর জন্য
+    একটা নতুন backend process fork করে। COW না থাকলে এই model
+    অচল হতো।
+  </p>
+  <p>
+    <strong>Git</strong> এর সাথেও ধারণাগত মিল আছে: Git ও content
+    ভাগ করে রাখে আর পরিবর্তন হলে নতুন object লেখে। একই
+    "যতক্ষণ না বদলাচ্ছে, ভাগ করে রাখো" নীতি।
+  </p>
+</div>
+
+<h2 id="c3-wait">wait() — অনিশ্চয়তা দূর করা</h2>
+
+<p>
+  উপরের <code>p1</code> এর output <strong>অনির্ধারিত</strong> —
+  parent আগে ছাপতে পারে, child ও পারে। কে আগে চলবে তা scheduler ঠিক
+  করে, আর সেটা আপনার নিয়ন্ত্রণে নেই:
+</p>
+
+<pre><code>$ ./p1
+hello world (pid:29146)
+hello, I am child (pid:29147)          ←  এবার child আগে
+hello, I am parent of 29147 (pid:29146)</code></pre>
+
+<p>
+  <code>wait()</code> যোগ করলে ক্রম নিশ্চিত হয়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* p2.c — parent waits for the child to finish */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/wait.h&gt;
+
+int main(int argc, char *argv[]) {
+    printf("hello world (pid:%d)\n", (int) getpid());
+
+    int rc = fork();
+    if (rc &lt; 0) {
+        fprintf(stderr, "fork failed\n");
+        exit(1);
+    } else if (rc == 0) {
+        printf("hello, I am child (pid:%d)\n", (int) getpid());
+    } else {
+        int wc = wait(NULL);      /* blocks until a child exits */
+        printf("hello, I am parent of %d (wc:%d) (pid:%d)\n",
+               rc, wc, (int) getpid());
+    }
+    return 0;
+}</code></pre></div>
+
+<pre><code>$ ./p2
+hello world (pid:29266)
+hello, I am child (pid:29267)
+hello, I am parent of 29267 (wc:29267) (pid:29266)</code></pre>
+
+<p>
+  এখন child <em>সবসময়</em> আগে ছাপবে। কেন? দুটো সম্ভাবনা, দুটোতেই
+  একই ফল: child আগে চললে সে ছেপে বেরিয়ে যায়। Parent আগে চললে সে
+  সাথে সাথে <code>wait()</code> এ গিয়ে BLOCKED হয় — chapter 2 এর
+  state machine টা মনে করুন — আর child শেষ না হওয়া পর্যন্ত ফেরে না।
+</p>
+
+<p>
+  <code>wait()</code> শুধু ক্রম ঠিক করে না, সে child এর exit status
+  সংগ্রহ করে আর zombie টা পরিষ্কার করে। Chapter 2 এ দেখেছি
+  <code>wait()</code> না করলে zombie জমে। এখানে সেটাই API এর দিক থেকে।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Reading what actually happened to the child */
+int status;
+pid_t p = waitpid(rc, &amp;status, 0);
+
+if (WIFEXITED(status)) {
+    printf("exited normally, code %d\n", WEXITSTATUS(status));
+} else if (WIFSIGNALED(status)) {
+    printf("killed by signal %d\n", WTERMSIG(status));
+}</code></pre></div>
+
+<p>
+  এই পার্থক্যটা কাজে লাগে: shell script এ exit code 137 দেখলে
+  সেটা <code>128 + 9</code> — অর্থাৎ <code>SIGKILL</code>, সাধারণত
+  OOM killer। আর 143 মানে <code>128 + 15</code>, অর্থাৎ
+  <code>SIGTERM</code> — Docker এর graceful shutdown। Container
+  কেন মরল তা বোঝার প্রথম সূত্র এটাই।
+</p>
+
+<h2 id="c3-exec">exec() — যে call ফেরে না</h2>
+
+<p>
+  <code>fork()</code> একই program এর copy বানায়। কিন্তু আপনি তো
+  <em>অন্য</em> program চালাতে চান। সেটা <code>exec()</code> এর কাজ।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* p3.c — fork, then have the child become a different program */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/wait.h&gt;
+
+int main(int argc, char *argv[]) {
+    printf("hello world (pid:%d)\n", (int) getpid());
+
+    int rc = fork();
+    if (rc &lt; 0) {
+        fprintf(stderr, "fork failed\n");
+        exit(1);
+    } else if (rc == 0) {
+        printf("hello, I am child (pid:%d)\n", (int) getpid());
+
+        char *myargs[3];
+        myargs[0] = strdup("wc");      /* program: word count */
+        myargs[1] = strdup("p3.c");    /* argument: the file   */
+        myargs[2] = NULL;              /* array terminator     */
+        execvp(myargs[0], myargs);
+
+        printf("this should never print\n");   /* exec does not return */
+    } else {
+        int wc = wait(NULL);
+        printf("hello, I am parent of %d (wc:%d) (pid:%d)\n",
+               rc, wc, (int) getpid());
+    }
+    return 0;
+}</code></pre></div>
+
+<pre><code>$ ./p3
+hello world (pid:29383)
+hello, I am child (pid:29384)
+      29     107    1030 p3.c          ←  wc এর output
+hello, I am parent of 29384 (wc:29384) (pid:29383)</code></pre>
+
+<p>
+  <code>exec()</code> নতুন process বানায় <strong>না</strong>। সে
+  চলমান process টাকেই অন্য program এ <em>রূপান্তরিত</em> করে:
+  নতুন executable এর code আর static data এনে পুরনোটার উপর লিখে দেয়,
+  heap আর stack নতুন করে সাজায়, তারপর সেখান থেকে চালাতে শুরু করে।
+</p>
+
+<p>
+  তাই <code>exec()</code> সফল হলে <strong>কখনো ফেরে না</strong> —
+  ফেরার জায়গাটাই আর নেই, ওই code overwrite হয়ে গেছে। নিচের
+  <code>printf</code> কখনো চলে না। <code>exec()</code> ফিরলে
+  <em>মানেই</em> সে ব্যর্থ হয়েছে, আর তখন <code>errno</code> দেখা দরকার।
+</p>
+
+<pre class="ascii"><code>  fork()                          exec()
+  ──────                          ──────
+  একটা process → দুটো process     একটা process → একটাই process
+  code একই থাকে                   code বদলে যায়
+  দুবার ফেরে                      ফেরেই না (সফল হলে)
+  PID নতুন হয় (child এর)          PID একই থাকে
+  fd খোলা থাকে                    fd খোলা থাকে (CLOEXEC ছাড়া)</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>exec()</code> এর পরে process টা নতুন, তাই খোলা file
+    গুলো বন্ধ হয়ে যায়।"</strong>
+  </p>
+  <p>
+    না, আর <em>এটাই</em> redirection কাজ করার কারণ।
+    <code>exec()</code> address space বদলায়, কিন্তু file descriptor
+    table অটুট রাখে। Chapter 2 এ বলেছিলাম খোলা file process state
+    এর অংশ — এখানে দেখা যাচ্ছে সেই অংশটা <code>exec()</code> পার
+    হয়ে টিকে থাকে।
+  </p>
+  <p>
+    এটা কখনো অনিচ্ছাকৃত সমস্যাও করে: আপনার server একটা socket খুলে
+    রেখে একটা child process spawn করল; child সেই socket টাও পেয়ে
+    গেল। Child বেঁচে থাকলে port টা আটকে থাকবে, যদিও server মরে গেছে।
+    সমাধান: <code>open()</code> এ <code>O_CLOEXEC</code> flag,
+    বা <code>fcntl(fd, F_SETFD, FD_CLOEXEC)</code> — তাহলে
+    <code>exec()</code> এর সময় fd টা নিজে বন্ধ হয়ে যায়। Node এ
+    child process spawn করলে এটা default এ ঠিক করা থাকে।
+  </p>
+</div>
+
+<h2 id="c3-why">কেন দুটো call? — shell এর উত্তর</h2>
+
+<p>
+  এখন আসল প্রশ্ন: এত অদ্ভুত interface কেন? একটা
+  <code>spawn(program, args)</code> তো সহজ হতো।
+</p>
+
+<p>
+  উত্তর: <strong>fork আর exec এর মাঝখানের ফাঁকটাই</strong>। ওই
+  ফাঁকে child process টা বেঁচে আছে, কিন্তু নতুন program টা এখনো চালু
+  হয়নি। ওই মুহূর্তে আপনি child এর পরিবেশ বদলে দিতে পারেন — আর
+  নতুন program কিছুই জানবে না।
+</p>
+
+<p>
+  Shell পুরোপুরি এই ফাঁকের উপর দাঁড়িয়ে। Shell নিজে একটা সাধারণ
+  user program: সে prompt দেখায়, আপনার লেখা পড়ে, executable খুঁজে
+  বের করে, <code>fork()</code> করে, child এ <code>exec()</code> করে,
+  আর <code>wait()</code> দিয়ে অপেক্ষা করে। তারপর আবার prompt।
+</p>
+
+<p>Redirection ঠিক এভাবে কাজ করে:</p>
+
+<pre><code>$ wc p3.c &gt; newfile.txt</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* p4.c — how the shell implements "> newfile.txt" */
+int rc = fork();
+if (rc == 0) {
+    /* We are in the child, BEFORE exec. Rewire stdout. */
+    close(STDOUT_FILENO);
+    open("./newfile.txt", O_CREAT | O_WRONLY | O_TRUNC, S_IRWXU);
+
+    /* Now fd 1 points at the file, not the terminal. */
+    char *myargs[3];
+    myargs[0] = strdup("wc");
+    myargs[1] = strdup("p3.c");
+    myargs[2] = NULL;
+    execvp(myargs[0], myargs);   /* wc has no idea anything changed */
+}</code></pre></div>
+
+<p>
+  কৌশলটা fd এর একটা নিয়মের উপর নির্ভর করে: UNIX সবসময়
+  <strong>সবচেয়ে ছোট খালি fd নম্বর</strong> দেয়। তাই fd 1 বন্ধ করে
+  সাথে সাথে <code>open()</code> করলে নতুন file টাই fd 1 পায়।
+  <code>wc</code> যখন চালু হয়, সে fd 1 এ লেখে — যেমন সবসময় লেখে —
+  কিন্তু সেটা এখন terminal নয়, file।
+</p>
+
+<p>
+  <code>wc</code> এর code এ redirection নিয়ে একটা লাইনও নেই। সে জানেই
+  না। এটাই ভালো design এর চিহ্ন: shell একটা মেকানিজম পেয়েছে যা
+  <em>প্রতিটা</em> program এ কাজ করে, কারো সহযোগিতা ছাড়াই।
+</p>
+
+<pre class="ascii"><code>  সাধারণ অবস্থা:                redirection এর পর:
+
+  fd 0 ──▶ terminal              fd 0 ──▶ terminal
+  fd 1 ──▶ terminal              fd 1 ──▶ newfile.txt
+  fd 2 ──▶ terminal              fd 2 ──▶ terminal
+
+  pipe (wc p3.c | grep 29):
+
+  ┌─────────┐ fd 1      fd 0 ┌─────────┐
+  │   wc    │────▶ pipe ────▶│  grep   │
+  └─────────┘                └─────────┘
+  shell দুটো fork করে, pipe() দিয়ে জোড়া লাগায়,
+  dup2() দিয়ে fd বসায়, তারপর দুটোতেই exec()</code></pre>
+
+<p>
+  Pipe একই নীতির সম্প্রসারণ। <code>pipe()</code> দুটো fd দেয় —
+  একটা পড়ার, একটা লেখার। Shell প্রথম program এর stdout কে pipe এর
+  লেখার প্রান্তে আর দ্বিতীয়টার stdin কে পড়ার প্রান্তে বসায়।
+  এভাবেই <code>grep foo file.txt | wc -l</code> কাজ করে, আর এভাবেই
+  UNIX এর "ছোট ছোট program জোড়া লাগাও" দর্শনটা সম্ভব হয়েছে।
+</p>
+
+<div class="box note">
+  <div class="box-t">Design সিদ্ধান্ত</div>
+  <p>
+    Lampson এর একটা কথা আছে: "Get it right. Neither abstraction nor
+    simplicity is a substitute for getting it right." Process তৈরির
+    API অনেকভাবে বানানো যেত — কিন্তু <code>fork()</code> আর
+    <code>exec()</code> এর এই জোড়াটা সরল <em>এবং</em> অসম্ভব
+    শক্তিশালী। UNIX এর নকশাকাররা এখানে ঠিক কাজটা করেছিলেন।
+  </p>
+</div>
+
+<h2 id="c3-fork-thread">Threaded process এ fork — যেখানে সব ভাঙে</h2>
+
+<p>
+  এখন সবচেয়ে বিপজ্জনক অংশ, যেটা OSTEP এ নেই কিন্তু production এ
+  নিয়মিত মানুষকে কাটে।
+</p>
+
+<p>
+  <code>fork()</code> address space পুরোটা নিয়ে যায় — সব memory,
+  সব lock এর অবস্থা সহ। কিন্তু <strong>শুধু যে thread টা
+  <code>fork()</code> ডেকেছে সেটাই child এ বাঁচে</strong>। বাকি
+  thread গুলো child এ অস্তিত্বহীন।
+</p>
+
+<p>ফলাফল ভয়ংকর:</p>
+
+<pre class="ascii"><code>  Parent (multi-threaded):
+
+    thread A ──── malloc() ডাকল, arena lock ধরল
+    thread B ──── fork() ডাকল  ◀── ঠিক এই মুহূর্তে
+    thread C ──── অন্য কাজ
+
+  Child (fork এর পর):
+
+    thread B ──── বেঁচে আছে
+    thread A ──── নেই!  কিন্তু তার ধরা lock টা
+                        memory তে "locked" অবস্থায় আছে
+    thread C ──── নেই
+
+  এখন child যদি malloc() ডাকে →
+    lock টা locked দেখাচ্ছে →
+    যে thread টা খুলবে সে অস্তিত্বহীন →
+    চিরকালের deadlock</code></pre>
+<p class="figcap">
+  Lock টা ধরে আছে "কেউ না" — তাই কখনো খুলবে না।
+</p>
+
+<p>
+  এই কারণেই POSIX বলে: <code>fork()</code> এর পর child এ শুধু
+  <strong>async-signal-safe</strong> function ডাকা যাবে, যতক্ষণ
+  <code>exec()</code> না করছেন। <code>malloc()</code>,
+  <code>printf()</code>, বেশিরভাগ library call — কোনোটাই সেই
+  তালিকায় নেই।
+</p>
+
+<p>
+  glibc এর malloc arena deadlock এই শ্রেণীর সবচেয়ে পরিচিত উদাহরণ।
+  আর এই কারণেই আধুনিক পরামর্শ হলো: threaded program এ
+  <code>fork()</code> করলে সাথে সাথে <code>exec()</code> করুন, নইলে
+  <code>posix_spawn()</code> ব্যবহার করুন — যেটা এই ফাঁদগুলো
+  এড়িয়ে একই কাজ করে।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Node.js</strong> এ আপনি কখনো সরাসরি <code>fork()</code>
+    করেন না — <code>child_process.spawn()</code> ভিতরে
+    <code>posix_spawn()</code> বা fork+exec করে, আর libuv এর নিজের
+    thread pool থাকায় Node একটা multi-threaded process। তাই
+    <code>cluster.fork()</code> নামটা বিভ্রান্তিকর: সেটা আসলে
+    নতুন process spawn করে, POSIX <code>fork()</code> নয়।
+  </p>
+  <p>
+    <strong>Python</strong> এ এই সমস্যাটা এতই বাস্তব যে ৩.১৪ থেকে
+    <code>multiprocessing</code> এর default start method Linux এ
+    <code>fork</code> থেকে <code>forkserver</code> এ সরানো হয়েছে,
+    আর threaded process এ <code>os.fork()</code> এখন
+    <code>DeprecationWarning</code> দেয়।
+  </p>
+  <p>
+    <strong>JVM</strong> সহজাতভাবে multi-threaded, তাই
+    <code>Runtime.exec()</code> ভিতরে <code>vfork</code>/
+    <code>posix_spawn</code> ব্যবহার করে — কখনো plain fork করে
+    কাজ চালিয়ে যায় না।
+  </p>
+</div>
+
+<h2 id="c3-other">বাকি নিয়ন্ত্রণ — signal</h2>
+
+<p>
+  <code>fork()</code>, <code>exec()</code>, <code>wait()</code> এর
+  বাইরে process নিয়ন্ত্রণের প্রধান উপায় <strong>signal</strong>।
+  <code>kill()</code> system call দিয়ে একটা process কে signal পাঠানো
+  হয়:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Signal</th><th>কী করে</th><th>ধরা যায়?</th><th>কোথায় দেখবেন</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>SIGTERM</code> (15)</td><td>ভদ্রভাবে থামতে বলা</td><td>হ্যাঁ</td><td>Docker stop, k8s pod delete</td></tr>
+    <tr><td><code>SIGKILL</code> (9)</td><td>সাথে সাথে মেরে ফেলা</td><td><strong>না</strong></td><td>OOM killer, <code>kill -9</code></td></tr>
+    <tr><td><code>SIGINT</code> (2)</td><td>Interrupt</td><td>হ্যাঁ</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd></td></tr>
+    <tr><td><code>SIGSTOP</code> (19)</td><td>থামিয়ে রাখা</td><td><strong>না</strong></td><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td></tr>
+    <tr><td><code>SIGSEGV</code> (11)</td><td>অবৈধ memory access</td><td>হ্যাঁ</td><td>Segmentation fault</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <code>SIGKILL</code> আর <code>SIGSTOP</code> ধরা যায় না — এটা
+  ইচ্ছাকৃত। নইলে একটা দুষ্ট process সব signal উপেক্ষা করে অমর হয়ে
+  যেত। Kernel নিজে এই দুটো কার্যকর করে, process এর সহযোগিতা ছাড়াই।
+</p>
+
+<p>
+  Container এর shutdown এই ক্রমেই হয়: Docker প্রথমে
+  <code>SIGTERM</code> পাঠায়, ১০ সেকেন্ড (default) অপেক্ষা করে,
+  তারপর <code>SIGKILL</code>। আপনার application যদি
+  <code>SIGTERM</code> handle না করে — connection বন্ধ না করে,
+  in-flight request শেষ না করে — তাহলে প্রতিবার deploy এ
+  request হারাবেন। Chapter 29 এ এটা পুরো container lifecycle এর
+  সাথে দেখব।
+</p>
+
+<div class="qs">
+  <h2 id="c3-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      একটা process ১০GB heap ব্যবহার করছে। সে <code>fork()</code>
+      করল, আর child সাথে সাথে <code>exec()</code> করল।
+      কত memory copy হলো, আর কেন? এখন ধরুন child
+      <code>exec()</code> না করে ১০ মিনিট ধরে heap এর অর্ধেক
+      জুড়ে লিখল — তখন?
+    </li>
+    <li>
+      Shell এ <code>cat file.txt | grep foo &gt; out.txt</code> চালালে
+      shell কতবার <code>fork()</code> করে, কতবার
+      <code>exec()</code> করে, আর কোন fd গুলো কোথায় বসায়?
+      fork আর exec এর মাঝখানের ফাঁক ছাড়া এটা করা যেত কি?
+    </li>
+    <li>
+      <code>exec()</code> সফল হলে ফেরে না। তাহলে নিচের code টায়
+      কী সমস্যা, আর ঠিক করতে কী লিখতেন?
+      <pre><code>execvp(prog, args);
+printf("started %s\n", prog);</code></pre>
+    </li>
+    <li>
+      আপনার Node server একটা log rotation script spawn করে। কিছুদিন
+      পর দেখলেন server restart করলেও পুরনো port টা
+      <code>EADDRINUSE</code> দিচ্ছে, যদিও server process মরে গেছে।
+      কী ঘটেছে, আর কোন flag দিয়ে ঠেকাতেন?
+    </li>
+    <li>
+      Redis <code>BGSAVE</code> চলার সময় আপনার monitoring এ RSS
+      প্রায় দ্বিগুণ হয়ে গেল, তারপর নেমে এল। এটা memory leak,
+      নাকি স্বাভাবিক? আপনার উত্তরে COW এর কোন ধাপটা ব্যবহার করবেন,
+      আর কোন পরিস্থিতিতে এটা সত্যিই OOM ঘটাতে পারে?
+    </li>
+    <li>
+      একটা multi-threaded program এ thread A প্রতি সেকেন্ডে
+      <code>malloc()</code> করছে, আর thread B প্রতি মিনিটে
+      <code>fork()</code> করে child এ একটা log লাইন
+      <code>printf()</code> করছে। Program টা সপ্তাহে একবার আটকে
+      যায়, কোনো নিয়ম ছাড়াই। কারণ ব্যাখ্যা করুন, আর বলুন কেন
+      এটা test এ ধরা পড়ে না।
+    </li>
+  </ol>
+</div>

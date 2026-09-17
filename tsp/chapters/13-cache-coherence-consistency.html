@@ -1,0 +1,668 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· সম্পূর্ণ নতুন — OSTEP এ এই বিষয়ে কিছু নেই</span>
+  </div>
+  <h1>Cache coherence আর memory consistency</h1>
+  <p class="ch-lede">
+    Hardware আপনাকে একটা গ্যারান্টি দেয় আর একটা দেয় না। দুটোকে
+    গুলিয়ে ফেললে আপনি এমন code লিখবেন যা আপনার laptop এ কাজ করে
+    আর server এ ভাঙে। এই chapter টা OSTEP এ নেই, আর এটাই Part 2
+    এর ভিত্তি।
+  </p>
+</div>
+
+<p>
+  Chapter 12 এ বলেছিলাম race এর দুটো স্বাধীন কারণ আছে —
+  interleaving আর visibility/reordering। প্রথমটা নিয়ে সব বই
+  কথা বলে। এই chapter দ্বিতীয়টা নিয়ে, আর সেটা শুরু করতে হবে
+  hardware থেকে।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    প্রতিটা core এর নিজের cache আছে। তাহলে একটা core এর লেখা
+    অন্য core কখন দেখবে? Hardware ঠিক কী প্রতিশ্রুতি দেয়,
+    আর কী দেয় না?
+  </p>
+</div>
+
+<h2 id="c13-coherence">Coherence — যে গ্যারান্টিটা আপনি পান</h2>
+
+<p>
+  Chapter 7 এ cache coherence এর সমস্যাটা দেখেছি: একই address
+  এর দুটো ভিন্ন মান দুটো cache এ। Hardware এটা সমাধান করে একটা
+  protocol দিয়ে, আর সবচেয়ে প্রচলিত হলো <strong>MESI</strong>।
+</p>
+
+<p>
+  প্রতিটা cache line চারটা অবস্থার একটায় থাকে:
+</p>
+
+<pre class="ascii"><code>  M — Modified   : শুধু আমার কাছে আছে, আর আমি বদলেছি
+                   (RAM এর মান পুরনো)
+  E — Exclusive  : শুধু আমার কাছে আছে, বদলাইনি
+  S — Shared     : আমার আর অন্যদের কাছেও আছে, কেউ বদলায়নি
+  I — Invalid    : আমার copy অবৈধ, ব্যবহার করা যাবে না
+
+  অবস্থা পরিবর্তন:
+
+  core 0 পড়ল X     →  core 0: E    (একা)
+  core 1 ও পড়ল X   →  core 0: S,  core 1: S
+  core 0 লিখল X     →  core 0: M,  core 1: I  ← invalidate পাঠানো হলো
+  core 1 পড়তে চাইল →  core 0: S,  core 1: S  ← core 0 কে data দিতে হলো</code></pre>
+
+<p>
+  Coherence যা নিশ্চিত করে, সেটা ঠিক করে বলা দরকার:
+</p>
+
+<div class="box note">
+  <div class="box-t">Coherence ঠিক কী দেয়</div>
+  <p>
+    <strong>একটা একক memory location এর জন্য</strong>, সব core
+    সেটার লেখাগুলো <em>একই ক্রমে</em> দেখবে, আর একটা লেখা
+    শেষ পর্যন্ত সবাই দেখবে। একটা location এর একটাই সর্বশেষ মান।
+  </p>
+  <p>
+    লক্ষ করুন দুটো সীমাবদ্ধতা: <em>একক location</em>, আর
+    <em>শেষ পর্যন্ত</em>। এই দুটোর মধ্যেই সব ফাঁক।
+  </p>
+</div>
+
+<h2 id="c13-cost">Coherence এর দাম — false sharing</h2>
+
+<p>
+  Coherence এর একক হলো <strong>cache line</strong>, একটা byte
+  নয়। x86-64 আর বেশিরভাগ ARM64 এ সেটা ৬৪ byte (Apple M-series
+  এ কার্যত ১২৮)।
+</p>
+
+<p>
+  এর একটা চমকপ্রদ পরিণতি আছে: দুটো thread যদি দুটো
+  <em>আলাদা</em> variable এ লেখে, কিন্তু সেই দুটো একই cache
+  line এ পড়ে — তাহলে hardware তাদের প্রতিযোগী মনে করে।
+</p>
+
+<pre class="ascii"><code>  একটা 64-byte cache line:
+
+  ┌──────────────────────────────────────────────┐
+  │ counter_a (8B) │ counter_b (8B) │  ...       │
+  └──────────────────────────────────────────────┘
+      ↑                  ↑
+   thread 1 লেখে      thread 2 লেখে
+
+  যা ঘটে:
+    thread 1 লিখল → line টা core 0 এ M অবস্থায়
+                  → core 1 এর copy I হলো
+    thread 2 লিখল → core 1 কে line টা চাইতে হলো
+                  → core 0 থেকে transfer
+                  → core 0 এর copy I হলো
+    thread 1 আবার লিখল → আবার transfer...
+
+  line টা দুই core এর মধ্যে ping-pong করছে।
+  যুক্তিগতভাবে কোনো sharing নেই, তবু পুরো খরচটা আছে।
+
+  এর নাম FALSE SHARING।</code></pre>
+
+<p>
+  এটা মেপে দেখা যায়, আর ব্যবধানটা বিস্ময়কর:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* false_sharing.c — same work, two layouts
+   Build: gcc -O2 -pthread -o fs false_sharing.c */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;time.h&gt;
+#include &lt;stdint.h&gt;
+
+#define ITERS 50000000
+#define NTHREADS 4
+#define LINE 64
+
+/* Packed: all four counters land in one or two cache lines. */
+typedef struct { uint64_t v; } packed_t;
+
+/* Padded: each counter owns a full cache line. */
+typedef struct { uint64_t v; char pad[LINE - sizeof(uint64_t)]; } padded_t;
+
+static packed_t packed[NTHREADS];
+static padded_t padded[NTHREADS] __attribute__((aligned(LINE)));
+
+static void *bump_packed(void *arg) {
+    long i = (long) arg;
+    for (int n = 0; n &lt; ITERS; n++) packed[i].v++;
+    return NULL;
+}
+static void *bump_padded(void *arg) {
+    long i = (long) arg;
+    for (int n = 0; n &lt; ITERS; n++) padded[i].v++;
+    return NULL;
+}
+
+static double run(void *(*fn)(void *)) {
+    pthread_t t[NTHREADS];
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &amp;a);
+    for (long i = 0; i &lt; NTHREADS; i++) pthread_create(&amp;t[i], NULL, fn, (void *) i);
+    for (int i = 0; i &lt; NTHREADS; i++) pthread_join(t[i], NULL);
+    clock_gettime(CLOCK_MONOTONIC, &amp;b);
+    return (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) / 1e9;
+}
+
+int main(void) {
+    printf("packed (false sharing): %.3f s\n", run(bump_packed));
+    printf("padded (one line each): %.3f s\n", run(bump_padded));
+    return 0;
+}</code></pre></div>
+
+<pre class="ascii"><code>  একটা সাধারণ 8-core x86-64 এ:
+
+  packed (false sharing): 2.140 s
+  padded (one line each): 0.180 s
+
+  ~12 গুণ ব্যবধান। একই কাজ, একই সংখ্যক increment,
+  কোনো lock নেই, কোনো যুক্তিগত sharing নেই।
+  শুধু memory layout আলাদা।</code></pre>
+
+<p>
+  Padding করার সঠিক উপায় ভাষা-নির্ভর:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* C11 / C++ */
+_Alignas(64) uint64_t counter;
+
+/* C++17 — portable, asks the implementation */
+#include &lt;new&gt;
+struct alignas(std::hardware_destructive_interference_size) Counter {
+    uint64_t v;
+};
+
+/* Linux kernel */
+uint64_t counter __cacheline_aligned_in_smp;
+
+/* Go — pad explicitly; no built-in constant */
+type counter struct {
+    v   uint64
+    _   [56]byte    // 64 - 8
+}</code></pre></div>
+
+<p>
+  একটা সতর্কতা: Apple M-series এ cache line ১২৮ byte, আর
+  Intel এর adjacent-line prefetcher কার্যত ১২৮ byte আনে।
+  তাই সর্বোচ্চ নিরাপত্তার জন্য ১২৮ byte padding ব্যবহার করা
+  হয় — দাম হলো memory।
+</p>
+
+<pre><code># নিজের মেশিনের cache line
+$ getconf LEVEL1_DCACHE_LINESIZE
+64
+$ cat /sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size
+64
+
+# false sharing এর hardware প্রমাণ
+$ perf c2c record ./your-program
+$ perf c2c report          # কোন line টা ping-pong করছে তা দেখায়</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Chapter 7 এ per-CPU counter এর কথা বলেছিলাম — Linux kernel
+    এ প্রতিটা per-CPU structure cache-line aligned, ঠিক এই
+    কারণেই। একই নীতি আপনার code এও: একটা metrics counter array
+    যদি thread-per-index হয়, padding ছাড়া সেটা আপনার hot
+    path এর সবচেয়ে বড় bottleneck হতে পারে।
+  </p>
+  <p>
+    <strong>jemalloc আর tcmalloc</strong> এর per-thread cache
+    গুলোও aligned — chapter 8 এ যে "lock ছাড়া allocation"
+    দেখেছি, সেটা false sharing থাকলে কাজ করত না।
+  </p>
+</div>
+
+<h2 id="c13-consistency">Consistency — যে গ্যারান্টিটা আপনি পান না</h2>
+
+<p>
+  এখন আসল বিষয়। Coherence একটা <em>একক</em> location নিয়ে কথা
+  বলে। কিন্তু আপনার program এ সাধারণত <strong>দুটো</strong>
+  location থাকে, আর তাদের মধ্যে একটা সম্পর্ক থাকে।
+</p>
+
+<p>
+  সবচেয়ে ক্লাসিক উদাহরণ — message passing:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Two shared variables, both start at 0.
+   This looks obviously correct. It is not. */
+
+int data = 0;
+int flag = 0;
+
+/* Thread 1 — producer */
+void producer(void) {
+    data = 42;        /* (A) লিখো data */
+    flag = 1;         /* (B) তারপর সংকেত দাও */
+}
+
+/* Thread 2 — consumer */
+void consumer(void) {
+    while (flag == 0)
+        ;             /* (C) সংকেতের অপেক্ষা */
+    printf("%d\n", data);   /* (D) data পড়ো */
+}</code></pre></div>
+
+<p>
+  স্বজ্ঞা বলে: <code>flag</code> ১ হলে <code>data</code> অবশ্যই
+  ৪২ হয়ে গেছে, কারণ A এর পরে B লেখা হয়েছে।
+</p>
+
+<p>
+  <strong>এই program টা <code>0</code> ছাপতে পারে।</strong>
+  আর সেটা কোনো bug নয় — hardware আর compiler দুজনেই তাদের
+  অধিকারের মধ্যে আছে।
+</p>
+
+<pre class="ascii"><code>  কেন 0 ছাপতে পারে — তিনটে স্বাধীন কারণ:
+
+  ১. Compiler reordering
+     compiler দেখল A আর B এর মধ্যে কোনো নির্ভরতা নেই
+     (আলাদা variable), তাই ক্রম বদলে দিল:
+        flag = 1;  data = 42;
+     এটা সম্পূর্ণ বৈধ — single-threaded অর্থ অপরিবর্তিত।
+
+  ২. CPU reordering (store buffer)
+     core টা লেখাগুলো একটা store buffer এ জমা করে,
+     তারপর নিজের সুবিধামতো cache এ পাঠায়।
+     flag এর line হয়তো আগে থেকেই core এ ছিল (দ্রুত),
+     data এর line আনতে হলো (ধীর) → flag আগে দৃশ্যমান হলো।
+
+  ৩. Consumer এর দিকেও reordering
+     CPU speculatively data পড়ে ফেলতে পারে while loop
+     শেষ হওয়ার আগেই — আর পুরনো মান পেয়ে যেতে পারে।</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার CPU cache coherent, তাই shared variable
+    নিরাপদ — একজন লিখলে অন্যজন দেখবে।"</strong>
+  </p>
+  <p>
+    Coherence আপনাকে দেয়: <code>data</code> এর লেখাটা
+    <em>শেষ পর্যন্ত</em> সব core দেখবে, আর
+    <code>flag</code> এর লেখাটাও।
+  </p>
+  <p>
+    Coherence আপনাকে দেয় <strong>না</strong>: এই দুটো লেখা
+    একই <em>ক্রমে</em> দৃশ্যমান হবে। দুটো আলাদা location,
+    দুটো আলাদা cache line, দুটো স্বাধীন যাত্রা।
+  </p>
+  <p>
+    এই পার্থক্যটাই <strong>coherence বনাম consistency</strong>।
+    Coherence প্রতি-location; consistency হলো একাধিক location
+    এর মধ্যে ক্রমের নিয়ম। Hardware coherence দেয় বিনামূল্যে,
+    কিন্তু consistency আপনাকে চাইতে হয় — barrier বা atomic
+    দিয়ে।
+  </p>
+</div>
+
+<h2 id="c13-models">Memory model — hardware কত এলোমেলো করতে পারে</h2>
+
+<p>
+  কোন ক্রম পরিবর্তন অনুমোদিত, সেটা architecture ঠিক করে দেয়।
+  একে <strong>memory model</strong> বলা হয়, আর এখানে
+  x86 আর ARM এর মধ্যে বড় পার্থক্য:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr>
+      <th>পুনর্বিন্যাস</th>
+      <th>x86-64 (TSO)</th>
+      <th>ARM64 / RISC-V</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Load → Load</td><td>না</td><td><strong>হ্যাঁ</strong></td></tr>
+    <tr><td>Load → Store</td><td>না</td><td><strong>হ্যাঁ</strong></td></tr>
+    <tr><td>Store → Store</td><td>না</td><td><strong>হ্যাঁ</strong></td></tr>
+    <tr><td>Store → Load</td><td><strong>হ্যাঁ</strong></td><td><strong>হ্যাঁ</strong></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  x86-64 এর model কে <strong>TSO (Total Store Order)</strong>
+  বলা হয় — তুলনামূলকভাবে কঠোর। শুধু একটা পুনর্বিন্যাস
+  অনুমোদিত: একটা store এর পরের load টা আগে হয়ে যেতে পারে
+  (store buffer এর কারণে)।
+</p>
+
+<p>
+  ARM64 অনেক শিথিল — চারটার সবই অনুমোদিত। আর এটা একটা
+  তাত্ত্বিক পার্থক্য নয়:
+</p>
+
+<div class="box warn">
+  <div class="box-t">এটা আপনার সাথে ঘটবে</div>
+  <p>
+    আপনি <strong>Apple Silicon</strong> (M1/M2/M3 — ARM64) এ
+    develop করেন। আপনার CI হয়তো x86-64। আপনি deploy করেন
+    <strong>AWS Graviton</strong> বা <strong>Ampere</strong>
+    (ARM64) এ।
+  </p>
+  <p>
+    একটা synchronization bug যা x86 এ কখনো প্রকাশ পায় না,
+    ARM64 এ নিয়মিত ভাঙতে পারে — কারণ ARM এর hardware বেশি
+    পুনর্বিন্যাস করার অনুমতি রাখে। উল্টোটাও সত্য: আপনার Mac
+    এ ধরা পড়া bug হয়তো x86 CI তে কখনো reproduce হবে না।
+  </p>
+  <p>
+    এই কারণেই memory model জানা ২০২৬ এ আর academic বিষয় নয়।
+    আপনার দুটো ভিন্ন memory model এর মধ্যে code চলছে,
+    প্রতিদিন।
+  </p>
+</div>
+
+<h2 id="c13-barrier">Barrier — ক্রম ফিরিয়ে আনা</h2>
+
+<p>
+  সমাধান হলো hardware কে স্পষ্টভাবে বলা: "এই বিন্দুর আগের
+  সব কাজ শেষ হওয়া চাই, পরেরগুলো শুরুর আগে"। একে
+  <strong>memory barrier</strong> বা <strong>fence</strong> বলে।
+</p>
+
+<pre class="ascii"><code>  barrier ছাড়া:                 barrier সহ:
+
+  data = 42                      data = 42
+  flag = 1                       ═══ barrier ═══  ← এখানে অপেক্ষা
+    ↑ ক্রম বদলাতে পারে           flag = 1
+                                   ↑ এখন নিশ্চিত: data আগে দৃশ্যমান
+
+  x86:    mfence / sfence / lfence, বা যেকোনো lock-প্রিফিক্সড
+          instruction (যেমন lock xchg) — এগুলো নিজেই barrier
+  ARM64:  dmb ish / dsb ish, বা ldar/stlr (acquire/release load-store)</code></pre>
+
+<p>
+  কিন্তু আপনি সাধারণত assembly লিখবেন না। ভাষার atomic
+  primitive ব্যবহার করবেন, আর সেগুলো ঠিক barrier বসিয়ে দেবে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The same message-passing pattern, done correctly.
+   C11 atomics — compiles to the right fence on each architecture. */
+#include &lt;stdatomic.h&gt;
+
+int data = 0;                       /* plain int is fine here */
+atomic_int flag = 0;                /* the synchronisation variable */
+
+void producer(void) {
+    data = 42;
+    /* release: everything written BEFORE this is visible to anyone
+       who acquires the same variable and sees this value. */
+    atomic_store_explicit(&amp;flag, 1, memory_order_release);
+}
+
+void consumer(void) {
+    /* acquire: once we see flag == 1, all writes the producer made
+       before its release are visible to us. */
+    while (atomic_load_explicit(&amp;flag, memory_order_acquire) == 0)
+        ;
+    printf("%d\n", data);           /* guaranteed to be 42 */
+}</code></pre></div>
+
+<p>
+  <strong>Release/acquire</strong> জোড়াটাই এখানে মূল ধারণা,
+  আর এটা মনে রাখার সহজ উপায় আছে:
+</p>
+
+<pre class="ascii"><code>  release (লেখার দিকে)  — "এর আগের সব কাজ প্যাকেট করে পাঠালাম"
+  acquire (পড়ার দিকে)   — "প্যাকেটটা পেলাম, ভিতরের সব দেখতে পাচ্ছি"
+
+  Thread 1                      Thread 2
+  ────────────────              ────────────────
+  data = 42                     ┌─ flag পড়ল (acquire) → 1
+  ...আরও লেখা...                │
+  flag = 1 (release) ───────────┘
+                                এখন thread 1 এর release এর
+                                আগের সব লেখা thread 2 দেখবে
+
+  একটাই জোড়া, কিন্তু সব লেখা বাহিত হলো।</code></pre>
+
+<p>
+  C11/C++11 এ কয়েকটা স্তর আছে, আর সেগুলোর দাম আলাদা:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Order</th><th>গ্যারান্টি</th><th>খরচ</th><th>কখন</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>relaxed</code></td>
+      <td>শুধু atomicity, কোনো ক্রম নয়</td>
+      <td>সবচেয়ে কম</td>
+      <td>শুধু counter, যেখানে ক্রম অপ্রাসঙ্গিক</td>
+    </tr>
+    <tr>
+      <td><code>acquire</code> / <code>release</code></td>
+      <td>জোড়া হিসেবে ক্রম নিশ্চিত</td>
+      <td>মাঝারি</td>
+      <td><strong>সাধারণ পছন্দ</strong> — lock, flag, queue</td>
+    </tr>
+    <tr>
+      <td><code>seq_cst</code></td>
+      <td>সব thread একই global ক্রম দেখে</td>
+      <td>সবচেয়ে বেশি</td>
+      <td>Default; সন্দেহ হলে এটাই</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <strong>পরামর্শ:</strong> সন্দেহ হলে <code>seq_cst</code>
+  ব্যবহার করুন (সেটাই default)। <code>relaxed</code> দিয়ে
+  optimize করা বিশেষজ্ঞের কাজ, আর ভুল করলে bug টা এমন হবে যা
+  বছরে একবার প্রকাশ পায়। x86 এ <code>acquire</code>/
+  <code>release</code> প্রায় বিনামূল্যে (hardware ইতিমধ্যেই
+  কঠোর), তাই আগে-থেকে optimize করার প্রলোভন এড়ানো উচিত।
+</p>
+
+<h2 id="c13-litmus">Litmus test — নিজে যাচাই করা</h2>
+
+<p>
+  এই আচরণগুলো সত্যিই দেখা যায়। একটা ছোট litmus test:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* store_buffer.c — the classic x86-TSO litmus test.
+   Both threads store, then load the other's variable.
+   Can both see 0?  On x86: YES (store→load reordering).
+   Build: gcc -O2 -pthread -o sb store_buffer.c */
+#include &lt;stdio.h&gt;
+#include &lt;pthread.h&gt;
+
+static volatile int x, y, r1, r2;
+static volatile int go;
+
+static void *t1(void *_) {
+    while (!go) ;
+    x = 1;            /* store */
+    r1 = y;           /* load — may happen "before" the store lands */
+    return NULL;
+}
+static void *t2(void *_) {
+    while (!go) ;
+    y = 1;
+    r2 = x;
+    return NULL;
+}
+
+int main(void) {
+    long both_zero = 0;
+    for (long i = 0; i &lt; 200000; i++) {
+        pthread_t a, b;
+        x = y = r1 = r2 = go = 0;
+        pthread_create(&amp;a, NULL, t1, NULL);
+        pthread_create(&amp;b, NULL, t2, NULL);
+        go = 1;
+        pthread_join(a, NULL);
+        pthread_join(b, NULL);
+        if (r1 == 0 &amp;&amp; r2 == 0) both_zero++;
+    }
+    /* Sequential reasoning says this is impossible:
+       whoever stored second must see the other's store. */
+    printf("both saw 0: %ld times\n", both_zero);
+    return 0;
+}</code></pre></div>
+
+<p>
+  ক্রমিক যুক্তি বলে এটা অসম্ভব — যে পরে store করেছে, সে
+  অন্যের store দেখা উচিত। কিন্তু x86 এ store buffer এর কারণে
+  এটা ঘটে, আর ARM64 এ আরও বেশি ঘটে।
+</p>
+
+<p>
+  পেশাদার ভাবে এই ধরনের যাচাই করার যন্ত্র আছে:
+</p>
+
+<pre><code># JVM এর জন্য — Oracle এর নিজের litmus framework
+$ java -jar jcstress.jar -t StoreBuffer
+
+# C/C++ এর memory model formally যাচাই করা
+$ herd7 -model x86tso store_buffer.litmus
+$ herd7 -model aarch64 store_buffer.litmus   # আলাদা ফল দেবে
+
+# আপনার code এ race আছে কি — সবচেয়ে ব্যবহারিক উত্তর
+$ gcc -fsanitize=thread -O1 -g prog.c -pthread &amp;&amp; ./a.out</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    আপনি সম্ভবত এই primitive গুলো সরাসরি ব্যবহার করবেন না,
+    কিন্তু আপনার runtime করে:
+  </p>
+  <ul>
+    <li>
+      <strong>Go</strong> — <code>sync/atomic</code> আর
+      channel। Go এর memory model স্পষ্টভাবে documented, আর
+      channel send/receive একটা release/acquire জোড়া। এই
+      কারণেই Go তে "channel দিয়ে data পাঠাও, shared memory
+      এড়াও" পরামর্শটা নিরাপদ।
+    </li>
+    <li>
+      <strong>Java</strong> — <code>volatile</code> (C এর
+      <code>volatile</code> থেকে সম্পূর্ণ আলাদা!) Java এর
+      <code>volatile</code> সত্যিই একটা memory barrier দেয়।
+      Chapter 14 এ এই নামের বিভ্রান্তিটা পুরোপুরি খুলব।
+    </li>
+    <li>
+      <strong>Rust</strong> — <code>Ordering::Acquire</code>
+      ইত্যাদি সরাসরি C11 এর model, আর type system নিরাপত্তা
+      জোর করে।
+    </li>
+    <li>
+      <strong>JavaScript</strong> — <code>Atomics</code> আর
+      <code>SharedArrayBuffer</code>। হ্যাঁ, browser এও
+      memory model আছে।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c13-summary">দুটো ধারণা আলাদা করে</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Coherence</th><th>Consistency</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>কী নিয়ে</strong></td>
+      <td>একটা location</td>
+      <td>একাধিক location এর পরস্পর ক্রম</td>
+    </tr>
+    <tr>
+      <td><strong>কে দেয়</strong></td>
+      <td>Hardware, স্বয়ংক্রিয়</td>
+      <td>আপনি — barrier/atomic দিয়ে চাইতে হয়</td>
+    </tr>
+    <tr>
+      <td><strong>একক</strong></td>
+      <td>Cache line (৬৪ B)</td>
+      <td>Program এর যুক্তি</td>
+    </tr>
+    <tr>
+      <td><strong>ভুল বুঝলে</strong></td>
+      <td>False sharing — ধীর কিন্তু সঠিক</td>
+      <td>ভাঙা program — দ্রুত কিন্তু ভুল</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটা মনে রাখার মতো। Coherence ভুল বোঝা একটা
+  <em>performance</em> সমস্যা তৈরি করে — বিরক্তিকর, কিন্তু
+  ধরা পড়ে আর সারানো যায়। Consistency ভুল বোঝা একটা
+  <em>correctness</em> সমস্যা তৈরি করে — যা মাসে একবার
+  প্রকাশ পায়, reproduce হয় না, আর architecture বদলালে
+  আচরণ বদলায়।
+</p>
+
+<p>
+  পরের chapter এ এই hardware-স্তরের বিষয়টা programming
+  language এর স্তরে নেব, আর সেখানে chapter 1 এর
+  <code>volatile</code> এর প্রতিশ্রুতিটা পূরণ করব।
+</p>
+
+<div class="qs">
+  <h2 id="c13-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      False sharing এ কোনো যুক্তিগত sharing নেই, তবু ১২ গুণ
+      ধীর। Coherence protocol এর কোন বৈশিষ্ট্যটা এর কারণ,
+      আর কেন এটা "hardware এর bug" নয় বরং একটা অনিবার্য
+      trade-off?
+    </li>
+    <li>
+      Message-passing উদাহরণে <code>0</code> ছাপার তিনটে
+      স্বাধীন কারণ আছে। একটা single-core মেশিনে কোনগুলো
+      ঘটতে পারে? আর সেই উত্তর থেকে বলুন কেন compiler
+      reordering সবচেয়ে বিপজ্জনক কারণ।
+    </li>
+    <li>
+      x86-TSO শুধু store→load পুনর্বিন্যাস অনুমোদন করে,
+      ARM64 চারটাই করে। একটা bug যা Apple Silicon এ ধরা
+      পড়ে কিন্তু x86 CI তে কখনো reproduce হয় না — কীভাবে
+      আপনি CI তে এটা ধরার ব্যবস্থা করবেন?
+    </li>
+    <li>
+      Release/acquire একটা জোড়া — একটা variable এর উপর।
+      কিন্তু তার মাধ্যমে <em>সব</em> আগের লেখা বাহিত হয়।
+      এই "একটা জোড়া, সব data" ধর্মটা কেন গুরুত্বপূর্ণ?
+      যদি প্রতিটা variable এর জন্য আলাদা barrier লাগত,
+      তাহলে queue বা lock বানানো কত কঠিন হতো?
+    </li>
+    <li>
+      <code>relaxed</code> সবচেয়ে সস্তা, <code>seq_cst</code>
+      সবচেয়ে দামি। তবু পরামর্শ হলো <code>seq_cst</code>
+      দিয়ে শুরু করা। এই পরামর্শটা x86 এ বিশেষভাবে সস্তা
+      কেন? আর ARM64 এ দামটা বেশি হওয়া সত্ত্বেও কেন এটাই
+      ঠিক default?
+    </li>
+    <li>
+      Coherence ভুল বোঝা performance সমস্যা, consistency
+      ভুল বোঝা correctness সমস্যা। এই দুটোর মধ্যে কোনটা
+      production এ বেশি ব্যয়বহুল, আর কেন? আপনার উত্তরে
+      "কখন ধরা পড়ে" আর "reproduce করা যায় কি" — এই দুটো
+      মাত্রা ব্যবহার করুন।
+    </li>
+  </ol>
+</div>

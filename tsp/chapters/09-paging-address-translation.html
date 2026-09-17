@@ -1,0 +1,507 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 15, 18, 20 · pdf p152–165, 195–208, 226–240</span>
+  </div>
+  <h1>Address translation — paging কীভাবে কাজ করে</h1>
+  <p class="ch-lede">
+    প্রতিটা memory access এ একটা অনুবাদ হয়, hardware এ, আপনার
+    অজান্তে। সেই অনুবাদের গঠন — VPN, PFN, page table, আর x86-64 এর
+    চার স্তর — না জানলে page fault, huge page বা container এর
+    memory আচরণ কোনোটাই ব্যাখ্যা করা যায় না।
+  </p>
+</div>
+
+<p>
+  Chapter 8 এ address space এর illusion টা দেখলাম। এখন প্রশ্ন:
+  একটা virtual address কীভাবে আসল physical address হয়ে ওঠে?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    প্রতিটা memory access এ virtual address কে physical address এ
+    অনুবাদ করতে হবে — নমনীয়ভাবে (fragmentation ছাড়া), দ্রুত
+    (প্রতিটা load/store এ), আর নিরাপদে (একজন অন্যজনের page
+    ছুঁতে পারবে না)। কীভাবে?
+  </p>
+</div>
+
+<h2 id="c9-idea">মূল ধারণা — সবকিছু একই আকারে কাটা</h2>
+
+<p>
+  Chapter 8 এ দেখেছি variable-size segment external fragmentation
+  তৈরি করে। Paging এর সমাধান সরল আর নির্মম:
+  <strong>সব টুকরো একই আকার করে দাও</strong>।
+</p>
+
+<ul>
+  <li>Virtual address space কে সমান আকারের <strong>page</strong> এ কাটা হয়</li>
+  <li>Physical memory কে সমান আকারের <strong>frame</strong> এ কাটা হয়</li>
+  <li>যেকোনো page যেকোনো frame এ বসতে পারে</li>
+</ul>
+
+<p>
+  ফলাফল: external fragmentation তত্ত্বগতভাবেই অসম্ভব। একটা page
+  লাগলে যেকোনো free frame দিয়েই চলবে — কোনটা তা অপ্রাসঙ্গিক।
+</p>
+
+<pre class="ascii"><code>  Virtual (process এর দৃষ্টি)      Physical (আসল RAM)
+  ┌──────────┐ page 0              ┌──────────┐ frame 0  (kernel)
+  │  code    │──────────┐          ├──────────┤ frame 1
+  ├──────────┤ page 1   │    ┌────▶│  page 3  │ frame 2
+  │  code    │──────┐   │    │     ├──────────┤ frame 3
+  ├──────────┤ page 2│   │    │     │  page 0  │ frame 4
+  │  heap    │───┐  │   │    │     ├──────────┤ frame 5
+  ├──────────┤ page 3  │   └────┼────▶│  page 1  │ frame 6
+  │  stack   │───┼──┼───────┘     ├──────────┤ frame 7
+  └──────────┘   │  │             │  page 2  │ frame 8
+                 └──┼────────────▶└──────────┘
+                    └── ক্রম এলোমেলো, তাতে কিছু যায় আসে না</code></pre>
+<p class="figcap">
+  Page গুলো physical memory তে যেকোনো ক্রমে ছড়িয়ে থাকতে পারে।
+  Process কিছুই জানে না।
+</p>
+
+<h2 id="c9-split">Address টা দুই ভাগে ভাঙা</h2>
+
+<p>
+  অনুবাদটা আসলে একটা সরল কৌশল। একটা virtual address এর দুটো অংশ:
+</p>
+
+<pre class="ascii"><code>  ধরুন: address space 64 byte, page size 16 byte
+        → 4টা page → VPN এর জন্য 2 bit
+        → page এর ভিতরে 16টা byte → offset এর জন্য 4 bit
+
+   bit:  5   4   3   2   1   0
+       ┌───┬───┬───┬───┬───┬───┐
+       │ VPN   │     offset    │
+       └───┴───┴───┴───┴───┴───┘
+
+  উদাহরণ: virtual address 21
+          21 = 010101 (binary)
+
+       ┌───┬───┬───┬───┬───┬───┐
+       │ 0 │ 1 │ 0 │ 1 │ 0 │ 1 │
+       └───┴───┴───┴───┴───┴───┘
+         └─VPN─┘ └───offset───┘
+          = 1        = 5
+
+  অর্থ: page 1 এর 5-তম byte
+
+  page table বলল: VPN 1 → PFN 7
+
+       ┌───┬───┬───┬───┬───┬───┬───┐
+       │ 1 │ 1 │ 1 │ 0 │ 1 │ 0 │ 1 │
+       └───┴───┴───┴───┴───┴───┴───┘
+         └──PFN──┘ └───offset───┘
+            = 7        = 5  (অপরিবর্তিত!)
+
+  physical address = 7 × 16 + 5 = 117</code></pre>
+
+<p>
+  <strong>Offset টা অনুবাদ হয় না</strong> — এটাই মূল কথা, আর
+  এটাই সবচেয়ে বেশি ভুল বোঝা হয়। Offset শুধু বলে page এর ভিতরে
+  কোন byte। শুধু VPN টা PFN এ বদলায়। তাই একটা page এর ভিতরের
+  ক্রম সবসময় অটুট থাকে।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"পুরো address টা page table দিয়ে অনুবাদ হয়, তাই
+    virtual address 21 physical memory তে যেকোনো জায়গায়
+    পড়তে পারে।"</strong>
+  </p>
+  <p>
+    না। Page এর <em>অবস্থান</em> এলোমেলো হতে পারে, কিন্তু
+    page এর <em>ভিতরের</em> গঠন অপরিবর্তিত। একই page এর দুটো
+    পাশাপাশি byte physical memory তেও পাশাপাশিই থাকে।
+  </p>
+  <p>
+    এর একটা বাস্তব পরিণতি আছে: একটা array যদি একটা page এর
+    ভিতরে থাকে, তার উপর iteration করলে physical memory তেও
+    ক্রমিক access হয় — তাই hardware prefetcher কাজ করতে পারে।
+    কিন্তু array যদি page সীমানা পার হয়, পরের page হয়তো
+    সম্পূর্ণ অন্য জায়গায়। এই কারণেই বড় data structure এ
+    page-aligned allocation কখনো পার্থক্য গড়ে।
+  </p>
+</div>
+
+<h2 id="c9-pte">Page table entry — এর ভিতরে কী আছে</h2>
+
+<p>
+  Page table হলো VPN থেকে PFN এর একটা map। কিন্তু প্রতিটা entry
+  তে শুধু PFN নয়, আরও অনেক কিছু থাকে — আর ওই bit গুলোই OS এর
+  আসল হাতিয়ার:
+</p>
+
+<pre class="ascii"><code>  x86-64 এর একটা PTE (64 bit):
+
+   63  62        52 51            12 11   9 8 7 6 5 4 3 2 1 0
+  ┌──┬─────────────┬────────────────┬──────┬─┬─┬─┬─┬─┬─┬─┬─┬─┐
+  │NX│  reserved   │      PFN       │ OS   │G│P│D│A│C│W│U│R│P│
+  └──┴─────────────┴────────────────┴──────┴─┴─┴─┴─┴─┴─┴─┴─┴─┘
+
+  P  (Present)     — এই page এখন RAM এ আছে?  0 হলে page fault
+  R  (Read/Write)  — লেখা যাবে?  COW এ এটাই 0 করা হয় (chapter 3)
+  U  (User)        — user mode থেকে ছোঁয়া যাবে?  kernel page এ 0
+  A  (Accessed)    — hardware সেট করে যখন page পড়া হয়
+  D  (Dirty)       — hardware সেট করে যখন page এ লেখা হয়
+  G  (Global)      — context switch এ TLB থেকে মুছবে না
+  NX (No-Execute)  — এই page এর code চালানো যাবে না</code></pre>
+
+<p>
+  এই bit গুলোর প্রতিটা একটা বাস্তব কাজ করে:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Bit</th><th>কে সেট করে</th><th>কী সম্ভব করে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>P</code></td>
+      <td>OS</td>
+      <td>Demand paging আর swap — page না থাকলে fault, OS এনে দেয় (chapter 11)</td>
+    </tr>
+    <tr>
+      <td><code>R/W</code></td>
+      <td>OS</td>
+      <td><strong>COW</strong> — fork এর পর সব page read-only, লিখতে গেলে fault (chapter 3)</td>
+    </tr>
+    <tr>
+      <td><code>A</code></td>
+      <td>Hardware</td>
+      <td>কোন page ব্যবহৃত হচ্ছে তা OS জানে → replacement policy (chapter 11)</td>
+    </tr>
+    <tr>
+      <td><code>D</code></td>
+      <td>Hardware</td>
+      <td>Page বদলেছে কি? না বদলালে disk এ লেখার দরকার নেই</td>
+    </tr>
+    <tr>
+      <td><code>NX</code></td>
+      <td>OS</td>
+      <td>Stack এ ঢোকানো code চালানো আটকায় — buffer overflow exploit এর বড় প্রতিরোধ</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  লক্ষ করুন <code>A</code> আর <code>D</code> bit দুটো
+  <em>hardware</em> সেট করে। এটা একটা সুন্দর নকশা: OS কিছু না
+  করেই জানতে পারে কোন page ব্যবহৃত হচ্ছে আর কোনটা বদলেছে।
+  Chapter 11 এ দেখব page replacement পুরোটাই এই দুটো bit এর উপর
+  দাঁড়িয়ে।
+</p>
+
+<h2 id="c9-size">Page table কত বড়?</h2>
+
+<p>
+  এবার সমস্যাটা আসে। একটা সরল (linear) page table এর আকার হিসাব
+  করা যাক:
+</p>
+
+<pre class="ascii"><code>  32-bit address space, 4KB page:
+    offset = 12 bit  (4KB = 2^12)
+    VPN    = 20 bit  → 2^20 = 1,048,576 টা entry
+    প্রতি PTE 4 byte → 4 MB per process
+
+  100টা process → 400 MB শুধু page table এ!
+
+  এখন 64-bit:
+    x86-64 এ ব্যবহারযোগ্য 48 bit
+    offset = 12 bit
+    VPN    = 36 bit  → 2^36 = 68,719,476,736 টা entry
+    প্রতি PTE 8 byte → 512 GB per process
+
+  অসম্ভব। সরল table এ 64-bit চলবেই না।</code></pre>
+
+<p>
+  এখানে একটা গুরুত্বপূর্ণ কথা: 64-bit এ সমস্যাটা শুধু "বড়" নয়,
+  <strong>অসম্ভব</strong>। ৫১২GB এর একটা table রাখার জন্য
+  ৫১২GB RAM লাগবে — প্রতিটা process এর জন্য। এটা একটা
+  পরিমাণগত সমস্যা নয়, গুণগত।
+</p>
+
+<p>
+  তাই সমাধান হিসেবে multi-level table আসে — কিন্তু কারণটা
+  "একটু জায়গা বাঁচানো" নয়, বরং "নইলে কাজই করবে না"।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Multi-level page table একটা space optimization —
+    linear table কাজ করত, শুধু একটু বেশি জায়গা নিত।"</strong>
+  </p>
+  <p>
+    32-bit এ এই কথা আংশিক সত্য ছিল — ৪MB সহনীয়। কিন্তু
+    64-bit এ linear table একটা <em>ভিন্ন নকশা</em>, সরলীকরণ নয়।
+    ৫১২GB এর table রাখা যায় না, তাই radix tree একটা পছন্দ নয়,
+    একটা আবশ্যকতা।
+  </p>
+  <p>
+    আর এটাই কারণ যে OSTEP এর 32-bit হিসাবগুলো পড়ে আপনি ভুল
+    intuition পেতে পারেন। আসল যুক্তিটা হলো: address space
+    <strong>বিরল</strong> (sparse) — ৬৪ bit এর মধ্যে আপনি
+    হয়তো কয়েক MB ব্যবহার করছেন। Tree structure শুধু
+    ব্যবহৃত অংশটার জন্য জায়গা নেয়।
+  </p>
+</div>
+
+<h2 id="c9-multilevel">Multi-level — tree হিসেবে page table</h2>
+
+<p>
+  ধারণাটা সরল: page table কে নিজেই page এ ভাগ করো, আর যে
+  অংশগুলো সম্পূর্ণ খালি সেগুলোর জন্য কোনো জায়গাই নিও না।
+</p>
+
+<pre class="ascii"><code>  x86-64: 48-bit virtual address, চার স্তর
+
+   47      39 38      30 29      21 20      12 11         0
+  ┌──────────┬──────────┬──────────┬──────────┬────────────┐
+  │  PML4    │   PDPT   │    PD    │    PT    │   offset   │
+  │  9 bit   │  9 bit   │  9 bit   │  9 bit   │   12 bit   │
+  └──────────┴──────────┴──────────┴──────────┴────────────┘
+
+  প্রতি স্তরে 9 bit → 512টা entry
+  প্রতি entry 8 byte → 512 × 8 = 4096 byte = ঠিক একটা page!
+  (এই কারণেই 9 bit — যাতে প্রতিটা table এক page এ বসে)
+
+  অনুবাদের পথ:
+
+   CR3 register
+      │
+      ▼
+   ┌────────┐   ┌────────┐   ┌────────┐   ┌────────┐
+   │ PML4   │──▶│ PDPT   │──▶│  PD    │──▶│  PT    │──▶ PFN
+   │ 512 ent│   │ 512 ent│   │ 512 ent│   │ 512 ent│
+   └────────┘   └────────┘   └────────┘   └────────┘
+     4 KB         4 KB         4 KB         4 KB
+
+  একটা ছোট process এর জন্য:
+    4 স্তর × 4KB = মাত্র 16 KB page table
+    (512 GB এর বদলে!)</code></pre>
+<p class="figcap">
+  চারবার memory access লাগে একটা অনুবাদে — এটাই chapter 10 এর
+  TLB এর অস্তিত্বের কারণ।
+</p>
+
+<p>
+  প্রতিটা স্তরে ঠিক ৯ bit কেন? কারণ ২⁹ = ৫১২, আর ৫১২ × ৮ byte
+  = ৪০৯৬ byte = ঠিক একটা page। অর্থাৎ page table এর প্রতিটা
+  অংশ নিজেই একটা page — তাই সেগুলোকেও একই ব্যবস্থায় সামলানো
+  যায়, এমনকি swap ও করা যায়।
+</p>
+
+<p>
+  আধুনিক CPU তে <strong>পাঁচ</strong> স্তরও আছে (LA57) — তখন
+  ৫৭ bit virtual address, অর্থাৎ ১২৮ PB address space। বড়
+  server এ এটা চালু থাকে:
+</p>
+
+<pre><code># আপনার CPU কত স্তর সমর্থন করে
+$ grep -o 'la57' /proc/cpuinfo | head -1
+la57                      ← থাকলে 5-level সম্ভব
+
+# কার্যত কী চলছে
+$ cat /proc/cpuinfo | grep 'address sizes'
+address sizes : 46 bits physical, 48 bits virtual</code></pre>
+
+<h2 id="c9-cost">অনুবাদের দাম</h2>
+
+<p>
+  এখন একটা অস্বস্তিকর হিসাব। প্রতিটা memory access এ চার স্তর
+  ঘুরতে হলে:
+</p>
+
+<pre class="ascii"><code>  mov rax, [rbx]     ← একটা সাধারণ load
+
+  আসলে যা হয় (TLB ছাড়া):
+    1. PML4 entry পড়ো      → একটা memory access
+    2. PDPT entry পড়ো      → একটা memory access
+    3. PD entry পড়ো        → একটা memory access
+    4. PT entry পড়ো        → একটা memory access
+    5. আসল data পড়ো       → একটা memory access
+                            ─────────────────────
+                            5 গুণ ধীর!</code></pre>
+
+<p>
+  পাঁচ গুণ ধীর memory — এটা সম্পূর্ণ অগ্রহণযোগ্য। তাহলে
+  আধুনিক মেশিন কীভাবে কাজ করে?
+</p>
+
+<p>
+  উত্তর একটা cache — <strong>TLB</strong>। সেটাই পরের chapter এর
+  পুরো বিষয়, আর সেখানে দেখব কেন এটা "একটা optimization" নয়,
+  বরং paging কে সম্ভব করে তোলার শর্ত।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"প্রতিটা memory access এ page table walk হয়, তাই
+    আমার program সবসময় ৫ গুণ ধীর।"</strong>
+  </p>
+  <p>
+    না — ৯৯% এর বেশি ক্ষেত্রে অনুবাদটা TLB থেকে আসে, কোনো
+    memory access ছাড়াই। Page table walk হয় শুধু TLB miss এ।
+  </p>
+  <p>
+    তবে OSTEP এর ওই "২ গুণ ধীর" (বা এখানে ৫ গুণ) হিসাবটা
+    অর্থহীন নয় — এটাই বলে দেয় TLB miss কত খরচি, আর সেটাই
+    ব্যাখ্যা করে কেন TLB-বান্ধব data layout (locality) এত
+    গুরুত্বপূর্ণ। Chapter 10 এ মাপব।
+  </p>
+</div>
+
+<h2 id="c9-fault">Page fault — যখন অনুবাদ ব্যর্থ হয়</h2>
+
+<p>
+  PTE এর <code>P</code> bit শূন্য হলে hardware একটা
+  <strong>page fault</strong> তোলে — chapter 4 এর trap এর
+  একটা রূপ। Kernel তখন সিদ্ধান্ত নেয় কী করবে:
+</p>
+
+<pre class="ascii"><code>  page fault এল
+       │
+       ▼
+  kernel: এই address টা বৈধ কি? (VMA তালিকায় আছে?)
+       │
+       ├── না ──▶ SIGSEGV ──▶ সাধারণত process মরে
+       │
+       └── হ্যাঁ, তাহলে কেন fault?
+              │
+              ├── এখনো কোনো page দেওয়া হয়নি
+              │   → একটা free frame নাও, শূন্য করো, map করো
+              │   → minor fault (disk এ যাওয়া লাগেনি)
+              │
+              ├── page টা swap এ আছে
+              │   → disk থেকে পড়ো, map করো
+              │   → major fault (ধীর! chapter 11)
+              │
+              ├── page টা file এর, page cache এ আছে
+              │   → শুধু map করে দাও
+              │   → minor fault
+              │
+              └── COW: read-only page এ লেখার চেষ্টা
+                  → copy বানাও, read-write করো (chapter 3)
+                  → minor fault</code></pre>
+
+<p>
+  <strong>Minor আর major fault এর পার্থক্যটা কাজের</strong>:
+  minor fault সস্তা (~১µs), শুধু kernel এর হিসাব। Major fault
+  এ disk এ যেতে হয় (~১০µs NVMe তে, ~১০ms HDD তে) — হাজার গুণ
+  ব্যবধান। নিজের program এ গুনে দেখা যায়:
+</p>
+
+<pre><code>$ /usr/bin/time -v ./your-program 2&gt;&amp;1 | grep -i fault
+        Minor (reclaiming a frame) page faults: 45231
+        Major (requiring I/O) page faults: 3
+
+# চলমান process এর জন্য
+$ grep -E 'min_flt|maj_flt' /proc/self/stat  # field 10 আর 12
+
+# perf দিয়ে বিস্তারিত
+$ perf stat -e page-faults,minor-faults,major-faults ./prog</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Minor fault বেশি হওয়া <em>স্বাভাবিক</em> — chapter 2 এ
+    দেখেছি program loading নিজেই lazy, তাই প্রতিটা নতুন page
+    একটা minor fault। ৪৫,০০০ minor fault মানে প্রায় ১৮০MB
+    ছোঁয়া হয়েছে, এটা কোনো সমস্যা নয়।
+  </p>
+  <p>
+    <strong>Major fault ই বিপদের চিহ্ন।</strong> আপনার service
+    এ major fault বাড়তে থাকলে মানে হয় swap হচ্ছে, নয়
+    page cache থেকে জিনিস বেরিয়ে যাচ্ছে আর বারবার disk থেকে
+    আনতে হচ্ছে। দুটোই latency তে সরাসরি দেখা যায়।
+  </p>
+  <p>
+    <strong>Postgres</strong> এ এই কারণেই
+    <code>shared_buffers</code> tuning গুরুত্বপূর্ণ — data
+    memory তে থাকলে minor fault, নইলে major। আর
+    <strong>container cold start</strong> এর বড় অংশ হলো
+    প্রথমবার binary আর library এর page গুলো আনার major fault
+    গুলো — chapter 2 এ এই যোগসূত্রটা শুরু করেছিলাম।
+  </p>
+</div>
+
+<h2 id="c9-inspect">নিজের page table দেখা</h2>
+
+<p>
+  Linux এ একটা process এর প্রকৃত mapping দেখা যায়:
+</p>
+
+<pre><code># কোন VMA তে কত page সত্যিই RAM এ আছে
+$ sudo cat /proc/self/smaps | head -20
+5581c4c00000-5581c4c02000 r--p 00000000 fd:01 1234  /usr/bin/cat
+Size:                  8 kB      ← virtual আকার
+Rss:                   8 kB      ← সত্যিই RAM এ
+Pss:                   4 kB      ← ভাগ করা page এর proportional হিসাব
+Shared_Clean:          8 kB      ← অন্যদের সাথে ভাগ করা
+Private_Dirty:         0 kB      ← শুধু আমার, আর বদলেছে
+
+# সারসংক্ষেপ
+$ sudo cat /proc/self/smaps_rollup
+
+# page-স্তরের বিস্তারিত (root লাগে)
+$ sudo cat /proc/self/pagemap   # binary, decode করতে হয়</code></pre>
+
+<p>
+  <code>Pss</code> (Proportional Set Size) টা বিশেষভাবে কাজের:
+  একটা page যদি ১০টা process ভাগ করে, প্রত্যেকের Pss এ তার
+  ১/১০ গোনা হয়। তাই সব process এর Pss যোগ করলে সত্যিকারের
+  ব্যবহার পাওয়া যায় — RSS যোগ করলে একই page বহুবার গোনা হবে।
+  Container এ memory হিসাব করার সময় এই পার্থক্যটা গুরুত্বপূর্ণ।
+</p>
+
+<div class="qs">
+  <h2 id="c9-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Offset অনুবাদ হয় না, শুধু VPN হয়। এই তথ্যটা ব্যবহার করে
+      বলুন: একটা ৪KB page এর ভিতরে থাকা একটা array এর উপর
+      iteration, বনাম একটা array যা ১০০টা page জুড়ে ছড়ানো —
+      physical memory তে access pattern কীভাবে আলাদা হবে,
+      আর কেন এটা hardware prefetcher এর জন্য গুরুত্বপূর্ণ?
+    </li>
+    <li>
+      x86-64 এ প্রতিটা page table স্তরে ঠিক ৯ bit ব্যবহার করা
+      হয়। ১০ bit বা ৮ bit হলে কী সমস্যা হতো? আপনার উত্তরে
+      page size আর PTE আকারের সম্পর্কটা ব্যবহার করুন।
+    </li>
+    <li>
+      64-bit এ linear page table "বড়" নয়, "অসম্ভব" — কেন এই
+      পার্থক্যটা গুরুত্বপূর্ণ? Address space এর কোন
+      বৈশিষ্ট্যটা multi-level tree কে কাজ করতে দেয়, আর
+      এমন একটা program কল্পনা করুন যার জন্য tree টাও বড় হয়ে
+      যাবে।
+    </li>
+    <li>
+      <code>A</code> (accessed) আর <code>D</code> (dirty) bit
+      hardware সেট করে, OS নয়। যদি hardware এটা না করত আর
+      OS কে নিজে হিসাব রাখতে হতো, তাহলে OS কীভাবে করতে পারত?
+      সেই পদ্ধতির খরচ কত হতো?
+    </li>
+    <li>
+      আপনার service এ minor fault প্রতি সেকেন্ডে ৫০,০০০ কিন্তু
+      major fault শূন্য। আরেকটা service এ minor ৫০০ কিন্তু
+      major ২০০। কোনটা নিয়ে চিন্তিত হবেন, আর কেন? প্রতিটা
+      ক্ষেত্রে পরের পদক্ষেপ কী?
+    </li>
+    <li>
+      দশটা container একই base image থেকে চলছে, তাই libc এর
+      page গুলো ভাগ করা। প্রতিটার RSS যোগ করলে আর প্রতিটার
+      Pss যোগ করলে আলাদা সংখ্যা পাবেন। কোনটা node এর
+      সত্যিকারের memory চাপ বোঝায়, আর একটা capacity
+      planning এ ভুল সংখ্যা ব্যবহার করলে কী ভুল সিদ্ধান্ত হবে?
+    </li>
+  </ol>
+</div>

@@ -1,0 +1,481 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 36, pdf p410–422 · + NVMe queue, polling এর প্রত্যাবর্তন</span>
+  </div>
+  <h1>I/O device আর interrupt</h1>
+  <p class="ch-lede">
+    Part 3 শুরু হচ্ছে সবচেয়ে নিচের স্তর থেকে: CPU কীভাবে একটা
+    device এর সাথে কথা বলে। এখানে একটা ঐতিহাসিক মোচড় আছে —
+    polling কে অদক্ষ বলে interrupt এসেছিল, আর NVMe এর যুগে
+    polling ফিরে এসেছে।
+  </p>
+</div>
+
+<p>
+  Part 1 এ CPU আর memory virtualize করেছি। Part 2 এ একই
+  memory ভাগ করার সমস্যা। এখন Part 3 — <strong>power চলে
+  গেলেও যা থেকে যায়</strong>।
+</p>
+
+<p>
+  কিন্তু file system এ যাওয়ার আগে একটা স্তর নিচে নামতে হবে:
+  CPU আসলে কীভাবে একটা disk কে বলে "এই block টা পড়ো"?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Device গুলো CPU এর চেয়ে হাজার থেকে লক্ষ গুণ ধীর।
+    OS কীভাবে তাদের সাথে কথা বলবে, আর অপেক্ষার সময়টা
+    নষ্ট না করে কীভাবে কাজে লাগাবে?
+  </p>
+</div>
+
+<h2 id="c20-arch">Device কোথায় বসে</h2>
+
+<pre class="ascii"><code>              ┌─────────┐   ┌─────────┐
+              │   CPU   │   │   RAM   │
+              └────┬────┘   └────┬────┘
+                   └──────┬──────┘
+                     memory bus        ← দ্রুততম, সংক্ষিপ্ত
+                          │
+                   ┌──────▼──────┐
+                   │  PCIe root  │
+                   └──┬───────┬──┘
+                      │       │
+         ┌────────────▼─┐   ┌─▼────────────┐
+         │  GPU         │   │  NVMe SSD    │  ← PCIe: দ্রুত
+         └──────────────┘   └──────────────┘
+                      │
+                ┌─────▼──────┐
+                │  USB / SATA │  ← ধীর, কিন্তু অনেক device
+                └─────────────┘
+
+  কেন এই স্তরবিন্যাস? কারণ দ্রুত bus ছোট হতে হয়
+  (signal integrity, খরচ)। তাই দ্রুত device গুলো
+  CPU এর কাছে, ধীর গুলো দূরে।</code></pre>
+
+<h2 id="c20-canonical">একটা আদর্শ device এর interface</h2>
+
+<p>
+  প্রতিটা device এর দুটো অংশ: একটা <strong>interface</strong>
+  (OS যা দেখে) আর একটা <strong>internal structure</strong>
+  (ভিতরে যা আছে — সাধারণত নিজের firmware আর memory সহ
+  একটা ছোট কম্পিউটার)।
+</p>
+
+<pre class="ascii"><code>  OS এর দৃষ্টিতে একটা device = তিনটে register:
+
+  ┌────────────────────────────────────────┐
+  │  STATUS   — device এখন কী অবস্থায়      │
+  │  COMMAND  — কী করতে হবে                │
+  │  DATA     — data আনা-নেওয়ার জায়গা      │
+  └────────────────────────────────────────┘
+
+  একটা অনুরোধের protocol:
+
+  while (STATUS == BUSY)          ← ১. অপেক্ষা
+      ;                              (polling)
+  write data to DATA register     ← ২. data দাও
+  write command to COMMAND        ← ৩. কাজ শুরু করাও
+  while (STATUS == BUSY)          ← ৪. শেষ হওয়ার অপেক্ষা
+      ;                              (আবার polling)</code></pre>
+
+<p>
+  এই protocol টা সঠিক কিন্তু নষ্ট করে দুটো জিনিস:
+</p>
+
+<ol>
+  <li>
+    <strong>Polling</strong> — ধাপ ১ আর ৪ এ CPU শুধু
+    জিজ্ঞেস করতে করতে সময় নষ্ট করছে।
+  </li>
+  <li>
+    <strong>PIO (Programmed I/O)</strong> — ধাপ ২ এ CPU
+    নিজে প্রতিটা byte device এ লিখছে। ৪KB মানে হাজারো
+    instruction।
+  </li>
+</ol>
+
+<h2 id="c20-interrupt">Interrupt — CPU কে মুক্ত করা</h2>
+
+<p>
+  প্রথম সমস্যার সমাধান interrupt (chapter 4 এ mechanism
+  দেখেছি): অনুরোধ পাঠিয়ে process টাকে ঘুম পাড়িয়ে দাও,
+  অন্য কাজ চালাও। Device শেষ করলে সে CPU কে ডাকবে।
+</p>
+
+<pre class="ascii"><code>  Polling দিয়ে (CPU নষ্ট):
+
+  CPU:  [P1 চলছে][p p p p p p p p][P1 আবার]
+  Disk:          [████ কাজ করছে ███]
+                  ↑ CPU শুধু জিজ্ঞেস করছে — অপচয়
+
+
+  Interrupt দিয়ে (overlap):
+
+  CPU:  [P1 চলছে][P2 চলছে ........][P1 আবার]
+  Disk:          [████ কাজ করছে ███]⚡
+                                    ↑ interrupt
+
+  একই সময়ে disk আর CPU দুটোই ব্যস্ত।</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Interrupt সবসময় polling এর চেয়ে ভালো — তাই
+    আধুনিক system এ polling ব্যবহার হয় না।"</strong>
+  </p>
+  <p>
+    OSTEP নিজেই সতর্ক করে যে interrupt সবসময় সেরা নয়, আর
+    ২০২৬ এ সেই সতর্কবার্তাটা আরও প্রাসঙ্গিক হয়ে উঠেছে।
+  </p>
+  <p>
+    একটা interrupt এর খরচ আছে: context switch, handler
+    চালানো, cache নষ্ট হওয়া — সব মিলিয়ে ~১–৫µs।
+    এখন হিসাব করুন:
+  </p>
+  <pre><code>HDD seek:        ~১০ ms   → interrupt এর খরচ তুচ্ছ (০.০৫%)
+SATA SSD:        ~১০০ µs  → interrupt এর খরচ ~২%
+NVMe SSD:        ~২০ µs   → interrupt এর খরচ ~১০–২৫%!
+Optane/CXL:      ~১০ µs   → interrupt এর খরচ device এর সমান</code></pre>
+  <p>
+    Device যত দ্রুত, interrupt এর আপেক্ষিক খরচ তত বেশি।
+    একটা NVMe read এ যদি ২০µs লাগে আর interrupt এ ৩µs,
+    তাহলে ঘুমানো-জাগার পুরো চক্রটাই অপচয়।
+  </p>
+  <p>
+    তাই <strong>polling ফিরে এসেছে</strong>, নতুন রূপে:
+  </p>
+  <pre><code># Linux এর NVMe polling queue — অতি-কম latency এর জন্য
+$ cat /sys/block/nvme0n1/queue/io_poll
+1
+# io_uring এ IORING_SETUP_IOPOLL দিয়ে polled I/O
+
+# আর network এ NAPI — interrupt পেয়ে interrupt বন্ধ করে
+# একগুচ্ছ packet poll করে নেওয়া (hybrid পদ্ধতি)
+$ cat /proc/net/softnet_stat | head -2</code></pre>
+  <p>
+    এটাই সেই চক্র: polling → interrupt → hybrid → আবার
+    polling। নীতিটা বদলায়নি, শুধু hardware এর গতি
+    বদলেছে বলে সিদ্ধান্তটা উল্টে গেছে।
+  </p>
+</div>
+
+<p>
+  আরেকটা কারণ আছে interrupt এড়ানোর — <strong>livelock</strong>
+  (chapter 18 এর সেই শব্দটা, ভিন্ন প্রসঙ্গে)। একটা
+  network card যদি প্রতি packet এ interrupt দেয় আর packet
+  আসে সেকেন্ডে লক্ষ লক্ষ, তাহলে CPU শুধু interrupt
+  সামলাতেই পুরো সময় কাটাবে — আসল প্রক্রিয়াকরণ কখনো হবে না।
+</p>
+
+<p>
+  সমাধান <strong>interrupt coalescing</strong>: কয়েকটা
+  ঘটনা জমিয়ে একটা interrupt দাও। দাম হলো সামান্য বাড়তি
+  latency:
+</p>
+
+<pre><code># NIC এর coalescing setting
+$ ethtool -c eth0
+rx-usecs: 50          ← ৫০µs জমিয়ে তারপর interrupt
+rx-frames: 32         ← বা ৩২টা frame হলেই
+
+# latency কমাতে চাইলে কমান, throughput চাইলে বাড়ান —
+# ঠিক chapter 5 এর সেই turnaround বনাম response trade-off</code></pre>
+
+<h2 id="c20-dma">DMA — CPU কে data সরানোর কাজ থেকে মুক্তি</h2>
+
+<p>
+  দ্বিতীয় সমস্যা — PIO। CPU নিজে byte সরালে ৪KB এর জন্য
+  হাজারো instruction লাগে, আর সেই সময়টা সম্পূর্ণ অপচয়।
+</p>
+
+<p>
+  <strong>DMA (Direct Memory Access — একটা আলাদা engine
+  যা CPU কে বাদ দিয়ে device আর memory এর মধ্যে সরাসরি
+  data সরায়)</strong>।
+</p>
+
+<pre class="ascii"><code>  PIO দিয়ে:
+
+  CPU:  [P1][cccccccccc][P2 ...]
+              ↑ CPU নিজে copy করছে — সম্পূর্ণ অপচয়
+  Disk:                 [████]
+
+
+  DMA দিয়ে:
+
+  CPU:  [P1][P2 চলছে ..........][P1]
+  DMA:      [cccc]
+  Disk:          [████████]⚡
+
+  CPU শুধু বলে "এই address এ ৪KB আনো", তারপর
+  অন্য কাজে চলে যায়। DMA engine নিজে সরায়,
+  শেষে interrupt দেয়।</code></pre>
+
+<p>
+  DMA এর একটা গুরুত্বপূর্ণ পরিণতি আছে যা প্রায়ই ভুল বোঝা হয়:
+  DMA engine <strong>physical address</strong> ব্যবহার করে,
+  virtual নয়। সে page table জানে না।
+</p>
+
+<p>
+  এর ফলে দুটো জিনিস দরকার হয়:
+</p>
+
+<ul>
+  <li>
+    <strong>Page pinning</strong> — DMA চলার সময় ওই page
+    গুলো swap হয়ে যেতে পারবে না, নইলে DMA ভুল জায়গায়
+    লিখবে। তাই kernel সেগুলো "pinned" করে রাখে।
+    Chapter 11 এর reclaim ওই page ছুঁতে পারে না।
+  </li>
+  <li>
+    <strong>IOMMU</strong> — একটা device যদি যেকোনো
+    physical address এ লিখতে পারে, তাহলে একটা দুষ্ট বা
+    ত্রুটিপূর্ণ device পুরো kernel memory নষ্ট করতে পারে।
+    IOMMU হলো device দের জন্য একটা page table — chapter 9
+    এর MMU এর সমতুল্য, কিন্তু device এর দিকে।
+  </li>
+</ul>
+
+<pre><code># IOMMU চালু আছে কি (VM passthrough আর নিরাপত্তার জন্য দরকার)
+$ dmesg | grep -i -E 'iommu|DMAR' | head -3
+$ ls /sys/kernel/iommu_groups/ | wc -l
+
+# কত memory pinned (DMA বা mlock এর কারণে)
+$ grep -E 'Mlocked|Bounce' /proc/meminfo</code></pre>
+
+<h2 id="c20-talking">Device এর সাথে কথা বলার দুটো উপায়</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Port I/O</th><th>MMIO (Memory-Mapped I/O)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>কীভাবে</strong></td>
+      <td>বিশেষ instruction (<code>in</code>/<code>out</code>)</td>
+      <td>সাধারণ load/store, বিশেষ address এ</td>
+    </tr>
+    <tr>
+      <td><strong>Address space</strong></td>
+      <td>আলাদা I/O space</td>
+      <td>একই physical address space</td>
+    </tr>
+    <tr>
+      <td><strong>আজকাল</strong></td>
+      <td>প্রায় অব্যবহৃত (legacy)</td>
+      <td><strong>সবকিছু</strong></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  MMIO তেই সেই একটা জায়গা যেখানে chapter 14 এর
+  <code>volatile</code> সত্যিই সঠিক হাতিয়ার:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* MMIO — the one legitimate use of volatile in this book.
+   The device changes this memory; the compiler must not
+   cache the value in a register or reorder the accesses. */
+volatile uint32_t *status = (volatile uint32_t *) 0xfebf0000;
+
+while (*status &amp; BUSY_BIT)        /* must re-read every time */
+    ;
+
+/* In real kernel code you use accessors, which add the
+   right barriers for the architecture: */
+u32 v = readl(dev-&gt;regs + STATUS);
+writel(CMD_READ, dev-&gt;regs + COMMAND);</code></pre></div>
+
+<p>
+  Chapter 14 এ বলেছিলাম <code>volatile</code> এর বৈধ
+  ব্যবহার আছে — এটাই সেটা। Device register এ
+  <code>volatile</code> লাগে কারণ মানটা আপনার program এর
+  বাইরে থেকে বদলায়। কিন্তু thread এর মধ্যে
+  synchronization এ এটা কখনো নয়।
+</p>
+
+<h2 id="c20-driver">Device driver আর abstraction</h2>
+
+<p>
+  প্রতিটা device এর নিজস্ব protocol আছে। OS কে প্রতিটার
+  জন্য আলাদা code রাখতে হয় — <strong>device driver</strong>।
+  আর উপরের স্তরগুলোকে একটা সাধারণ interface দিতে হয়:
+</p>
+
+<pre class="ascii"><code>  ┌──────────────────────────────────────────────┐
+  │  application:  read(fd, buf, 4096)           │
+  ├──────────────────────────────────────────────┤
+  │  POSIX file API                              │  ← সবার জন্য এক
+  ├──────────────────────────────────────────────┤
+  │  file system (ext4, xfs, btrfs)              │  ← ch 22-23
+  ├──────────────────────────────────────────────┤
+  │  generic block layer                         │  ← queue, merge,
+  │  (bio, request queue, scheduler)             │    reorder
+  ├──────────────────────────────────────────────┤
+  │  device driver (nvme, ahci, virtio_blk)      │  ← device-নির্দিষ্ট
+  ├──────────────────────────────────────────────┤
+  │  hardware                                    │
+  └──────────────────────────────────────────────┘
+
+  এই স্তরবিন্যাসের দাম: একটা abstraction যা সব device
+  কে একরকম দেখায়, সেটা প্রতিটা device এর বিশেষ ক্ষমতা
+  লুকিয়ে ফেলে। NVMe এর ৬৪K queue একটা "block device"
+  interface এ প্রকাশ করা কঠিন — তাই io_uring আর
+  NVMe passthrough এর মতো নতুন পথ তৈরি হয়েছে।</code></pre>
+
+<p>
+  Linux kernel এর একটা বড় অংশ — কিছু হিসাবে ৭০% এর বেশি
+  code — driver। এই কারণেই kernel এত বড়, আর এই কারণেই
+  একটা নতুন OS লেখা কঠিন: algorithm নয়, driver ই আসল কাজ।
+</p>
+
+<h2 id="c20-nvme">NVMe — queue দিয়ে parallelism</h2>
+
+<p>
+  পুরনো disk interface (SATA/AHCI) একটা queue নিয়ে
+  ডিজাইন করা, কারণ একটা ঘুরন্ত disk এ একসাথে একটাই
+  head। কিন্তু একটা SSD এর ভিতরে অনেকগুলো স্বাধীন channel
+  আছে — একটা queue সেই parallelism ব্যবহার করতে পারে না।
+</p>
+
+<pre class="ascii"><code>  AHCI (SATA):           একটা queue, ৩২ entry
+  ┌─────────────────┐
+  │ [][][][][][][]  │───▶ device
+  └─────────────────┘
+  সব core একই queue এর জন্য lock নেয় → ch 16 এর contention
+
+
+  NVMe:                  ৬৪K queue, প্রতিটায় ৬৪K entry
+  core 0 ──▶ ┌────────┐
+             │ queue0 │───▶┐
+  core 1 ──▶ ┌────────┐    │
+             │ queue1 │───▶├──▶ SSD controller
+  core 2 ──▶ ┌────────┐    │    (ভিতরে অনেক channel)
+             │ queue2 │───▶┘
+  core 3 ──▶ ┌────────┐
+             │ queue3 │───▶
+
+  প্রতি core এর নিজের queue → কোনো lock নেই
+  → chapter 7 এর MQMS, শুধু I/O এর দিকে</code></pre>
+
+<pre><code># আপনার NVMe এর queue গুলো
+$ ls /sys/block/nvme0n1/mq/ | wc -l        # hardware queue সংখ্যা
+$ cat /sys/block/nvme0n1/queue/nr_requests
+
+# কোন I/O scheduler — NVMe তে প্রায়ই "none" ই সঠিক
+$ cat /sys/block/nvme0n1/queue/scheduler
+[none] mq-deadline kyber bfq
+
+# কেন "none"? কারণ SSD এ reorder করে seek বাঁচানোর
+# কিছু নেই — scheduler শুধু latency যোগ করবে।
+# HDD তে mq-deadline বা bfq অর্থপূর্ণ।</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই স্তরটা সাধারণত অদৃশ্য, কিন্তু যখন দেখা দেয় তখন
+    এভাবে:
+  </p>
+  <ul>
+    <li>
+      <strong><code>iostat</code> এর <code>%util</code></strong>
+      — NVMe তে এই সংখ্যাটা <em>বিভ্রান্তিকর</em>। এটা মাপে
+      "কত সময় অন্তত একটা request চলছিল", কিন্তু NVMe
+      একসাথে শত শত request চালাতে পারে। তাই
+      <code>%util = 100%</code> মানে saturated নয়।
+      দেখুন <code>avgqu-sz</code> (queue depth) আর
+      <code>await</code> (latency)।
+    </li>
+    <li>
+      <strong>Queue depth</strong> — একটা NVMe থেকে সর্বোচ্চ
+      throughput পেতে একসাথে অনেক request দরকার। একটা
+      single-threaded synchronous read loop NVMe এর ১০%
+      ও ব্যবহার করতে পারবে না। এই কারণেই io_uring আর
+      parallel read এত গুরুত্বপূর্ণ।
+    </li>
+    <li>
+      <strong>Postgres</strong> এর <code>effective_io_concurrency</code>
+      ঠিক এই সংখ্যাটা — সে কতগুলো concurrent prefetch
+      পাঠাবে। HDD এর জন্য ১-২, NVMe এর জন্য ২০০+ অর্থপূর্ণ।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c20-numbers">সংখ্যাগুলো</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Device / ঘটনা</th><th>Latency</th><th>CPU এর মাপে</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>L1 cache</td><td class="num">~১ ns</td><td>১</td></tr>
+    <tr><td>RAM</td><td class="num">~৮০ ns</td><td>৮০</td></tr>
+    <tr><td>Interrupt handling</td><td class="num">~১–৫ µs</td><td>~৩,০০০</td></tr>
+    <tr><td>NVMe read</td><td class="num">~২০–১০০ µs</td><td>~৫০,০০০</td></tr>
+    <tr><td>SATA SSD read</td><td class="num">~১০০ µs</td><td>~১,০০,০০০</td></tr>
+    <tr><td>HDD seek + read</td><td class="num">~১০ ms</td><td>~১,০০,০০,০০০</td></tr>
+    <tr><td>একই datacenter এ RTT</td><td class="num">~৫০–১০০ µs</td><td>~৭৫,০০০</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটা লক্ষ করুন: <strong>একই datacenter এ একটা
+  network round-trip একটা local NVMe read এর সমান</strong>।
+  এটা একটা তুলনামূলকভাবে নতুন সত্য, আর এর ফলে অনেক
+  ঐতিহাসিক সিদ্ধান্ত উল্টে গেছে — "network এ যাওয়ার
+  চেয়ে disk পড়া ভালো" আর সর্বজনীনভাবে সত্য নয়।
+  Chapter 28 আর 30 এ এটা ফিরে আসবে।
+</p>
+
+<div class="qs">
+  <h2 id="c20-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Polling → interrupt → আবার polling। এই চক্রটা
+      কোনো নীতি বদলানোর ফল নয়, বরং একটা অনুপাত বদলানোর
+      ফল। কোন দুটো সংখ্যার অনুপাত, আর কোন device এর জন্য
+      সেটা কত?
+    </li>
+    <li>
+      DMA engine physical address ব্যবহার করে, virtual নয়।
+      এই একটা তথ্য থেকে দুটো আবশ্যকতা বের করুন — একটা
+      correctness এর জন্য (chapter 11 এর সাথে সম্পর্কিত),
+      আরেকটা নিরাপত্তার জন্য।
+    </li>
+    <li>
+      MMIO তে <code>volatile</code> সঠিক কিন্তু thread
+      synchronization এ ভুল। Chapter 14 এর বিশ্লেষণ
+      ব্যবহার করে বলুন কেন — <code>volatile</code> ঠিক
+      কোন সমস্যাটা সমাধান করে যা MMIO তে দরকার, আর কোনটা
+      করে না যা thread এ দরকার?
+    </li>
+    <li>
+      NVMe তে <code>iostat</code> এর <code>%util = 100%</code>
+      মানে saturated নয়। কেন এই মাপকাঠিটা NVMe এর জন্য
+      ভেঙে যায়, আর কোন দুটো সংখ্যা দেখা উচিত? (সূত্র:
+      একটা queue বনাম ৬৪K queue।)
+    </li>
+    <li>
+      একটা single-threaded synchronous read loop একটা NVMe
+      এর ১০% ও ব্যবহার করতে পারে না। কেন? Chapter 19 এর
+      io_uring কীভাবে এই নির্দিষ্ট সমস্যাটা সমাধান করে?
+    </li>
+    <li>
+      একই datacenter এ network RTT (~৭৫µs) এখন local NVMe
+      read (~৫০µs) এর সমান মাপে। এই সমতা কোন ঐতিহাসিক
+      design সিদ্ধান্তগুলোকে প্রশ্নবিদ্ধ করে? অন্তত দুটো
+      উদাহরণ দিন যেখানে "local disk সবসময় দ্রুত" অনুমানটা
+      এখন ভুল।
+    </li>
+  </ol>
+</div>

@@ -1,0 +1,559 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p4">
+    Part 4 · আজকের বাস্তবতা
+    <span class="src">· OSTEP ch 38, 44 (সংক্ষেপে) · + erasure coding, S3</span>
+  </div>
+  <h1>Data integrity — RAID থেকে erasure coding</h1>
+  <p class="ch-lede">
+    Disk শুধু মরে না — সে নীরবে মিথ্যা বলে। একটা byte পচে
+    যায়, একটা লেখা হারিয়ে যায়, আর কেউ জানতেই পারে না।
+    Part 4 শুরু হচ্ছে এই প্রশ্নে: আপনি কীভাবে জানবেন যে
+    আপনার data এখনো আপনার data?
+  </p>
+</div>
+
+<p>
+  এখন পর্যন্ত ধরে নিয়েছি device হয় কাজ করে, নয় মরে যায় —
+  একটা <strong>fail-stop</strong> model। বাস্তবতা আরও
+  খারাপ: device আংশিকভাবে, নীরবে ব্যর্থ হয়।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা device যদি ভুল data ফেরত দেয় কিন্তু কোনো error
+    রিপোর্ট না করে, তাহলে storage system কীভাবে সেটা
+    ধরবে আর সারাবে?
+  </p>
+</div>
+
+<h2 id="c28-failures">দুটো ব্যর্থতার ধরন</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ধরন</th><th>কী হয়</th><th>ধরা পড়ে?</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>LSE</strong><br>(Latent Sector Error)</td>
+      <td>একটা sector পড়া যায় না; drive নিজেই error ফেরত দেয়</td>
+      <td><strong>হ্যাঁ</strong> — drive বলে দেয়</td>
+    </tr>
+    <tr>
+      <td><strong>Silent corruption</strong></td>
+      <td>Drive ভুল data ফেরত দেয়, কিন্তু "সফল" বলে</td>
+      <td><strong>না</strong> — কেউ জানে না</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  প্রথমটা সহজ: drive যখন বলে "পড়তে পারছি না", তখন
+  redundancy থেকে উদ্ধার করা যায়। দ্বিতীয়টাই ভয়ংকর,
+  আর তার তিনটে উৎস:
+</p>
+
+<pre class="ascii"><code>  ১. Bit rot
+     NAND cell এর charge ধীরে ধীরে leak করে,
+     বা platter এর magnetic domain দুর্বল হয়।
+     ECC একটা সীমা পর্যন্ত সারায়, তারপর ব্যর্থ —
+     কিন্তু কখনো ভুলভাবে "সফল" ও হতে পারে।
+
+  ২. Misdirected write
+     Firmware bug: data সঠিকভাবে লেখা হলো,
+     কিন্তু ভুল জায়গায়। এখন দুটো জায়গা ভুল —
+     যেখানে লেখা হলো, আর যেখানে হওয়া উচিত ছিল।
+
+  ৩. Lost write
+     Drive বলল "লিখেছি", কিন্তু লেখেইনি।
+     পুরনো data রয়ে গেল, আর সেটা পড়লে
+     কোনো checksum ব্যর্থ হবে না — কারণ পুরনো
+     data নিজে বৈধ!  ← সবচেয়ে কঠিন ক্ষেত্র</code></pre>
+
+<p>
+  তৃতীয়টা লক্ষ করুন: একটা সাধারণ checksum এটা ধরতে
+  পারে না, কারণ পুরনো block আর তার checksum দুটোই
+  পরস্পরসঙ্গত। ধরতে হলে <strong>প্রত্যাশিত</strong>
+  version জানতে হবে — আর সেটাই ZFS এর merkle tree
+  করে।
+</p>
+
+<h2 id="c28-checksum">Checksum — কোথায় রাখলে কী ধরা পড়ে</h2>
+
+<p>
+  Checksum এর <em>অবস্থান</em> ঠিক করে দেয় সে কী ধরতে
+  পারবে। এটাই এই chapter এর মূল অন্তর্দৃষ্টি:
+</p>
+
+<pre class="ascii"><code>  ১. Drive এর ভিতরে (প্রতিটা drive এ আছে)
+     [data | ECC]  ← একই sector এ
+
+     ধরে:    media error, bit rot
+     ধরে না: misdirected write (ভুল জায়গায় লেখা
+             data + তার সঠিক ECC = "বৈধ")
+             lost write
+             transport error (cable, PCIe)
+
+  ২. Block এর সাথে, file system এ (ext4 metadata)
+     [data][checksum]
+
+     ধরে:    উপরের সব + transport error
+     ধরে না: misdirected write (checksum ও সরে গেছে)
+             lost write
+
+  ৩. আলাদা জায়গায়, parent এ (ZFS, btrfs)
+     inode/parent block এ child এর checksum
+
+     ধরে:    misdirected write ✓ (parent বলছে
+             এই block এর checksum X হওয়া উচিত)
+     ধরে না: lost write (পুরনো data + পুরনো checksum)
+
+  ৪. Merkle tree — প্রতিটা স্তর নিচের checksum ধরে,
+     root পর্যন্ত (ZFS)
+
+     ধরে:    সব — lost write ও, কারণ root
+             পর্যন্ত শৃঙ্খলটা মিলবে না ✓
+
+  পাঠ: "আমার checksum আছে" যথেষ্ট তথ্য নয়।
+       প্রশ্ন হলো — কোথায়?</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার drive এ ECC আছে আর RAID এ parity আছে,
+    তাই corruption end-to-end সামলানো।"</strong>
+  </p>
+  <p>
+    দুটো আলাদা ফাঁক থাকে:
+  </p>
+  <ul>
+    <li>
+      <strong>ECC শুধু media রক্ষা করে।</strong> Data
+      যখন PCIe bus, cable, HBA, RAM দিয়ে যায়, ECC ওখানে
+      নেই। একটা ত্রুটিপূর্ণ cable বা non-ECC RAM নীরবে
+      bit উল্টে দিতে পারে, আর drive সেই ভুল data
+      নিখুঁতভাবে সংরক্ষণ করবে — তার নিজের ECC সহ।
+    </li>
+    <li>
+      <strong>RAID parity corruption ধরে না।</strong>
+      Parity একটা <em>ব্যর্থ</em> drive থেকে উদ্ধার
+      করতে পারে। কিন্তু দুটো drive যদি আলাদা data দেয়,
+      RAID জানে না কোনটা সঠিক। এই সমস্যার নাম
+      <strong>RAID write hole</strong>, আর এটাই ZFS
+      তৈরির মূল প্রেরণা।
+    </li>
+  </ul>
+  <p>
+    এই কারণেই ext4/XFS <strong>শুধু metadata</strong>
+    checksum করে — আপনার file এর বিষয়বস্তু নয়। btrfs
+    আর ZFS data ও করে, আর তাই তারা corruption
+    <em>ধরতে</em> পারে।
+  </p>
+  <pre><code># ext4 এ metadata checksum আছে কি
+$ sudo dumpe2fs -h /dev/nvme0n1p2 2>/dev/null | grep -i 'features'
+# metadata_csum থাকলে metadata সুরক্ষিত — data নয়
+
+# ZFS/btrfs এ corruption এর হিসাব
+$ zpool status -v tank        # CKSUM কলাম
+$ sudo btrfs device stats /mnt/data | grep corrupt</code></pre>
+</div>
+
+<h2 id="c28-scrub">Scrubbing — সমস্যা খুঁজে বের করা</h2>
+
+<p>
+  Checksum তখনই কাজে লাগে যখন আপনি data পড়েন। কিন্তু
+  একটা archive যদি তিন বছর কেউ না পড়ে? ততদিনে হয়তো
+  দুটো copy ই পচে গেছে।
+</p>
+
+<p>
+  সমাধান: <strong>নিয়মিত সবকিছু পড়ে যাচাই করো</strong>।
+  এর নাম scrubbing, আর OSTEP নিজেই উল্লেখ করে যে
+  বেশিরভাগ LSE এভাবেই ধরা পড়ে।
+</p>
+
+<pre><code># ZFS — সাপ্তাহিক বা মাসিক scrub
+$ sudo zpool scrub tank
+$ zpool status tank
+  scan: scrub repaired 8K in 02:14:31 with 0 errors
+                       ↑ নীরবে সারিয়ে দিয়েছে
+
+# btrfs
+$ sudo btrfs scrub start /mnt/data
+$ sudo btrfs scrub status /mnt/data
+
+# Linux MD RAID — check বা repair
+$ echo check | sudo tee /sys/block/md0/md/sync_action
+$ cat /sys/block/md0/md/mismatch_cnt     # শূন্য না হলে সমস্যা
+
+# NVMe এর নিজের হিসাব
+$ sudo nvme smart-log /dev/nvme0 | grep -E 'media_errors|num_err'</code></pre>
+
+<p>
+  Scrub এর একটা খরচ আছে — সে পুরো array পড়ে, তাই
+  bandwidth আর (SSD তে) read disturb যোগ করে। তাই
+  সাধারণত কম-ব্যস্ত সময়ে চালানো হয়, আর একটা rate
+  limit দেওয়া হয়।
+</p>
+
+<h2 id="c28-raid">RAID — সংক্ষেপে, আর কেন RAID-5 আর নিরাপদ নয়</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Level</th><th>কীভাবে</th><th>সহ্য করে</th><th>খরচ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>RAID-0</strong></td>
+      <td>Striping — কোনো redundancy নেই</td>
+      <td><strong>কিছুই না</strong></td>
+      <td>০%</td>
+    </tr>
+    <tr>
+      <td><strong>RAID-1</strong></td>
+      <td>Mirroring — প্রতিটা block দুবার</td>
+      <td>১টা drive</td>
+      <td>৫০%</td>
+    </tr>
+    <tr>
+      <td><strong>RAID-5</strong></td>
+      <td>একটা parity, ছড়ানো</td>
+      <td>১টা drive</td>
+      <td>১/N</td>
+    </tr>
+    <tr>
+      <td><strong>RAID-6</strong></td>
+      <td>দুটো parity</td>
+      <td>২টা drive</td>
+      <td>২/N</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Parity এর গণিতটা সরল — XOR:
+</p>
+
+<pre class="ascii"><code>  P = D0 ⊕ D1 ⊕ D2 ⊕ D3
+
+  D2 হারালে:  D2 = P ⊕ D0 ⊕ D1 ⊕ D3
+  (XOR এর নিজেরই বিপরীত হওয়ার ধর্ম)
+
+  কিন্তু একটা ছোট লেখার খরচ বেশি —
+  small-write problem:
+
+  D1 এর একটা block বদলাতে:
+    ১. পুরনো D1 পড়ো
+    ২. পুরনো P পড়ো
+    ৩. নতুন P = পুরনো P ⊕ পুরনো D1 ⊕ নতুন D1
+    ৪. নতুন D1 লেখো
+    ৫. নতুন P লেখো
+       → ২টা read + ২টা write, একটা যুক্তিগত লেখার জন্য
+
+  Chapter 21 এর ভাষায়: RAID-5 এ write amplification
+  ৪×, আর সেটা FTL এর WAF এর সাথে গুণ হয়।</code></pre>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো — RAID-5 এর মৃত্যু</div>
+  <p>
+    OSTEP RAID-5 কে একটা যুক্তিসঙ্গত পছন্দ হিসেবে
+    উপস্থাপন করে। বড় drive এ এটা <strong>এক দশকের
+    বেশি সময় ধরে অনিরাপদ</strong> বলে বিবেচিত।
+  </p>
+  <p>
+    কারণটা একটা হিসাব:
+  </p>
+  <pre><code>একটা drive মরল → rebuild শুরু
+
+Rebuild এ বাকি সব drive পুরোটা পড়তে হয়।
+১৬ TB drive, ৮টা drive এর array:
+  পড়তে হবে ~১১২ TB
+  ~১৫০ MB/s এ → ~৯ দিন (হ্যাঁ, দিন)
+
+ওই ৯ দিন আপনার কোনো redundancy নেই।
+আর ঠিক তখনই সব drive সবচেয়ে বেশি চাপে —
+যখন দ্বিতীয় ব্যর্থতার সম্ভাবনা সর্বোচ্চ।
+
+আর UBER (Uncorrectable Bit Error Rate) ~10^-15 হলে
+১১২ TB পড়ার সময় অন্তত একটা unrecoverable
+read error পাওয়ার সম্ভাবনা উল্লেখযোগ্য —
+তাতেই rebuild ব্যর্থ।</code></pre>
+  <p>
+    তাই আজকের সুপারিশ: <strong>RAID-6 সর্বনিম্ন</strong>
+    (দুটো parity), বা আরও ভালো — erasure coding।
+    RAID-4 তো সম্পূর্ণ অপ্রচলিত (একটা নিবেদিত parity
+    disk = একটা bottleneck), তাই আমরা সেটা বাদ দিয়েছি।
+  </p>
+</div>
+
+<h2 id="c28-erasure">Erasure coding — যা cloud ব্যবহার করে</h2>
+
+<p>
+  RAID এর সাধারণীকৃত রূপ: <strong>k</strong> টা data
+  খণ্ড থেকে <strong>m</strong> টা parity খণ্ড বানাও,
+  আর যেকোনো <strong>k</strong> টা খণ্ড থেকে পুরোটা
+  পুনর্গঠন করো।
+</p>
+
+<pre class="ascii"><code>  Reed-Solomon (k=6, m=3) — একটা সাধারণ পছন্দ
+
+  একটা object ৬ টুকরো + ৩ parity = ৯ খণ্ড
+  ৯টা আলাদা জায়গায় (rack, host, AZ) রাখা
+
+  ┌──┬──┬──┬──┬──┬──┬──┬──┬──┐
+  │d1│d2│d3│d4│d5│d6│p1│p2│p3│
+  └──┴──┴──┴──┴──┴──┴──┴──┴──┘
+
+  যেকোনো ৩টা হারালেও পুরোটা ফেরত পাওয়া যায়।
+
+  Storage overhead: ৯/৬ = ১.৫×
+  তুলনায় ৩ copy replication: ৩×
+  আর সহনশীলতা প্রায় একই!
+
+  ⚠ দাম: পুনর্গঠনে k টা খণ্ড পড়তে হয় (network এ),
+        আর গণিতটা CPU খায়। তাই cold storage এ
+        আদর্শ, hot path এ নয়।</code></pre>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>System</th><th>কৌশল</th><th>Durability দাবি</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>S3 Standard</strong></td>
+      <td>Erasure coding, ৩+ AZ</td>
+      <td>১১ nines (99.999999999%)</td>
+    </tr>
+    <tr>
+      <td><strong>HDFS</strong></td>
+      <td>৩× replication (বা EC, নতুন version এ)</td>
+      <td>configurable</td>
+    </tr>
+    <tr>
+      <td><strong>Ceph</strong></td>
+      <td>Replication বা EC pool</td>
+      <td>configurable</td>
+    </tr>
+    <tr>
+      <td><strong>EBS</strong></td>
+      <td>একই AZ তে replicated</td>
+      <td>~৫ nines বার্ষিক</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"S3 এর ১১ nines durability মানে আমার data
+    হারানো কার্যত অসম্ভব — তাই backup লাগবে না।"</strong>
+  </p>
+  <p>
+    ১১ nines শুধু <strong>device ব্যর্থতার</strong>
+    বিরুদ্ধে। যা এই সংখ্যার আওতায় নেই:
+  </p>
+  <ul>
+    <li>
+      <strong>আপনার নিজের ভুল</strong> — একটা ভুল
+      <code>aws s3 rm --recursive</code>। S3 বিশ্বস্তভাবে
+      আপনার মুছে ফেলার নির্দেশ পালন করবে, ১১ nines
+      নির্ভরযোগ্যতায়।
+    </li>
+    <li>
+      <strong>Application bug</strong> — ভুল data
+      লেখা হলে সেটাও নিখুঁতভাবে সংরক্ষিত হবে।
+    </li>
+    <li>
+      <strong>Ransomware / compromised credential</strong>
+    </li>
+    <li>
+      <strong>Account সমস্যা</strong> — বিল না দেওয়া,
+      বা policy ভুল।
+    </li>
+  </ul>
+  <p>
+    তাই durability আর backup দুটো আলাদা জিনিস:
+    <strong>durability device হারানো থেকে বাঁচায়,
+    backup ভুল থেকে বাঁচায়</strong>। এই কারণেই
+    versioning, object lock, আর আলাদা account এ
+    cross-region replication — তিনটেই দরকার।
+  </p>
+</div>
+
+<h2 id="c28-e2e">End-to-end নীতি</h2>
+
+<p>
+  সবচেয়ে গুরুত্বপূর্ণ নীতিটা শেষে: <strong>checksum
+  টা যেখানে data তৈরি হয় সেখানে বানাও, আর যেখানে
+  ব্যবহৃত হয় সেখানে যাচাই করো</strong>। মাঝের কোনো
+  স্তরের উপর ভরসা নয়।
+</p>
+
+<pre class="ascii"><code>  ┌─────────────────────────────────────────────────┐
+  │  application: checksum বানাও ─────────┐         │
+  ├────────────────────────────────────────┼────────┤
+  │  library / driver                      │        │
+  ├────────────────────────────────────────┼────────┤
+  │  file system                           │        │
+  ├────────────────────────────────────────┼────────┤
+  │  block layer / RAID                    │        │
+  ├────────────────────────────────────────┼────────┤
+  │  device (নিজের ECC আছে)                │        │
+  ├────────────────────────────────────────┼────────┤
+  │  ... ফেরার পথে ...                     │        │
+  ├────────────────────────────────────────┼────────┤
+  │  application: যাচাই করো ◀──────────────┘         │
+  └─────────────────────────────────────────────────┘
+
+  প্রতিটা স্তরের নিজের checksum থাকতে পারে, কিন্তু
+  স্তরের সীমানায় data হাত বদলায় — আর সেখানেই
+  RAM, bus, বা software bug ঢুকতে পারে।
+
+  একমাত্র নির্ভরযোগ্য গ্যারান্টি হলো end-to-end।</code></pre>
+
+<p>
+  এই কারণেই আধুনিক system গুলো content-addressed:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>System</th><th>কী করে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Git</strong></td>
+      <td>প্রতিটা object এর নামই তার SHA-1/SHA-256 hash। <code>git fsck</code> পুরো graph যাচাই করে। Corruption কার্যত অসম্ভব অলক্ষিত থাকা।</td>
+    </tr>
+    <tr>
+      <td><strong>Docker / OCI</strong></td>
+      <td>Layer গুলো digest দিয়ে চিহ্নিত (<code>sha256:...</code>) — pull এর সময় যাচাই হয়।</td>
+    </tr>
+    <tr>
+      <td><strong>S3</strong></td>
+      <td><code>Content-MD5</code> বা <code>x-amz-checksum-*</code> header — upload এ যাচাই করা যায়।</td>
+    </tr>
+    <tr>
+      <td><strong>ZFS</strong></td>
+      <td>Merkle tree — root থেকে block পর্যন্ত পুরো শৃঙ্খল।</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Checksum মানে checksum — CRC32 দিয়ে
+    content identify আর dedup করা যায়।"</strong>
+  </p>
+  <p>
+    দুটো সম্পূর্ণ আলাদা কাজ, আর দুটোর জন্য আলাদা
+    যন্ত্র:
+  </p>
+  <ul>
+    <li>
+      <strong>Error detection</strong> — CRC32,
+      xxHash, Fletcher। দ্রুত, আর <em>দুর্ঘটনাজনিত</em>
+      পরিবর্তন ধরার জন্য যথেষ্ট। CRC32 এর মাত্র
+      ৩২ bit, তাই ~৪ বিলিয়নে একটা collision — random
+      error এর জন্য ঠিক আছে।
+    </li>
+    <li>
+      <strong>Content identity / dedup</strong> —
+      SHA-256, BLAKE3। এখানে <em>ইচ্ছাকৃত</em>
+      collision ঠেকাতে হবে। CRC32 দিয়ে dedup করলে
+      একজন আক্রমণকারী সহজেই দুটো ভিন্ন file একই
+      checksum এ বানিয়ে আপনার data প্রতিস্থাপন
+      করতে পারে।
+    </li>
+  </ul>
+  <p>
+    Git এর SHA-1 থেকে SHA-256 এ সরার কারণ ঠিক এটাই —
+    SHA-1 এ ব্যবহারিক collision আক্রমণ (SHAttered,
+    ২০১৭) প্রমাণিত হওয়ার পর।
+  </p>
+</div>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    ব্যবহারিক তালিকা:
+  </p>
+  <ul>
+    <li>
+      <strong>Backup যাচাই করুন</strong> — একটা
+      restore-না-করা backup একটা অনুমান, backup নয়।
+      নিয়মিত restore drill চালান।
+    </li>
+    <li>
+      <strong>Scrub সূচি রাখুন</strong> — ZFS/btrfs এ
+      মাসিক, আর <code>mismatch_cnt</code> monitor করুন।
+    </li>
+    <li>
+      <strong>ECC RAM</strong> — একটা checksumming
+      file system non-ECC RAM এ চললে corruption
+      RAM থেকেই আসতে পারে, আর তখন checksum টাও
+      ভুল data এর উপর হিসাব হবে।
+    </li>
+    <li>
+      <strong>Application স্তরে checksum</strong> —
+      গুরুত্বপূর্ণ data হলে নিজের digest রাখুন আর
+      পড়ার সময় যাচাই করুন। এটাই end-to-end নীতি।
+    </li>
+    <li>
+      <strong>Silent corruption monitor করুন</strong> —
+      <code>zpool status</code> এর CKSUM, btrfs এর
+      <code>device stats</code>, আর
+      <code>nvme smart-log</code> এর
+      <code>media_errors</code>।
+    </li>
+  </ul>
+</div>
+
+<div class="qs">
+  <h2 id="c28-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Lost write একটা সাধারণ checksum দিয়ে ধরা যায় না।
+      কেন? আর ZFS এর merkle tree ঠিক কোন তথ্যটা যোগ
+      করে যা এটা ধরা সম্ভব করে?
+    </li>
+    <li>
+      Checksum এর <em>অবস্থান</em> ঠিক করে সে কী ধরতে
+      পারবে। Misdirected write ধরতে checksum টা
+      কোথায় থাকতে হবে, আর কেন block এর সাথে রাখলে
+      চলবে না?
+    </li>
+    <li>
+      RAID-5 rebuild এ ১৬TB × ৭টা drive পড়তে হয়।
+      UBER 10^-15 ধরে হিসাব করুন অন্তত একটা
+      unrecoverable error পাওয়ার সম্ভাবনা কত, আর
+      সেটা থেকে বলুন কেন RAID-6 আজ ন্যূনতম।
+    </li>
+    <li>
+      Erasure coding (k=6, m=3) ১.৫× overhead এ প্রায়
+      ৩× replication এর সহনশীলতা দেয়। তাহলে কেন
+      সবাই সব জায়গায় EC ব্যবহার করে না? পুনর্গঠনের
+      খরচটা কোথায় লাগে?
+    </li>
+    <li>
+      S3 এর ১১ nines durability একটা ভুল
+      <code>rm --recursive</code> থেকে বাঁচায় না।
+      "Durability" আর "backup" এর পার্থক্য এক বাক্যে
+      বলুন, আর প্রতিটার জন্য একটা S3 feature নাম করুন।
+    </li>
+    <li>
+      CRC32 error detection এ যথেষ্ট কিন্তু dedup এ
+      বিপজ্জনক। পার্থক্যটা "দুর্ঘটনা বনাম ইচ্ছাকৃত"
+      দিয়ে ব্যাখ্যা করুন। Git কেন SHA-1 ছেড়ে SHA-256
+      এ যাচ্ছে?
+    </li>
+  </ol>
+</div>

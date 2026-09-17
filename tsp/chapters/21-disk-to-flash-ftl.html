@@ -1,0 +1,485 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 37 (সংক্ষেপে) + Appendix I, pdf p423–439, 656–674</span>
+  </div>
+  <h1>Disk থেকে flash — FTL আর write amplification</h1>
+  <p class="ch-lede">
+    OSTEP এর পুরো persistence অংশ ঘুরন্ত disk ধরে লেখা, আর
+    flash এর আলোচনা একটা appendix এ লুকানো। ২০২৬ এ সেটা উল্টো
+    হওয়া উচিত — তাই এই chapter এ HDD থাকছে ঐতিহাসিক মানদণ্ড
+    হিসেবে, আর flash হচ্ছে মূল বিষয়।
+  </p>
+</div>
+
+<p>
+  Chapter 20 এ দেখেছি CPU কীভাবে device এর সাথে কথা বলে।
+  এখন দেখব সেই device টার ভিতরে কী, কারণ file system এর
+  প্রতিটা সিদ্ধান্ত এর উপর নির্ভর করে।
+</p>
+
+<h2 id="c21-hdd">প্রথমে HDD — কেন এখনো পড়া দরকার</h2>
+
+<p>
+  একটা ঘুরন্ত disk এর তিনটে যন্ত্রাংশ, আর তিনটে সময়:
+</p>
+
+<pre class="ascii"><code>              ┌─── spindle (ঘুরছে)
+              │
+      ╱───────┴───────╲
+    ╱    ┌─────────┐    ╲      track (বৃত্তাকার পথ)
+   │   ╱ │ sector  │ ╲   │
+   │  │  └─────────┘  │  │
+   │  │       ●       │  │
+   │   ╲             ╱   │
+    ╲    ╲_________╱    ╱
+      ╲───────────────╱
+              ▲
+              │ disk head ──── arm (ভিতরে-বাইরে সরে)
+
+  একটা I/O এর সময় = তিনটে অংশ:
+
+  T_seek     — head টা সঠিক track এ সরানো   (~৪–১০ ms)
+  T_rotate   — সঠিক sector ঘুরে আসার অপেক্ষা (~২–৪ ms)
+  T_transfer — data পড়া/লেখা                (দ্রুত)
+
+  T_I/O = T_seek + T_rotate + T_transfer</code></pre>
+
+<p>
+  এই সূত্রটার একটা পরিণতি আছে যা পুরো persistence অংশটাকে
+  আকার দিয়েছে:
+</p>
+
+<pre class="ascii"><code>  ২০০৯ এর একটা drive (OSTEP এর উদাহরণ):
+    Seagate Cheetah 15K.5 — 300 GB, 15000 RPM
+    peak transfer: 125 MB/s
+
+  Sequential 100 MB পড়া:
+    seek একবার + transfer = ~0.8 s → ~125 MB/s
+
+  Random 4 KB পড়া, ২৫,৬০০ বার (একই 100 MB):
+    প্রতিবার seek + rotate = ~6 ms
+    ২৫,৬০০ × 6 ms = ~154 s → ~0.66 MB/s
+
+  অনুপাত: ১৯০ গুণ!
+
+  এই একটা সংখ্যাই ব্যাখ্যা করে কেন FFS locality খোঁজে,
+  কেন LFS সব লেখা sequential করে, কেন database B-tree
+  ব্যবহার করে, আর কেন "sequential access ভালো" একটা
+  সর্বজনীন উপদেশ হয়ে উঠেছিল।</code></pre>
+
+<div class="box old">
+  <div class="box-t">যা আমরা বাদ দিলাম</div>
+  <p>
+    OSTEP এই chapter এ disk scheduling নিয়ে উল্লেখযোগ্য
+    জায়গা দেয় — SSTF, SPTF, SATF, SCAN, F-SCAN, C-SCAN,
+    elevator, anticipatory scheduling, track skew,
+    multi-zone geometry।
+  </p>
+  <p>
+    আমরা এগুলো বাদ দিচ্ছি, আর কারণটা স্পষ্ট: এদের
+    বেশিরভাগ <strong>drive এর ভিতরে</strong> চলে আজকাল
+    (NCQ — Native Command Queuing), তাই OS এর হাতে
+    নিয়ন্ত্রণ নেই। আর SSD তে seek বলে কিছুই নেই, তাই
+    reorder করে কিছু বাঁচানোর নেই — chapter 20 এ দেখেছি
+    NVMe তে scheduler প্রায়ই <code>none</code>।
+  </p>
+  <p>
+    যেটা রাখছি সেটা হলো ওই <strong>১৯০ গুণ অনুপাতটা</strong>,
+    কারণ সেটাই বাকি Part 3 এর সব design এর কারণ। বাঁচানো
+    জায়গাটা FTL আর write amplification এ খরচ করছি —
+    যেগুলো আপনার আসল hardware।
+  </p>
+</div>
+
+<h2 id="c21-flash">NAND flash — একটা অদ্ভুত storage</h2>
+
+<p>
+  Flash এ কোনো চলমান অংশ নেই, তাই seek নেই। কিন্তু তার
+  নিজের একটা বিচিত্র সীমাবদ্ধতা আছে, আর সেটাই সবকিছু
+  নির্ধারণ করে।
+</p>
+
+<pre class="ascii"><code>  তিনটে operation, তিনটে আলাদা একক:
+
+  READ    — একটা PAGE (~৪–১৬ KB)      ~২০–১০০ µs
+  PROGRAM — একটা PAGE (লেখা)          ~২০০–৫০০ µs
+  ERASE   — একটা BLOCK (~১২৮–২৫৬ KB)  ~২–১০ ms   ← ধীর!
+
+  ┌────────────── BLOCK (erase এর একক) ──────────────┐
+  │ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐              │
+  │ │page 0│ │page 1│ │page 2│ │page 3│  ... ৬৪-২৫৬টা │
+  │ └──────┘ └──────┘ └──────┘ └──────┘              │
+  └───────────────────────────────────────────────────┘
+
+  নিয়মটা নিষ্ঠুর:
+  একটা page এ লিখতে হলে সেটা আগে "erased" অবস্থায়
+  থাকতে হবে। আর erase করা যায় শুধু পুরো BLOCK।
+
+  অর্থাৎ ৪KB বদলাতে চাইলে ২৫৬KB মুছতে হবে।</code></pre>
+
+<div class="codewrap"><span class="lang">text</span>
+<pre><code># A 4-page block, step by step (from OSTEP's own trace)
+
+Initial          iiii    (invalid — unwritten)
+Erase()       →  EEEE    all pages erased, now programmable
+Program(0)    →  VEEE    page 0 now VALID
+Program(0)    →  error   CANNOT re-program a written page!
+Program(1)    →  VVEE    but page 1 is fine
+Erase()       →  EEEE    only way back: erase the whole block</code></pre></div>
+
+<p>
+  আর দ্বিতীয় সমস্যা: <strong>flash cell ক্ষয়ে যায়</strong>।
+  প্রতিটা erase cycle cell এর insulating layer ক্ষতি করে।
+  একটা নির্দিষ্ট সংখ্যার পর cell আর নির্ভরযোগ্য নয়।
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ধরন</th><th>bit/cell</th><th>P/E cycle</th><th>কোথায়</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>SLC</strong></td><td>১</td><td class="num">~১,০০,০০০</td><td>enterprise cache, industrial</td></tr>
+    <tr><td><strong>MLC</strong></td><td>২</td><td class="num">~১০,০০০</td><td>পুরনো enterprise</td></tr>
+    <tr><td><strong>TLC</strong></td><td>৩</td><td class="num">~১,০০০–৩,০০০</td><td>আজকের বেশিরভাগ SSD</td></tr>
+    <tr><td><strong>QLC</strong></td><td>৪</td><td class="num">~১০০–১,০০০</td><td>সস্তা, read-heavy</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  বেশি bit প্রতি cell মানে সস্তা storage, কিন্তু কম
+  স্থায়িত্ব আর ধীর লেখা — কারণ charge level গুলো আরও
+  সূক্ষ্মভাবে আলাদা করতে হয়। QLC তে ১৬টা আলাদা স্তর
+  পড়তে হয়।
+</p>
+
+<h2 id="c21-ftl">FTL — যে layer টা সব সামলায়</h2>
+
+<p>
+  এই বিচিত্র hardware কে একটা সাধারণ "block device" এর মতো
+  দেখানোর দায়িত্ব একটা software layer এর, যা SSD এর
+  নিজের controller এ চলে।
+</p>
+
+<p>
+  <strong>FTL (Flash Translation Layer — SSD এর ভিতরের
+  firmware যা logical block address কে physical flash
+  page এ map করে, আর erase/wear সামলায়)</strong>।
+</p>
+
+<pre class="ascii"><code>  OS বলে: "LBA 1000 এ এই ৪KB লেখো"
+
+  FTL যা করে (log-structured):
+
+  ১. পুরনো জায়গায় লেখে NA — সেখানে erase লাগবে
+  ২. বরং একটা আগেই-erased page এ লেখে (sequential!)
+  ৩. mapping table হালনাগাদ করে: LBA 1000 → physical page 7
+  ৪. পুরনো physical page কে "invalid" চিহ্নিত করে
+
+  ┌─────────── mapping table (RAM এ) ───────────┐
+  │  LBA 1000 → page 7                          │
+  │  LBA 1001 → page 8                          │
+  │  LBA  500 → page 9                          │
+  └─────────────────────────────────────────────┘
+
+  লক্ষ করুন: FTL একটা LOG-STRUCTURED file system
+  চালাচ্ছে, আপনার file system এর নিচে।
+  Chapter 27 এ LFS দেখব — এটা সেই একই ধারণা,
+  শুধু firmware এ।</code></pre>
+
+<p>
+  এই নকশার একটা অনিবার্য পরিণতি: invalid page জমতে থাকে,
+  আর সেগুলো পুনরুদ্ধার করতে <strong>garbage
+  collection</strong> দরকার।
+</p>
+
+<pre class="ascii"><code>  Garbage collection:
+
+  Block A: [V][i][V][i]   ← ২টা valid, ২টা invalid
+  Block B: [i][i][V][i]   ← ১টা valid
+
+  GC:  Block A আর B এর valid page গুলো
+       একটা নতুন block C তে copy করো
+       তারপর A আর B erase করো
+
+  Block C: [V][V][V][ ]   ← ৩টা valid একসাথে
+  Block A: erased, আবার ব্যবহারযোগ্য
+  Block B: erased
+
+  কিন্তু খেয়াল করুন: আমরা ৩টা page COPY করলাম।
+  User কিছু লেখেনি, তবু flash এ লেখা হলো।
+  এটাই write amplification।</code></pre>
+
+<h2 id="c21-waf">Write amplification — যে সংখ্যাটা সব ব্যাখ্যা করে</h2>
+
+<pre class="ascii"><code>  WAF = flash এ আসলে যত লেখা হলো
+        ─────────────────────────────
+        host যত লেখতে চেয়েছিল
+
+  WAF = 1   আদর্শ (sequential, পূর্ণ block লেখা)
+  WAF = 3   সাধারণ random write workload
+  WAF = 10+ খারাপ: ছোট random write, ভরা drive
+
+  কেন এটা গুরুত্বপূর্ণ — দুটো কারণে:
+
+  ১. স্থায়িত্ব
+     TLC drive, ~1000 P/E cycle, 1 TB
+     WAF=1  → ~1000 TB লেখা যাবে
+     WAF=10 → ~100 TB মাত্র  ← জীবনকাল ১০ ভাগের ১
+
+  ২. Performance
+     GC যখন চলে, সে flash bandwidth খায়
+     → আপনার latency তে অনিয়মিত কাঁটা (GC pause)</code></pre>
+
+<p>
+  WAF কমানোর কৌশলগুলো জানা দরকার, কারণ এগুলো আপনার
+  নিয়ন্ত্রণে:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>কৌশল</th><th>কীভাবে কাজ করে</th><th>আপনার হাতে?</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Over-provisioning</strong></td>
+      <td>Drive এর কিছু অংশ লুকিয়ে রাখা, যাতে GC এর জায়গা থাকে</td>
+      <td>হ্যাঁ — drive ভরে ফেলবেন না</td>
+    </tr>
+    <tr>
+      <td><strong>TRIM / discard</strong></td>
+      <td>OS বলে "এই block আর দরকার নেই" → GC কম copy করে</td>
+      <td>হ্যাঁ — mount option</td>
+    </tr>
+    <tr>
+      <td><strong>বড়, aligned লেখা</strong></td>
+      <td>পুরো erase block ভরে লেখা → GC এর দরকারই নেই</td>
+      <td>হ্যাঁ — application design</td>
+    </tr>
+    <tr>
+      <td><strong>Hot/cold আলাদা করা</strong></td>
+      <td>ঘন-বদলানো data আলাদা block এ</td>
+      <td>আংশিক — FTL চেষ্টা করে</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"SSD এ seek time নেই, তাই random আর sequential
+    access এক — আর FFS, LFS, elevator scheduling এর মতো
+    disk-সচেতন design এখন অপ্রাসঙ্গিক।"</strong>
+  </p>
+  <p>
+    প্রথম অংশটা প্রায় সত্য <em>পড়ার</em> জন্য: NVMe তে
+    random আর sequential read এর ব্যবধান HDD এর ১৯০ গুণ
+    থেকে নেমে ~২–৫ গুণ হয়েছে (আর যা বাকি থাকে সেটা মূলত
+    queue depth আর prefetch এর কারণে, seek নয়)।
+  </p>
+  <p>
+    কিন্তু <strong>লেখার জন্য এটা মিথ্যা</strong>, আর
+    কারণটা এই chapter এর পুরো বিষয়:
+  </p>
+  <pre><code>Sequential write  → WAF ~1  → দ্রুত, drive দীর্ঘজীবী
+Random 4K write   → WAF 3-10 → ধীর, drive দ্রুত ক্ষয়</code></pre>
+  <p>
+    অর্থাৎ <strong>"sequential ভালো" উপদেশটা টিকে আছে,
+    কিন্তু কারণটা সম্পূর্ণ বদলে গেছে</strong>। HDD তে
+    কারণ ছিল যান্ত্রিক seek; SSD তে কারণ হলো erase
+    block আর garbage collection। একই উপদেশ, ভিন্ন
+    ভিত্তি — আর এটা জানা দরকার কারণ HDD-যুক্তি দিয়ে
+    SSD tune করলে ভুল সিদ্ধান্ত হয়।
+  </p>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার SSD এর benchmark বলছে ৩ GB/s, তাই আমার
+    write throughput ৩ GB/s।"</strong>
+  </p>
+  <p>
+    বেশিরভাগ consumer TLC/QLC drive এ একটা
+    <strong>SLC cache</strong> আছে — কিছু flash কে
+    সাময়িকভাবে SLC mode এ (১ bit/cell) চালানো হয়,
+    যেটা অনেক দ্রুত। Benchmark গুলো সাধারণত এই cache
+    এর ভিতরেই থাকে।
+  </p>
+  <pre><code>লেখা শুরু:     ৩.৫ GB/s   ← SLC cache এ
+~৫০ GB পরে:    ৮০০ MB/s   ← cache ভরল, সরাসরি TLC
+আরও পরে:       ১৫০ MB/s   ← GC ও একসাথে চলছে
+               ↑ QLC drive এ এটা HDD এর কাছাকাছি নেমে যায়</code></pre>
+  <p>
+    এই আচরণের নাম <strong>write cliff</strong>। আপনার
+    nightly backup বা bulk import যদি cache এর চেয়ে বড়
+    হয়, আপনি এই cliff টা দেখবেন — আর short benchmark এ
+    সেটা কখনো ধরা পড়বে না।
+  </p>
+</div>
+
+<h2 id="c21-inspect">নিজের drive দেখা</h2>
+
+<pre><code># SMART data — আসল স্বাস্থ্য
+$ sudo nvme smart-log /dev/nvme0
+data_units_written  : 45,231,890      ← × 512 KB = মোট লেখা
+percentage_used     : 7%              ← স্থায়িত্বের কত খরচ হয়েছে
+media_errors        : 0
+critical_warning    : 0
+
+# WAF আনুমানিক হিসাব করা (কিছু drive controller counter দেয়)
+$ sudo smartctl -a /dev/nvme0 | grep -i -E 'written|wear'
+
+# TRIM চালু আছে কি
+$ lsblk --discard
+NAME    DISC-ALN DISC-GRAN DISC-MAX DISC-ZERO
+nvme0n1        0      512B       2T         0
+#              ↑ DISC-GRAN শূন্য না হলে TRIM সমর্থিত
+
+$ systemctl status fstrim.timer      # সাপ্তাহিক TRIM
+$ mount | grep discard               # বা continuous discard
+
+# আপনার application কত লিখছে
+$ cat /proc/&lt;pid&gt;/io | grep write_bytes</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর সংখ্যাগুলো সরাসরি আপনার সিদ্ধান্তে আসে:
+  </p>
+  <ul>
+    <li>
+      <strong>Postgres</strong> এর <code>full_page_writes</code>
+      আর <code>wal_compression</code> সরাসরি WAF এ প্রভাব
+      ফেলে। আর <code>checkpoint_timeout</code> কম রাখলে
+      একই page বারবার লেখা হয় — WAF বাড়ে, SSD দ্রুত ক্ষয়।
+    </li>
+    <li>
+      <strong>Kafka</strong> আদর্শ SSD workload: বড়,
+      sequential, append-only লেখা → WAF ~১। এই কারণেই
+      Kafka সস্তা drive এও ভালো চলে।
+    </li>
+    <li>
+      <strong>etcd</strong> উল্টো — ছোট, ঘন ঘন fsync করা
+      লেখা। এই কারণেই Kubernetes এর documentation etcd এর
+      জন্য কম-latency SSD দাবি করে, আর etcd ধীর disk এ
+      পুরো cluster অস্থির করে দেয়।
+    </li>
+    <li>
+      <strong>Docker</strong> এর overlayfs এ copy-on-write:
+      একটা container যদি একটা বড় file এর একটা byte বদলায়,
+      পুরো file টা copy হয় (layer এ) → বিশাল write
+      amplification, আর সেটা FTL এর WAF এর <em>উপরে</em>
+      গুণ হয়। Chapter 29 এ ফিরব।
+    </li>
+  </ul>
+  <p>
+    সাধারণ নীতি: <strong>write amplification স্তরে স্তরে
+    গুণ হয়</strong>। Application → file system → FTL।
+    প্রতিটা স্তরে ৩ গুণ মানে মোট ২৭ গুণ।
+  </p>
+</div>
+
+<h2 id="c21-modern">যা OSTEP এর পরে এসেছে</h2>
+
+<div class="box old">
+  <div class="box-t">২০২৬ এর সংযোজন</div>
+  <ul>
+    <li>
+      <strong>NVMe</strong> — Appendix I লেখার সময় SSD
+      গুলো SATA interface ব্যবহার করত, যেটা HDD এর জন্য
+      ডিজাইন করা। NVMe (chapter 20) সেই bottleneck সরিয়েছে।
+    </li>
+    <li>
+      <strong>Zoned Namespaces (ZNS)</strong> — একটা নতুন
+      পদ্ধতি: FTL এর লুকোচুরি বাদ দিয়ে drive সরাসরি
+      বলে "আমার এই zone গুলো আছে, sequential লেখো"।
+      তাহলে host এর file system GC সামলায়, আর WAF
+      নাটকীয়ভাবে কমে। Hyperscaler রা এটা ব্যবহার করছে।
+    </li>
+    <li>
+      <strong>3D NAND</strong> — cell গুলো উপরে-নিচে
+      স্তরে সাজানো (২০০+ স্তর)। এই কারণেই QLC এর
+      স্থায়িত্ব যা প্রত্যাশিত ছিল তার চেয়ে ভালো হয়েছে।
+    </li>
+    <li>
+      <strong>LDPC error correction</strong> — একটা
+      গুরুত্বপূর্ণ আর কম-জানা পরিণতি: cell যত ক্ষয়ে যায়,
+      error correction তত বেশি কাজ করতে হয়, তাই
+      <strong>read latency বাড়ে</strong>। একটা পুরনো SSD
+      শুধু কম নির্ভরযোগ্য নয়, ধীরও।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c21-summary">সংখ্যাগুলো এক জায়গায়</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>HDD (2009)</th><th>SATA SSD</th><th>NVMe (2026)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Sequential read</td><td class="num">১২৫ MB/s</td><td class="num">৫৫০ MB/s</td><td class="num">৭–১৪ GB/s</td></tr>
+    <tr><td>Random 4K read latency</td><td class="num">~৬ ms</td><td class="num">~১০০ µs</td><td class="num">~২০–৮০ µs</td></tr>
+    <tr><td>Random/seq ব্যবধান</td><td class="num">~১৯০×</td><td class="num">~১০×</td><td class="num">~২–৫×</td></tr>
+    <tr><td>IOPS (4K random)</td><td class="num">~২০০</td><td class="num">~৯০,০০০</td><td class="num">~১০ লক্ষ+</td></tr>
+    <tr><td>মূল সীমা</td><td>যান্ত্রিক seek</td><td>SATA interface</td><td>erase block, GC, WAF</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটাই এই chapter এর সারকথা। সীমাটা সরে গেছে —
+  যান্ত্রিক থেকে interface, তারপর interface থেকে
+  flash এর নিজস্ব প্রকৃতিতে। তাই আজকের storage tuning
+  মানে seek কমানো নয়, <strong>write amplification
+  কমানো</strong>।
+</p>
+
+<div class="qs">
+  <h2 id="c21-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Flash এ read/program একটা page এর একক কিন্তু erase
+      একটা block এর। এই একটা অসামঞ্জস্য থেকে FTL এর
+      অস্তিত্ব, garbage collection, আর write amplification —
+      তিনটেই অনিবার্যভাবে আসে। শৃঙ্খলটা ধাপে ধাপে ব্যাখ্যা করুন।
+    </li>
+    <li>
+      "Sequential access ভালো" — HDD আর SSD দুটোতেই সত্য,
+      কিন্তু সম্পূর্ণ ভিন্ন কারণে। দুটো কারণ বলুন, আর
+      তারপর একটা পরিস্থিতি দিন যেখানে HDD-যুক্তি দিয়ে
+      SSD tune করলে ভুল সিদ্ধান্ত হবে।
+    </li>
+    <li>
+      একটা ১TB TLC drive, ~১০০০ P/E cycle। আপনার
+      application দিনে ১০০GB লেখে। WAF ১ হলে drive কত
+      দিন টিকবে, আর WAF ৮ হলে? এই হিসাব থেকে বলুন কেন
+      <code>data_units_written</code> আর
+      <code>percentage_used</code> একসাথে দেখা দরকার।
+    </li>
+    <li>
+      Write cliff কেন short benchmark এ ধরা পড়ে না?
+      আপনার nightly backup ২০০GB লেখে আর SLC cache ৫০GB —
+      কী ঘটবে, আর সেটা মাপতে আপনি benchmark টা কীভাবে
+      বদলাবেন?
+    </li>
+    <li>
+      Write amplification স্তরে স্তরে গুণ হয়। একটা
+      container এ চলা Postgres এর ক্ষেত্রে অন্তত তিনটে
+      স্তর চিহ্নিত করুন যেখানে amplification যোগ হয়, আর
+      প্রতিটার জন্য একটা প্রশমন কৌশল বলুন।
+    </li>
+    <li>
+      ZNS drive FTL এর লুকোচুরি সরিয়ে host কে zone
+      ব্যবস্থাপনার দায়িত্ব দেয়। এতে WAF কমে — কিন্তু
+      দাম কী? Chapter 20 এর "abstraction device এর বিশেষ
+      ক্ষমতা লুকিয়ে ফেলে" আলোচনার সাথে এটা কীভাবে মেলে?
+    </li>
+  </ol>
+</div>

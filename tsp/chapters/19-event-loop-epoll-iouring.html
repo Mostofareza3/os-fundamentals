@@ -1,0 +1,676 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 33, pdf p394–403 · + epoll, io_uring, libuv, Go netpoller</span>
+  </div>
+  <h1>Event loop — epoll, io_uring, আর দুই স্তরের scheduler</h1>
+  <p class="ch-lede">
+    Thread ছাড়াই concurrency — একটা thread, হাজারো connection।
+    এটাই Node আর nginx এর স্থাপত্য। OSTEP এখানে
+    <code>select()</code> শেখায়, যেটা ২০২৬ এ অচল; তাই এই
+    chapter টা source এর চেয়ে অনেক দূর যায়।
+  </p>
+</div>
+
+<p>
+  Chapter 12 এ বলেছিলাম thread দুটো কারণে ব্যবহার হয় —
+  parallelism আর latency hiding। দ্বিতীয়টার জন্য thread
+  প্রায়ই ভুল হাতিয়ার, আর এই chapter এ কেন তা দেখব।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    হাজারো connection একসাথে সামলাতে হবে, কিন্তু প্রতিটার
+    জন্য একটা thread মানে অসহনীয় খরচ (chapter 12 এর stack,
+    chapter 4 এর context switch)। Thread ছাড়া concurrency
+    কীভাবে?
+  </p>
+</div>
+
+<h2 id="c19-loop">Event loop — মূল ধারণা</h2>
+
+<p>
+  ধারণাটা নির্মমভাবে সরল: একটা thread, একটা loop। "কোন
+  connection এ কাজ আছে?" জিজ্ঞেস করো, যেগুলোতে আছে সেগুলো
+  সামলাও, আবার জিজ্ঞেস করো।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The whole architecture, in five lines */
+while (1) {
+    events = wait_for_events();        /* blocks until something is ready */
+    for (e in events) {
+        process_event(e);              /* must NOT block */
+    }
+}</code></pre></div>
+
+<p>
+  এর একটা চমকপ্রদ পরিণতি আছে:
+  <strong>কোনো lock লাগে না</strong>। একটাই thread, তাই দুটো
+  handler কখনো একসাথে চলে না — chapter 12–18 এর পুরো সমস্যাটা
+  অদৃশ্য।
+</p>
+
+<p>
+  কিন্তু একটা কঠোর শর্ত আছে, আর সেটাই এই স্থাপত্যের
+  দুর্বলতা: <strong>কোনো handler কখনো block করতে পারবে
+  না</strong>। একটা handler যদি আটকে যায়, পুরো loop আটকে
+  যায় — সব connection এর জন্য।
+</p>
+
+<h2 id="c19-select">OSTEP এর উত্তর — <code>select()</code></h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* select() — what OSTEP teaches. Correct, and obsolete
+   for anything beyond a few dozen descriptors. */
+#include &lt;sys/select.h&gt;
+
+int main(void) {
+    while (1) {
+        fd_set readfds;
+        FD_ZERO(&amp;readfds);
+
+        int max = 0;
+        for (int fd = 0; fd &lt; MAXFD; fd++) {
+            if (is_active(fd)) {
+                FD_SET(fd, &amp;readfds);      /* rebuild the set every time */
+                if (fd &gt; max) max = fd;
+            }
+        }
+
+        select(max + 1, &amp;readfds, NULL, NULL, NULL);
+
+        for (int fd = 0; fd &lt;= max; fd++) {
+            if (FD_ISSET(fd, &amp;readfds))    /* scan all of them again */
+                process(fd);
+        }
+    }
+}</code></pre></div>
+
+<p>
+  এটা কাজ করে, কিন্তু তিনটে মৌলিক সমস্যা আছে:
+</p>
+
+<pre class="ascii"><code>  ১. প্রতিবার পুরো set আবার বানাতে হয়
+     10,000 connection → প্রতি iteration এ 10,000 FD_SET
+
+  ২. kernel প্রতিবার পুরো set scan করে
+     O(n) — যদিও হয়তো মাত্র 3টা fd ready
+
+  ৩. ফেরার পর আপনাকেও পুরোটা scan করতে হয়
+     "কোনগুলো ready?" জানতে 10,000 বার FD_ISSET
+
+  মোট: প্রতি iteration এ O(n), n = মোট connection
+       কাজ হয়েছে হয়তো 3টায়, খরচ 10,000 এর।
+
+  আর FD_SETSIZE সাধারণত 1024 — তার বেশি fd এ
+  select() ব্যবহার করা অনিরাপদ (buffer overflow)।</code></pre>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো — সবচেয়ে বড় ব্যবহারিক ফাঁক</div>
+  <p>
+    OSTEP এই chapter এ <strong>শুধু <code>select()</code> আর
+    <code>poll()</code></strong> শেখায়। আমি পুরো বইয়ের text
+    এ গুনে দেখেছি: <code>epoll</code> শব্দটা
+    <strong>একবারও নেই</strong>, <code>io_uring</code> ও নেই।
+  </p>
+  <p>
+    এটা শুধু একটা অনুপস্থিতি নয়, বরং বিভ্রান্তিকর — কারণ
+    এই chapter টা ঠিক সেই স্থাপত্য শেখাচ্ছে যা Node.js আর
+    nginx ব্যবহার করে, কিন্তু যে API দিয়ে শেখাচ্ছে সেটা
+    ওরা কেউ ব্যবহার করে না।
+  </p>
+  <p>
+    <strong>libuv</strong> (Node এর ভিত) চলে
+    <code>epoll</code> (Linux), <code>kqueue</code>
+    (macOS/BSD), <code>IOCP</code> (Windows) এর উপর।
+    আপনি প্রতিদিন যে event loop এর উপর code লেখেন, তার
+    আসল mechanism টা source এ অনুপস্থিত।
+  </p>
+</div>
+
+<h2 id="c19-epoll">epoll — O(1) এ পৌঁছানো</h2>
+
+<p>
+  <code>epoll</code> এর মূল অন্তর্দৃষ্টি: <strong>আগ্রহের
+  তালিকাটা kernel এ রাখো</strong>। প্রতিবার পাঠানোর দরকার
+  নেই; একবার বলো, তারপর শুধু "কী ঘটেছে" জিজ্ঞেস করো।
+</p>
+
+<pre class="ascii"><code>  select():                        epoll():
+
+  প্রতি iteration এ:               একবার (setup):
+    পুরো set kernel এ পাঠাও          epoll_ctl(ADD) প্রতি fd
+    kernel পুরোটা scan করে
+    পুরোটা ফেরত আসে                প্রতি iteration এ:
+    আপনি পুরোটা scan করেন            epoll_wait() →
+                                     শুধু READY গুলোর তালিকা
+  O(n) per iteration               O(ready) per iteration
+
+  10,000 connection, 3টা ready:
+    select: ~10,000 একক কাজ          epoll: 3টা একক কাজ</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* epoll — the actual mechanism behind every Linux event loop */
+#include &lt;sys/epoll.h&gt;
+
+int ep = epoll_create1(0);
+
+/* Tell the kernel once, per fd */
+struct epoll_event ev = {
+    .events = EPOLLIN | EPOLLET,   /* readable, edge-triggered */
+    .data.fd = conn_fd
+};
+epoll_ctl(ep, EPOLL_CTL_ADD, conn_fd, &amp;ev);
+
+/* Then loop, getting back only what is ready */
+struct epoll_event events[MAX_EVENTS];
+while (1) {
+    int n = epoll_wait(ep, events, MAX_EVENTS, -1);
+    for (int i = 0; i &lt; n; i++) {          /* n = ready count, not total */
+        int fd = events[i].data.fd;
+        if (events[i].events &amp; EPOLLIN)
+            handle_readable(fd);
+    }
+}</code></pre></div>
+
+<p>
+  একটা গুরুত্বপূর্ণ পছন্দ আছে — <code>EPOLLET</code>:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Level-triggered (default)</th><th>Edge-triggered (<code>EPOLLET</code>)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>কখন জানায়</strong></td>
+      <td>যতক্ষণ data আছে, প্রতিবার</td>
+      <td>শুধু অবস্থা <em>বদলালে</em></td>
+    </tr>
+    <tr>
+      <td><strong>আপনার দায়িত্ব</strong></td>
+      <td>একবারে কিছুটা পড়লেও চলবে</td>
+      <td><code>EAGAIN</code> পাওয়া পর্যন্ত পড়তে হবে</td>
+    </tr>
+    <tr>
+      <td><strong>ভুল করলে</strong></td>
+      <td>অতিরিক্ত wake-up (অপচয়)</td>
+      <td><strong>connection আটকে যায়</strong> — বাকি data এর সংকেত আর আসবে না</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Chapter 4 এ level বনাম edge triggered interrupt নিয়ে
+  বলেছিলাম — এটা ঠিক সেই একই ধারণা, software স্তরে।
+  আর একই ফাঁদ: edge-triggered এ সংকেত একবারই আসে, তাই
+  না শুনলে হারিয়ে যায়।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Edge-triggered দ্রুত, তাই সেটাই ব্যবহার করা
+    উচিত।"</strong>
+  </p>
+  <p>
+    Edge-triggered কম wake-up দেয়, কিন্তু একটা কঠোর চুক্তি
+    আরোপ করে: <strong>socket সম্পূর্ণ নিষ্কাশন করতে হবে</strong>।
+  </p>
+  <pre><code>/* ভুল — edge-triggered এ এটা connection আটকে দেবে */
+n = read(fd, buf, 1024);
+process(buf, n);
+/* 4KB এসেছিল, আপনি 1KB পড়লেন।
+   বাকি 3KB এর জন্য নতুন event আসবে না — অবস্থা বদলায়নি! */
+
+/* ঠিক — EAGAIN পর্যন্ত পড়ুন */
+for (;;) {
+    n = read(fd, buf, sizeof(buf));
+    if (n &gt; 0) { process(buf, n); continue; }
+    if (n == -1 &amp;&amp; errno == EAGAIN) break;   /* নিষ্কাশিত */
+    if (n == 0) { close_conn(fd); break; }    /* peer বন্ধ করল */
+    if (n == -1 &amp;&amp; errno == EINTR) continue;
+    /* real error */
+    close_conn(fd); break;
+}</code></pre>
+  <p>
+    এই কারণেই <strong>libuv আর অনেক production server
+    level-triggered ব্যবহার করে</strong> — একটু বেশি
+    wake-up এর দাম দিয়ে একটা গোটা শ্রেণীর bug এড়ানো
+    যায়। Edge-triggered এর লাভটা বাস্তবে ছোট, আর ভুলের
+    দাম বড়।
+  </p>
+</div>
+
+<h2 id="c19-blocking">অ-blocking হওয়াটাই সব</h2>
+
+<p>
+  Event loop এর চুক্তি: কোনো handler block করবে না।
+  কিন্তু সব কাজ non-blocking করা যায় না — আর এখানেই
+  আসল সমস্যা।
+</p>
+
+<pre class="ascii"><code>  Non-blocking করা যায় (O_NONBLOCK + epoll):
+    ✓ socket read/write
+    ✓ pipe, timer, signal (signalfd, timerfd)
+    ✓ eventfd (নিজের জাগানোর ব্যবস্থা)
+
+  করা যায় NA (ঐতিহাসিকভাবে):
+    ✗ regular FILE এর read/write  ← O_NONBLOCK উপেক্ষিত হয়!
+    ✗ getaddrinfo() — DNS lookup
+    ✗ stat(), open(), fsync()
+    ✗ CPU-ভারী গণনা (স্বভাবতই)
+
+  ওই দ্বিতীয় তালিকাটাই libuv কে একটা
+  thread pool রাখতে বাধ্য করেছে।</code></pre>
+
+<p>
+  এটা একটা গুরুত্বপূর্ণ আর কম-জানা সত্য: <strong>Linux এ
+  regular file এ <code>O_NONBLOCK</code> কার্যত অর্থহীন</strong>।
+  Disk read প্রস্তুত না থাকলে syscall টা ঘুমিয়ে পড়ে, আর
+  epoll আপনাকে সাহায্য করতে পারে না। তাই file I/O এর জন্য
+  একটা আলাদা ব্যবস্থা দরকার।
+</p>
+
+<h2 id="c19-libuv">libuv — Node এর ভিতরে</h2>
+
+<pre class="ascii"><code>  Node.js এর আসল গঠন:
+
+  ┌──────────────────────────────────────────────────┐
+  │  আপনার JavaScript (একটাই thread)                 │
+  └────────────────────┬─────────────────────────────┘
+                       │
+  ┌────────────────────▼─────────────────────────────┐
+  │  libuv event loop                                │
+  │                                                  │
+  │  ┌────────────────────┐   ┌───────────────────┐  │
+  │  │ epoll / kqueue     │   │  thread pool      │  │
+  │  │ (network, pipe,    │   │  (default 4)      │  │
+  │  │  timer)            │   │                   │  │
+  │  │                    │   │  - file I/O       │  │
+  │  │  কোনো thread নেই   │   │  - DNS lookup     │  │
+  │  │                    │   │  - crypto, zlib   │  │
+  │  └────────────────────┘   └───────────────────┘  │
+  └──────────────────────────────────────────────────┘
+
+  অর্থাৎ Node "single-threaded" — কিন্তু শুধু আপনার
+  JS এর জন্য। নিচে thread pool আছে, আর সেটার আকার
+  মাত্র ৪।</code></pre>
+
+<p>
+  ওই "মাত্র ৪" টাই একটা বাস্তব bottleneck, আর এটা
+  ব্যাখ্যা করে একটা প্রায়ই-বিভ্রান্তিকর আচরণ:
+</p>
+
+<div class="codewrap"><span class="lang">javascript</span>
+<pre><code>// Five concurrent file reads. Four run; the fifth WAITS —
+// not because of disk, but because the pool has 4 slots.
+const fs = require('fs/promises');
+await Promise.all([1,2,3,4,5].map(i =&gt; fs.readFile(`f${i}.dat`)));
+
+// Same for DNS and crypto — they share the same pool:
+const dns = require('dns/promises');
+await dns.lookup('example.com');       // uses a pool thread
+crypto.pbkdf2(...);                     // uses a pool thread too
+
+// The fix, when file/DNS/crypto-heavy:
+process.env.UV_THREADPOOL_SIZE = 16;   // MUST be set before any I/O
+// (or export it in the environment — changing it later has no effect)</code></pre></div>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Node এর event loop এ ধীর হওয়ার দুটো সম্পূর্ণ আলাদা
+    কারণ আছে, আর দুটোর সমাধান আলাদা:
+  </p>
+  <ul>
+    <li>
+      <strong>Event loop blocked</strong> — আপনার JS এ
+      একটা synchronous কাজ (বড় <code>JSON.parse</code>,
+      একটা tight loop, <code>fs.readFileSync</code>)।
+      Chapter 5 এর convoy effect, শুধু event loop এ।
+      সমাধান: <code>worker_threads</code>।
+      <pre><code># event loop কতটা আটকাচ্ছে তা মাপুন
+$ node --perf-basic-prof app.js
+# বা code এ:
+#   const { monitorEventLoopDelay } = require('perf_hooks');
+#   const h = monitorEventLoopDelay(); h.enable();
+#   later: h.mean, h.max  ← p99 latency এর সরাসরি কারণ</code></pre>
+    </li>
+    <li>
+      <strong>Thread pool saturated</strong> — event loop
+      ঠিক আছে, কিন্তু file/DNS/crypto কাজ ৪টা slot এর
+      জন্য লাইনে দাঁড়িয়ে। সমাধান:
+      <code>UV_THREADPOOL_SIZE</code>।
+    </li>
+  </ul>
+  <p>
+    দুটোর লক্ষণ একই ("API ধীর"), কিন্তু কারণ আর সমাধান
+    সম্পূর্ণ আলাদা — আর <code>monitorEventLoopDelay</code>
+    দিয়ে আপনি আলাদা করতে পারেন।
+  </p>
+</div>
+
+<h2 id="c19-iouring">io_uring — syscall এর খরচটাই কমানো</h2>
+
+<p>
+  <code>epoll</code> "কী ready" জানায়, কিন্তু আপনাকে তারপর
+  <code>read()</code> করতে হয় — আরেকটা syscall। উচ্চ
+  throughput এ syscall এর সংখ্যাটাই bottleneck হয়ে ওঠে,
+  বিশেষত chapter 4 এ দেখা KPTI এর পর।
+</p>
+
+<p>
+  <strong>io_uring</strong> (Linux 5.1+, ২০১৯) এর সমাধান:
+  kernel আর userspace এর মধ্যে দুটো shared ring buffer।
+</p>
+
+<pre class="ascii"><code>  ┌─────────────── userspace ────────────────┐
+  │                                          │
+  │  SQ (Submission Queue)  ─── আপনি লেখেন   │
+  │  ┌────┬────┬────┬────┐                   │
+  │  │ op │ op │ op │ op │  "এই কাজগুলো করো" │
+  │  └────┴────┴────┴────┘                   │
+  │         │                                │
+  │         │  mmap করা shared memory —      │
+  │         │  কোনো copy নেই                 │
+  │         ▼                                │
+  │  CQ (Completion Queue) ─── kernel লেখে   │
+  │  ┌────┬────┬────┬────┐                   │
+  │  │ res│ res│ res│ res│  "এগুলো হয়ে গেছে" │
+  │  └────┴────┴────┴────┘                   │
+  └──────────────────────────────────────────┘
+
+  লাভ:
+  ১. একটা syscall এ শত শত operation জমা দেওয়া
+  ২. SQPOLL mode এ kernel thread নিজেই ring দেখে
+     → শূন্য syscall
+  ৩. FILE I/O সত্যিকারের async — epoll যা পারে না
+  ৪. অনেক operation একসাথে chain করা যায়</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* io_uring with liburing — submit many, then reap many */
+#include &lt;liburing.h&gt;
+
+struct io_uring ring;
+io_uring_queue_init(256, &amp;ring, 0);
+
+/* Queue up several reads — no syscall yet */
+for (int i = 0; i &lt; n; i++) {
+    struct io_uring_sqe *sqe = io_uring_get_sqe(&amp;ring);
+    io_uring_prep_read(sqe, fds[i], bufs[i], SIZE, 0);
+    io_uring_sqe_set_data(sqe, &amp;ctx[i]);
+}
+
+/* ONE syscall submits all of them */
+io_uring_submit(&amp;ring);
+
+/* Reap completions */
+struct io_uring_cqe *cqe;
+unsigned head;
+int count = 0;
+io_uring_for_each_cqe(&amp;ring, head, cqe) {
+    void *ctx = io_uring_cqe_get_data(cqe);
+    handle_completion(ctx, cqe-&gt;res);
+    count++;
+}
+io_uring_cq_advance(&amp;ring, count);</code></pre></div>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th><code>select</code></th><th><code>epoll</code></th><th><code>io_uring</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Scaling</td><td>O(n)</td><td>O(ready)</td><td>O(ready)</td></tr>
+    <tr><td>Syscall প্রতি op</td><td>২+</td><td>২ (wait + read)</td><td><strong>&lt;১</strong> (batched)</td></tr>
+    <tr><td>File I/O async?</td><td>না</td><td>না</td><td><strong>হ্যাঁ</strong></td></tr>
+    <tr><td>Portable?</td><td>সর্বত্র</td><td>Linux</td><td>Linux 5.1+</td></tr>
+    <tr><td>জটিলতা</td><td>কম</td><td>মাঝারি</td><td>বেশি</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  একটা সতর্কতা: io_uring এর আক্রমণ-পৃষ্ঠ বড়, আর কয়েকটা
+  নিরাপত্তা দুর্বলতা পাওয়া গেছে। এই কারণে কিছু পরিবেশে
+  (Google এর production, ChromeOS, Android) এটা seccomp
+  দিয়ে বন্ধ রাখা হয়। ব্যবহারের আগে আপনার platform এর
+  নীতি যাচাই করা উচিত।
+</p>
+
+<pre><code># io_uring পাওয়া যায় কি
+$ uname -r                        # 5.1+ দরকার
+$ grep io_uring_setup /proc/kallsyms | head -1
+
+# আপনার container এ seccomp এটা আটকায় কি
+$ grep Seccomp /proc/self/status</code></pre>
+
+<h2 id="c19-twolevel">দুই স্তরের scheduler — Go এর উত্তর</h2>
+
+<p>
+  Event loop এর একটা অস্বস্তি আছে: আপনার code টা callback
+  বা <code>async/await</code> এ ভেঙে যায়, আর OSTEP যেটাকে
+  "manual stack management" বলে — প্রতিটা অপেক্ষার বিন্দুতে
+  অবস্থা হাতে সংরক্ষণ করতে হয়।
+</p>
+
+<p>
+  Go একটা ভিন্ন পথ নিয়েছে: <strong>event loop টা লুকিয়ে
+  ফেলো</strong>। আপনি blocking code লেখেন, runtime নিচে
+  event loop চালায়।
+</p>
+
+<pre class="ascii"><code>  Go এর GMP model:
+
+  G (goroutine)  — আপনার হালকা "thread", ~2KB stack (বাড়ে)
+  M (machine)    — একটা আসল OS thread
+  P (processor)  — একটা scheduling context (= GOMAXPROCS)
+
+  ┌─────────────────────────────────────────────────┐
+  │  P0              P1              P2             │
+  │  ┌──────────┐    ┌──────────┐    ┌──────────┐   │
+  │  │ runqueue │    │ runqueue │    │ runqueue │   │  ← প্রতি-P
+  │  │ G G G G  │    │ G G      │    │          │   │    queue
+  │  └────┬─────┘    └────┬─────┘    └────┬─────┘   │   (ch 7 এর
+  │       │               │        work stealing ───┘    MQMS!)
+  │      M0              M1              M2             │
+  └─────────────────────────────────────────────────┘
+          │
+          │  একটা goroutine network I/O করল
+          ▼
+  ┌─────────────────────────────────────────────────┐
+  │  netpoller — ভিতরে epoll/kqueue                 │
+  │  goroutine টা park করা হলো, M টা মুক্ত          │
+  │  data এলে goroutine আবার runqueue এ             │
+  └─────────────────────────────────────────────────┘</code></pre>
+
+<div class="codewrap"><span class="lang">go</span>
+<pre><code>// This LOOKS blocking. It is not — the runtime parks the
+// goroutine on the netpoller (epoll) and runs something else
+// on that OS thread.
+func handle(conn net.Conn) {
+    buf := make([]byte, 1024)
+    n, err := conn.Read(buf)      // parks here, no OS thread blocked
+    if err != nil { return }
+    conn.Write(buf[:n])           // parks here too
+}
+
+// So this is fine — 10,000 goroutines, not 10,000 OS threads
+for {
+    conn, _ := listener.Accept()
+    go handle(conn)               // ~2KB each, not 8MB
+}</code></pre></div>
+
+<p>
+  অর্থাৎ Go আপনাকে thread-per-connection এর
+  <em>সরলতা</em> দেয় আর event loop এর
+  <em>দক্ষতা</em> দেয়। দাম: একটা জটিল runtime, আর কিছু
+  সূক্ষ্ম ফাঁদ:
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Goroutine এ blocking call নিরাপদ, কারণ runtime
+    সব সামলায়।"</strong>
+  </p>
+  <p>
+    Network I/O হ্যাঁ — netpoller সামলায়। কিন্তু:
+  </p>
+  <ul>
+    <li>
+      <strong>Syscall যা netpoller এ যায় না</strong>
+      (file read, <code>cgo</code> call) — সেই M টা
+      সত্যিই block হয়। Runtime তখন একটা নতুন M বানায়,
+      তাই goroutine গুলো চলে, কিন্তু OS thread সংখ্যা
+      বেড়ে যায়।
+    </li>
+    <li>
+      <strong>CPU-ভারী loop</strong> — Go 1.14 থেকে
+      asynchronous preemption আছে (signal দিয়ে), তাই
+      এটা আর পুরো scheduler আটকায় না। তার আগে একটা
+      tight loop অন্য goroutine কে অনাহারে রাখতে পারত।
+    </li>
+    <li>
+      <strong><code>GOMAXPROCS</code> ভুল হলে</strong> —
+      chapter 7 এ দেখেছি container এ Go host এর core
+      সংখ্যা দেখে। ৬৪ P, ২ core এর quota → throttling।
+    </li>
+  </ul>
+  <pre><code># goroutine আর OS thread সংখ্যা আলাদা করে দেখুন
+$ curl localhost:6060/debug/pprof/goroutine?debug=1 | head
+# OS thread:
+$ ls /proc/&lt;pid&gt;/task | wc -l
+# দুটোর মধ্যে বড় ফাঁক থাকলে সেটাই স্বাভাবিক;
+# OS thread অস্বাভাবিক বেশি হলে blocking syscall খুঁজুন</code></pre>
+</div>
+
+<h2 id="c19-compare">স্থাপত্যগুলোর তুলনা</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr>
+      <th>&nbsp;</th>
+      <th>Thread-per-conn</th>
+      <th>Event loop</th>
+      <th>দুই স্তর (Go)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>১০,০০০ conn এর খরচ</td>
+      <td>~৮০GB virtual, ভারী switch</td>
+      <td>~কয়েক MB</td>
+      <td>~২০MB</td>
+    </tr>
+    <tr>
+      <td>Code এর আকৃতি</td>
+      <td>সরল, ক্রমিক</td>
+      <td>callback / async-await</td>
+      <td>সরল, ক্রমিক</td>
+    </tr>
+    <tr>
+      <td>Lock দরকার?</td>
+      <td>হ্যাঁ</td>
+      <td><strong>না</strong></td>
+      <td>হ্যাঁ</td>
+    </tr>
+    <tr>
+      <td>Multicore ব্যবহার</td>
+      <td>স্বয়ংক্রিয়</td>
+      <td>একটা core (বা multi-process)</td>
+      <td>স্বয়ংক্রিয়</td>
+    </tr>
+    <tr>
+      <td>একটা ধীর handler</td>
+      <td>শুধু সেটাই ধীর</td>
+      <td><strong>সব আটকে যায়</strong></td>
+      <td>শুধু সেটাই ধীর</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Event loop এর সেই "সব আটকে যায়" সারিটাই কারণ যে
+  <strong>nginx আর Node দুটোই multi-process চালায়</strong> —
+  nginx এ <code>worker_processes</code>, Node এ
+  <code>cluster</code>। প্রতিটা process এর নিজের event
+  loop, তাই একটা core এর সীমাও কাটে আর একটা আটকে গেলেও
+  বাকিরা চলে।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Part 2 এর সারসংক্ষেপ হিসেবে:</strong> chapter
+    12–18 এ যে সব সমস্যা দেখেছি — race, memory model, lock,
+    deadlock — event loop স্থাপত্য সেগুলোর
+    <em>সবগুলোই</em> এড়িয়ে যায়, একটাই thread রেখে।
+  </p>
+  <p>
+    এটা কোনো কৌশল নয়, একটা বিনিময়: আপনি concurrency এর
+    জটিলতা দিয়ে multicore ব্যবহারের ক্ষমতা কিনছেন, বা
+    উল্টোটা। Node এর জনপ্রিয়তার একটা আসল কারণ হলো
+    অনেক web workload এ ওই বিনিময়টা লাভজনক — I/O-bound
+    কাজে একটা core যথেষ্ট, আর race condition ছাড়া
+    development অনেক দ্রুত।
+  </p>
+  <p>
+    আর <strong>Postgres</strong> তৃতীয় পথ বেছেছে:
+    process-per-connection (thread নয়, process — তাই
+    একটা crash অন্যদের নেয় না)। দাম হলো connection
+    তৈরি খরচি, তাই PgBouncer লাগে — chapter 4 এ এই
+    যোগসূত্রটা শুরু করেছিলাম।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c19-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Event loop স্থাপত্যে কোনো lock লাগে না। Chapter 12–18
+      এর কোন কোন সমস্যা এতে অদৃশ্য হয়ে যায়, আর কোনটা
+      তবু থাকে? (সূত্র: <code>SharedArrayBuffer</code> আর
+      <code>cluster</code>।)
+    </li>
+    <li>
+      <code>select()</code> প্রতি iteration এ O(n),
+      <code>epoll</code> O(ready)। ১০,০০০ connection এ
+      যদি সবসময় ৯,০০০ ready থাকে, তাহলে epoll এর লাভ কত?
+      এই হিসাব থেকে বলুন epoll ঠিক কোন workload এ জেতে।
+    </li>
+    <li>
+      Edge-triggered এ socket সম্পূর্ণ নিষ্কাশন না করলে
+      connection আটকে যায়। Chapter 4 এর edge বনাম
+      level-triggered interrupt এর সাথে এই ফাঁদের
+      সাদৃশ্যটা কী? আর কেন libuv এর মতো library
+      level-triggered বেছে নেয়?
+    </li>
+    <li>
+      Linux এ regular file এ <code>O_NONBLOCK</code>
+      কার্যত অর্থহীন। এই একটা তথ্য থেকে ব্যাখ্যা করুন
+      কেন libuv কে একটা thread pool রাখতে হয়েছে, আর
+      কেন io_uring একটা সত্যিকারের অগ্রগতি।
+    </li>
+    <li>
+      Node এ "API ধীর" এর দুটো আলাদা কারণ — event loop
+      blocked বনাম thread pool saturated। প্রতিটার জন্য
+      একটা নির্দিষ্ট পরিমাপ বলুন যা দিয়ে আপনি দুটো আলাদা
+      করবেন, আর প্রতিটার সমাধান কেন আলাদা।
+    </li>
+    <li>
+      Go তে <code>conn.Read()</code> দেখতে blocking কিন্তু
+      নয়, আর <code>os.ReadFile()</code> সত্যিই একটা OS
+      thread block করে। এই অসামঞ্জস্যটা কোথা থেকে আসে?
+      আপনার service এ <code>/proc/&lt;pid&gt;/task</code> এ
+      thread সংখ্যা ৫০০ দেখলে আপনি কী সন্দেহ করবেন?
+    </li>
+  </ol>
+</div>

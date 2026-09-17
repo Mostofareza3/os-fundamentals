@@ -1,0 +1,551 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· সম্পূর্ণ নতুন — OSTEP এর code এই ভুলটাই শেখায়</span>
+  </div>
+  <h1>Memory model — <code>volatile</code> synchronization নয়</h1>
+  <p class="ch-lede">
+    Chapter 1 এ OSTEP এর <code>volatile int counter</code> হুবহু
+    রেখেছিলাম আর বলেছিলাম পরে সংশোধন করব। এটাই সেই chapter।
+    আর সংশোধনটা "একটু ভুল" নয় — ওই code টা undefined behavior,
+    আর সেটার অর্থ আপনার ধারণার চেয়ে গুরুতর।
+  </p>
+</div>
+
+<p>
+  Chapter 13 এ hardware এর দিকটা দেখলাম: coherence পাওয়া যায়,
+  consistency চাইতে হয়। এখন প্রশ্ন — programming language এর
+  স্তরে এর অর্থ কী? আমি C তে লিখি, hardware fence নিয়ে ভাবতে
+  চাই না। কে আমাকে কী গ্যারান্টি দিচ্ছে?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা ভাষা যদি একাধিক architecture এ compile হয়, যার
+    প্রত্যেকের আলাদা memory model, তাহলে programmer কীসের
+    ভিত্তিতে যুক্তি করবে? ভাষাটাকেই একটা model দিতে হবে।
+  </p>
+</div>
+
+<h2 id="c14-volatile">প্রথমে <code>volatile</code> — এটা কী আর কী নয়</h2>
+
+<p>
+  <code>volatile</code> এর একটা আসল, সংকীর্ণ অর্থ আছে:
+  <strong>compiler কে বলা যে এই variable এর access
+  optimize করে সরিয়ে দিও না</strong>। প্রতিবার সত্যিই
+  memory থেকে পড়ো, প্রতিবার সত্যিই লেখো।
+</p>
+
+<p>
+  এটা কেন দরকার হয়, সেটা একটা উদাহরণে পরিষ্কার:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Without volatile, the compiler may hoist the read out of the
+   loop — it sees nothing in the loop that changes `ready`,
+   so it reads once and loops forever on a stale value. */
+
+int ready = 0;              /* set by a signal handler, say */
+
+void wait_for_it(void) {
+    while (ready == 0)
+        ;                   /* compiler: "ready never changes here" */
+    /* may compile to:  if (ready == 0) for(;;);   ← infinite loop */
+}</code></pre></div>
+
+<p>
+  <code>volatile</code> এই নির্দিষ্ট optimization টা আটকায়।
+  এর বৈধ ব্যবহার আছে:
+</p>
+
+<ul>
+  <li>
+    <strong>Memory-mapped I/O</strong> — একটা hardware register
+    পড়া, যার মান device বদলায় (chapter 20 এ দেখব)।
+  </li>
+  <li>
+    <strong>Signal handler এর সাথে যোগাযোগ</strong> — আর
+    সেখানেও সঠিক type হলো <code>volatile sig_atomic_t</code>।
+  </li>
+  <li>
+    <code>setjmp</code>/<code>longjmp</code> এর সাথে ব্যবহৃত
+    local variable।
+  </li>
+</ul>
+
+<p>
+  এখন <code>volatile</code> যা করে <strong>না</strong> —
+  আর এই তালিকাটাই গুরুত্বপূর্ণ:
+</p>
+
+<pre class="ascii"><code>  volatile করে না:
+
+  ✗ operation কে atomic করে না
+      counter++ এখনো তিনটে ধাপ: load, add, store
+      volatile শুধু নিশ্চিত করে তিনটে ধাপই সত্যিই ঘটবে
+
+  ✗ CPU এর reordering আটকায় না
+      hardware কোনো fence পায় না — chapter 13 এর
+      store buffer আর পুনর্বিন্যাস অপরিবর্তিত
+
+  ✗ অন্য core এ কখন দৃশ্যমান হবে তার কোনো নিশ্চয়তা দেয় না
+      coherence শেষ পর্যন্ত পৌঁছে দেবে, কিন্তু কখন — অজানা
+
+  ✗ data race কে বৈধ করে না
+      C11 এর ভাষায় volatile object এ একসাথে লেখা
+      এখনো একটা data race</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা — এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ সংশোধন</div>
+  <p>
+    <strong>"<code>volatile</code> দিলে shared variable
+    thread-safe হয়ে যায়।"</strong>
+  </p>
+  <p>
+    Chapter 1 এ OSTEP এর code টা হুবহু রেখেছিলাম:
+  </p>
+  <pre><code>volatile int counter = 0;
+/* ... */
+counter++;          /* দুটো thread থেকে */</code></pre>
+  <p>
+    এই code টা <strong>ভুল উত্তর দেয়</strong> — সেটা chapter 1
+    এ দেখেছি। কিন্তু আসল কথাটা আরও গুরুতর: C11/C++11 এর
+    ভাষায় এটা <strong>data race, অর্থাৎ undefined
+    behavior</strong>।
+  </p>
+  <p>
+    "ভুল উত্তর" আর "undefined behavior" এর পার্থক্যটা বিশাল।
+    ভুল উত্তর মানে একটা অপ্রত্যাশিত সংখ্যা। UB মানে standard
+    আপনার program এর <em>কোনো</em> আচরণের দায় নেয় না —
+    compiler ধরে নিতে পারে যে UB কখনো ঘটে না, আর সেই
+    অনুমানের ভিত্তিতে আপনার code এর অন্য অংশ মুছে ফেলতে পারে।
+    Loop উড়ে যেতে পারে, condition check সরে যেতে পারে।
+  </p>
+  <p>
+    তাই <code>volatile</code> দিয়ে race "কম" করা যায় না।
+    সঠিক হাতিয়ার atomic:
+  </p>
+  <pre><code>/* WRONG */
+volatile int counter = 0;
+counter++;
+
+/* RIGHT — C11 */
+#include &lt;stdatomic.h&gt;
+atomic_int counter = 0;
+atomic_fetch_add(&amp;counter, 1);
+/* বা শুধু: counter++;  — atomic_int এ operator overload হয় */</code></pre>
+</div>
+
+<h2 id="c14-names">নামের বিভ্রান্তি — Java আর C# এর <code>volatile</code></h2>
+
+<p>
+  এখানে একটা আসল বিভ্রান্তির উৎস আছে, আর polyglot developer রা
+  নিয়মিত এতে পড়েন:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ভাষা</th><th><code>volatile</code> এর অর্থ</th><th>Synchronization দেয়?</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>C / C++</strong></td>
+      <td>শুধু compiler optimization আটকায়</td>
+      <td><strong>না</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Java</strong> (5+)</td>
+      <td>সত্যিকারের memory barrier — release/acquire semantics</td>
+      <td><strong>হ্যাঁ</strong></td>
+    </tr>
+    <tr>
+      <td><strong>C#</strong></td>
+      <td>Barrier দেয়, কিন্তু Java এর চেয়ে দুর্বল</td>
+      <td>আংশিক</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  অর্থাৎ Java এ <code>volatile boolean flag</code> সঠিক
+  একটা synchronization pattern, আর C তে একই লেখা ভাঙা code।
+  একই শব্দ, সম্পূর্ণ আলাদা চুক্তি।
+</p>
+
+<p>
+  Java এ ও একটা সীমা আছে: <code>volatile</code> visibility
+  দেয়, কিন্তু atomicity দেয় না। তাই Java তেও
+  <code>volatile int i; i++;</code> ভাঙা — ওখানে
+  <code>AtomicInteger</code> লাগে।
+</p>
+
+<h2 id="c14-datarace">Data race এর সঠিক সংজ্ঞা</h2>
+
+<p>
+  পরিভাষাটা ঠিক করা দরকার, কারণ "race condition" আর
+  "data race" এক জিনিস নয়:
+</p>
+
+<pre class="ascii"><code>  DATA RACE (ভাষার প্রযুক্তিগত সংজ্ঞা):
+
+    দুটো thread একই non-atomic memory location ছোঁয়,
+    অন্তত একটা লেখা,
+    আর তাদের মধ্যে কোনো synchronization নেই
+    → undefined behavior
+
+  RACE CONDITION (যুক্তিগত সমস্যা):
+
+    program এর ফল ঘটনাক্রমের উপর নির্ভর করে
+    → হয়তো UB নয়, কিন্তু তবু bug
+
+  পার্থক্য: সব data race একটা bug।
+            কিন্তু একটা race condition atomic দিয়েও থাকতে পারে!</code></pre>
+
+<p>
+  শেষ লাইনটা গুরুত্বপূর্ণ, আর এটা একটা সাধারণ ভুলের উৎস:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* No data race — every access is atomic.
+   Still a race condition — the logic is broken. */
+atomic_int balance = 100;
+
+void withdraw(int amount) {
+    if (atomic_load(&amp;balance) &gt;= amount) {     /* (1) check  */
+        /* ← অন্য thread এখানে ঢুকে পড়তে পারে */
+        atomic_fetch_sub(&amp;balance, amount);    /* (2) modify */
+    }
+}
+
+/* দুটো thread একসাথে withdraw(100) ডাকলে:
+   দুজনেই (1) এ 100 দেখল, দুজনেই পাস করল,
+   দুজনেই 100 কমাল → balance = -100
+   কোনো data race নেই, তবু হিসাব ভুল। */</code></pre></div>
+
+<p>
+  এটাকে <strong>check-then-act</strong> সমস্যা বলে। Atomic
+  primitive প্রতিটা <em>একক</em> operation কে রক্ষা করে,
+  কিন্তু <em>একাধিক operation এর সমষ্টি</em> কে নয়। সমাধান
+  হয় একটা lock (chapter 15), নয় একটা atomic
+  compare-and-swap loop:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* CAS loop — read, compute, swap only if nothing changed */
+void withdraw_safe(int amount) {
+    int cur = atomic_load(&amp;balance);
+    do {
+        if (cur &lt; amount) return;          /* not enough */
+        /* Try to install cur-amount, but only if balance is still cur.
+           If someone else changed it, CAS writes the new value into
+           `cur` and we retry. */
+    } while (!atomic_compare_exchange_weak(&amp;balance, &amp;cur, cur - amount));
+}</code></pre></div>
+
+<p>
+  <strong>CAS (Compare-And-Swap — একটা atomic operation যা
+  শুধু তখনই লেখে যখন বর্তমান মান প্রত্যাশিত মানের সমান)</strong>
+  হলো প্রায় সব lock-free algorithm এর ভিত্তি। Chapter 16 এ
+  এর উপর ফিরব।
+</p>
+
+<h2 id="c14-happens-before">Happens-before — যুক্তির ভিত্তি</h2>
+
+<p>
+  আধুনিক memory model গুলো একটা সম্পর্ক দিয়ে সব কিছু
+  ব্যাখ্যা করে: <strong>happens-before</strong>।
+</p>
+
+<pre class="ascii"><code>  A happens-before B  মানে:
+    A এর সব প্রভাব B এর কাছে দৃশ্যমান
+
+  এই সম্পর্ক তৈরি হয়:
+
+  ১. একই thread এ program order
+       a = 1;  b = 2;   → প্রথমটা দ্বিতীয়টার আগে
+
+  ২. release/acquire জোড়া (chapter 13)
+       T1: ...লেখা...; atomic_store(flag, 1, release)
+       T2: atomic_load(flag, acquire) == 1; ...পড়া...
+       → T1 এর লেখা T2 এর পড়ার আগে
+
+  ৩. lock unlock → পরের lock
+       T1: unlock(m)
+       T2: lock(m)
+       → T1 এর critical section T2 এর আগে
+
+  ৪. thread create আর join
+       pthread_create এর আগের সব কাজ নতুn thread দেখে
+       pthread_join এর পরে thread এর সব কাজ দৃশ্যমান
+
+  যদি দুটো access এর মধ্যে happens-before সম্পর্ক না থাকে,
+  আর অন্তত একটা লেখা হয় → DATA RACE</code></pre>
+
+<p>
+  এই কাঠামোটা কাজের কারণ: আপনাকে fence বা cache নিয়ে ভাবতে
+  হয় না। শুধু জিজ্ঞেস করুন — "এই দুটো access এর মধ্যে
+  কোনো happens-before আছে কি?" না থাকলে race।
+</p>
+
+<h2 id="c14-patterns">ব্যবহারিক pattern</h2>
+
+<h3 id="c14-counter">১. Counter</h3>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Only the total matters, not the order → relaxed is enough */
+atomic_long requests = 0;
+
+void on_request(void) {
+    atomic_fetch_add_explicit(&amp;requests, 1, memory_order_relaxed);
+}
+
+/* Reading it for a metrics endpoint */
+long snapshot(void) {
+    return atomic_load_explicit(&amp;requests, memory_order_relaxed);
+}</code></pre></div>
+
+<h3 id="c14-flag">২. একবার-সেট-করা flag (shutdown signal)</h3>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>atomic_bool shutting_down = false;
+
+/* signal handler বা admin thread */
+void request_shutdown(void) {
+    atomic_store_explicit(&amp;shutting_down, true, memory_order_release);
+}
+
+/* worker loop */
+void worker(void) {
+    while (!atomic_load_explicit(&amp;shutting_down, memory_order_acquire)) {
+        do_work();
+    }
+    cleanup();
+}</code></pre></div>
+
+<h3 id="c14-publish">৩. Publication — একবার তৈরি, অনেকে পড়ে</h3>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Build a config, then publish the pointer.
+   Readers who see the pointer see a fully-built object. */
+typedef struct { int timeout; char *host; } config_t;
+
+_Atomic(config_t *) current_config = NULL;
+
+void publish(void) {
+    config_t *c = malloc(sizeof(*c));
+    c-&gt;timeout = 30;                  /* these writes must be visible */
+    c-&gt;host = "api.example.com";       /* before the pointer is */
+
+    /* release: everything above is visible to anyone who
+       acquires this pointer and sees the new value */
+    atomic_store_explicit(&amp;current_config, c, memory_order_release);
+}
+
+void use(void) {
+    config_t *c = atomic_load_explicit(&amp;current_config,
+                                       memory_order_acquire);
+    if (c) printf("%s %d\n", c-&gt;host, c-&gt;timeout);   /* safe */
+}</code></pre></div>
+
+<p>
+  এই তৃতীয় pattern টা লক্ষ করুন: <code>config_t</code> এর
+  field গুলো সাধারণ, atomic নয়। তবু নিরাপদ, কারণ
+  release/acquire জোড়াটা <em>সব</em> আগের লেখা বাহিত করে —
+  chapter 13 এর সেই "একটা জোড়া, সব data" ধর্ম।
+</p>
+
+<p>
+  তবে একটা ফাঁক আছে: পুরনো <code>config</code> টা কখন
+  <code>free()</code> করবেন? কেউ হয়তো এখনো পড়ছে। এই সমস্যার
+  নাম <strong>safe memory reclamation</strong>, আর এটাই
+  lock-free programming এর সবচেয়ে কঠিন অংশ — chapter 16 এ
+  RCU দিয়ে এর উত্তর দেখব।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Atomic মানে lock-free, আর lock-free মানে দ্রুত।
+    তাই lock এর বদলে atomic ব্যবহার করলেই performance ভালো।"</strong>
+  </p>
+  <p>
+    তিনটে আলাদা ভুল এখানে:
+  </p>
+  <ul>
+    <li>
+      <strong>সব atomic lock-free নয়।</strong> বড় type এ
+      (যেমন <code>_Atomic</code> একটা ১৬-byte struct)
+      compiler ভিতরে একটা lock ব্যবহার করতে পারে।
+      <code>atomic_is_lock_free()</code> দিয়ে যাচাই করা যায়।
+    </li>
+    <li>
+      <strong>Contended atomic lock এর চেয়ে ধীর হতে পারে।</strong>
+      একটা contended <code>fetch_add</code> প্রতিবার cache
+      line এর exclusive ownership চায় — chapter 13 এর
+      ping-pong। N thread মানে O(N) coherence traffic।
+      একটা futex-ভিত্তিক mutex ঘুমিয়ে পড়ে, তাই bus এ চাপ
+      দেয় না।
+    </li>
+    <li>
+      <strong>Lock-free মানে অপেক্ষা-মুক্ত নয়।</strong>
+      একটা CAS loop অনির্দিষ্টকাল retry করতে পারে যদি
+      contention বেশি হয়।
+    </li>
+  </ul>
+  <p>
+    ব্যবহারিক নিয়ম: uncontended fast path এ একটা mutex
+    ~১৫–২৫ns (chapter 15 এ দেখব, futex fast path কোনো
+    syscall করে না)। সেটা প্রায় একটা atomic operation এর
+    সমান। তাই <strong>আগে mutex দিয়ে সঠিক code লিখুন</strong>,
+    তারপর মেপে দেখুন সত্যিই সেটা bottleneck কি না।
+  </p>
+</div>
+
+<h2 id="c14-langs">অন্য ভাষায় একই ধারণা</h2>
+
+<div class="codewrap"><span class="lang">go</span>
+<pre><code>// Go — sync/atomic, and the typed wrappers (1.19+)
+var counter atomic.Int64
+counter.Add(1)
+n := counter.Load()
+
+// Go's memory model: a channel send happens-before the
+// corresponding receive completes. So this is safe:
+ch := make(chan *Config, 1)
+go func() {
+    c := buildConfig()      // all writes here...
+    ch &lt;- c                 // ...are visible to the receiver
+}()
+cfg := &lt;-ch                 // acquire
+</code></pre></div>
+
+<div class="codewrap"><span class="lang">rust</span>
+<pre><code>// Rust — the type system enforces it at compile time.
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static COUNTER: AtomicUsize = AtomicUsize::new(0);
+COUNTER.fetch_add(1, Ordering::Relaxed);
+
+// Sharing a non-Sync value across threads simply does not compile.
+// This is the one language where data races are a compile error,
+// not a runtime surprise.</code></pre></div>
+
+<div class="codewrap"><span class="lang">javascript</span>
+<pre><code>// Node worker_threads — yes, JS has a memory model too
+const sab = new SharedArrayBuffer(8);
+const view = new Int32Array(sab);
+
+// WRONG — a data race, just like in C
+view[0]++;
+
+// RIGHT
+Atomics.add(view, 0, 1);
+const n = Atomics.load(view, 0);</code></pre></div>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর ব্যবহারিক সারমর্ম আপনার ভাষা অনুযায়ী:
+  </p>
+  <ul>
+    <li>
+      <strong>Node (single-threaded)</strong> — আপনি এই সমস্যা
+      পান না, যতক্ষণ <code>worker_threads</code> +
+      <code>SharedArrayBuffer</code> ব্যবহার না করছেন।
+    </li>
+    <li>
+      <strong>Go</strong> — channel ব্যবহার করুন; সেটা
+      memory model দ্বারা নিশ্চিত। Shared memory লাগলে
+      <code>sync/atomic</code>, আর CI তে
+      <code>go test -race</code> বাধ্যতামূলক করুন।
+    </li>
+    <li>
+      <strong>Java</strong> — <code>volatile</code> visibility
+      এর জন্য কাজ করে (C এর মতো নয়), কিন্তু
+      increment এ <code>AtomicInteger</code> লাগবে।
+    </li>
+    <li>
+      <strong>Rust</strong> — compiler আপনাকে আটকাবে। এটাই
+      এই সমস্যার একমাত্র পূর্ণ সমাধান যা production ভাষায়
+      আছে।
+    </li>
+    <li>
+      <strong>C/C++</strong> — <code>volatile</code> কখনো
+      synchronization এর জন্য নয়। <code>&lt;stdatomic.h&gt;</code>
+      বা <code>std::atomic</code>, আর TSan চালান।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c14-checklist">যাচাই তালিকা</h2>
+
+<pre class="ascii"><code>  একটা shared variable দেখে নিজেকে জিজ্ঞেস করুন:
+
+  ১. এটা একাধিক thread ছোঁয়?
+       না  → কিছু করার নেই
+  ২. অন্তত একজন লেখে?
+       না  → read-only, নিরাপদ (কিন্তু নিশ্চিত হোন
+              কেউ পরে লিখবে না — ch 12 এর config reload)
+  ৩. access গুলোর মধ্যে happens-before আছে?
+       হ্যাঁ → ঠিক আছে (lock, channel, join, release/acquire)
+       না   → DATA RACE, ঠিক করতে হবে
+
+  ঠিক করার পথ, পছন্দের ক্রমে:
+    ক. ভাগ করাই বন্ধ করুন (message passing, thread-local)
+    খ. একটা mutex দিন (সরল, সাধারণত যথেষ্ট দ্রুত)
+    গ. atomic ব্যবহার করুন (একক operation হলে)
+    ঘ. lock-free algorithm লিখুন (শেষ উপায়, বিশেষজ্ঞের কাজ)</code></pre>
+
+<p>
+  ক্রমটা ইচ্ছাকৃত। সবচেয়ে ভালো সমাধান হলো সমস্যাটাই না
+  থাকা — data ভাগ না করা। Go এর "share memory by
+  communicating" পরামর্শ, বা Node এর single-threaded model,
+  বা Rust এর ownership — তিনটেই একই অন্তর্দৃষ্টির ভিন্ন রূপ।
+</p>
+
+<div class="qs">
+  <h2 id="c14-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      C তে <code>volatile</code> synchronization দেয় না,
+      Java তে দেয়। একজন developer Java থেকে C তে এসে
+      <code>volatile bool done</code> লিখল একটা shutdown
+      flag এর জন্য। x86 এ এটা সম্ভবত কাজ করবে। কেন এটা
+      তবু ভুল, আর কোন পরিস্থিতিতে ভাঙবে?
+    </li>
+    <li>
+      "ভুল উত্তর" আর "undefined behavior" এর পার্থক্যটা
+      ব্যাখ্যা করুন। একটা data race থাকা program এ compiler
+      কী করার অনুমতি পায় যা আপনি প্রত্যাশা করবেন না?
+    </li>
+    <li>
+      নিচের code এ কোনো data race নেই (সব access atomic),
+      তবু এটা ভুল। সমস্যাটা কী, আর দুটো আলাদা উপায়ে
+      সারান:
+      <pre><code>if (atomic_load(&amp;count) &gt; 0)
+    atomic_fetch_sub(&amp;count, 1);</code></pre>
+    </li>
+    <li>
+      Publication pattern এ <code>config_t</code> এর field
+      গুলো non-atomic, তবু নিরাপদ। কোন ধর্মটা এটা সম্ভব
+      করে? এখন বলুন পুরনো config টা <code>free()</code>
+      করার সমস্যাটা কী, আর কেন এটা সহজ নয়।
+    </li>
+    <li>
+      Contended <code>atomic_fetch_add</code> একটা mutex এর
+      চেয়ে ধীর হতে পারে। Chapter 13 এর coherence protocol
+      দিয়ে ব্যাখ্যা করুন কেন, আর কেন একটা ঘুমিয়ে-পড়া
+      mutex এখানে সুবিধা পায়।
+    </li>
+    <li>
+      "সবচেয়ে ভালো সমাধান হলো ভাগ করাই বন্ধ করা।" Go এর
+      channel, Node এর single thread, আর Rust এর ownership —
+      তিনটেই এই নীতির প্রয়োগ। প্রতিটার কী দাম আছে, আর
+      কোন পরিস্থিতিতে আপনাকে তবু shared mutable state এ
+      ফিরতে হবে?
+    </li>
+  </ol>
+</div>

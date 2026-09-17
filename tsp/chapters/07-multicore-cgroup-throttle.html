@@ -1,0 +1,564 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 10, pdf p117–127 · + cgroup v2 CPU control</span>
+  </div>
+  <h1>Multicore scheduling আর cgroup throttling</h1>
+  <p class="ch-lede">
+    একাধিক CPU এলে scheduler এর সমস্যাটা গুণে নয়, প্রকারে বদলায় —
+    cache, coherence, migration। আর তার উপরে বসে আছে
+    <code>cpu.max</code>, যেটা production এ সবচেয়ে বেশি ভুল বোঝা
+    setting, আর আপনার p99 latency এর সবচেয়ে সাধারণ ঘাতক।
+  </p>
+</div>
+
+<p>
+  এখন পর্যন্ত একটা CPU ধরে এগিয়েছি। একাধিক core এলে নতুন প্রশ্ন
+  আসে — শুধু "কাকে চালাব" নয়, "<em>কোথায়</em> চালাব"।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একাধিক CPU থাকলে OS কীভাবে কাজ ভাগ করবে? Cache এর অবস্থা,
+    synchronization এর খরচ আর load balance — এই তিনটার মধ্যে
+    ভারসাম্য কীভাবে আসবে?
+  </p>
+</div>
+
+<h2 id="c7-cache">প্রথমে cache — কারণ সব এখান থেকে</h2>
+
+<p>
+  Multicore scheduling বোঝার আগে cache বুঝতে হবে, কারণ multicore
+  এর প্রায় সব সিদ্ধান্তই cache এর কারণে।
+</p>
+
+<pre class="ascii"><code>  ┌─────────┐  ┌─────────┐        একটা CPU, একটা cache
+  │  CPU    │  │  CPU    │
+  │ ┌─────┐ │  │ ┌─────┐ │        L1: ~1 ns,   ~64 KB
+  │ │ L1  │ │  │ │ L1  │ │        L2: ~4 ns,   ~1 MB
+  │ ├─────┤ │  │ ├─────┤ │        L3: ~20-40 ns, ~32 MB (ভাগ করা)
+  │ │ L2  │ │  │ │ L2  │ │        RAM: ~80-100 ns
+  │ └──┬──┘ │  │ └──┬──┘ │
+  └────┼────┘  └────┼────┘        অর্থাৎ RAM থেকে পড়া
+       └─────┬──────┘              L1 এর চেয়ে ~100 গুণ ধীর
+       ┌─────▼─────┐
+       │    L3     │  (ভাগ করা)
+       └─────┬─────┘
+       ┌─────▼─────┐
+       │    RAM    │
+       └───────────┘</code></pre>
+
+<p>
+  Cache কাজ করে <strong>locality</strong> এর উপর ভরসা করে —
+  দুই ধরনের:
+</p>
+
+<ul>
+  <li>
+    <strong>Temporal locality</strong> — একটা data একবার ছোঁয়া
+    হলে শিগগিরই আবার ছোঁয়া হবে। (Loop এর counter variable।)
+  </li>
+  <li>
+    <strong>Spatial locality</strong> — address <code>x</code>
+    ছোঁয়া হলে তার আশেপাশের address ও ছোঁয়া হবে। (Array এর
+    উপর iteration।)
+  </li>
+</ul>
+
+<p>
+  এই দুটো অনুমান বেশিরভাগ program এ সত্য, তাই cache কাজ করে।
+  কিন্তু একাধিক CPU থাকলে একটা নতুন সমস্যা জন্মায়।
+</p>
+
+<h2 id="c7-coherence">Cache coherence — একই data, দুই জায়গায়</h2>
+
+<pre class="ascii"><code>  ১. CPU 1 address A পড়ল  → RAM থেকে D আনল, নিজের cache এ রাখল
+
+     CPU 1 [A=D]      CPU 2 [    ]      RAM [A=D]
+
+  ২. CPU 1 A তে লিখল D'  → নিজের cache এ D' (write-back cache,
+                            তাই RAM এ এখনো যায়নি)
+
+     CPU 1 [A=D']     CPU 2 [    ]      RAM [A=D]  ← পুরনো!
+
+  ৩. এখন process টা CPU 2 তে সরে গেল, আর A পড়ল
+     → CPU 2 এর cache এ নেই → RAM থেকে আনল → D পেল
+
+     CPU 1 [A=D']     CPU 2 [A=D]       RAM [A=D]
+                            ↑ ভুল মান!</code></pre>
+<p class="figcap">
+  Coherence না থাকলে একই address এর দুটো ভিন্ন মান দেখা যায়।
+</p>
+
+<p>
+  এই সমস্যার নাম <strong>cache coherence</strong>। Hardware
+  এটা সমাধান করে — একটা কৌশল হলো
+  <strong>bus snooping</strong>: প্রতিটা cache অন্যদের memory
+  কাজকর্মে নজর রাখে। কেউ যদি এমন একটা address এ লেখে যেটা
+  আমার cache এ আছে, আমি হয় আমার copy বাতিল করি (invalidate),
+  নয় নতুন মান নিয়ে নিই (update)।
+</p>
+
+<p>
+  গুরুত্বপূর্ণ কথা: <strong>hardware coherence আপনার race
+  condition সারায় না</strong>। Coherence নিশ্চিত করে যে একটা
+  address এর একটাই সর্বশেষ মান আছে। কিন্তু chapter 1 এর
+  <code>counter++</code> এর সেই তিন ধাপ — পড়া, বাড়ানো, লেখা —
+  সেটা atomic করার জন্য এখনো lock দরকার। এই পার্থক্যটা
+  (coherence বনাম consistency) part 2 এর একটা পুরো chapter,
+  কারণ এটা না বুঝলে concurrency এর কিছুই ঠিকভাবে বোঝা যায় না।
+</p>
+
+<h2 id="c7-affinity">Cache affinity — কেন process কে এক জায়গায় রাখা</h2>
+
+<p>
+  একটা process যখন একটা CPU তে চলে, সে ওই CPU এর cache আর TLB
+  ভরে তোলে নিজের data দিয়ে। পরেরবার সেখানে চললে সবকিছু হাতের
+  কাছে — দ্রুত চলে।
+</p>
+
+<p>
+  অন্য CPU তে সরালে সব আবার নতুন করে আনতে হয়। এই কারণেই
+  scheduler <strong>cache affinity</strong> রক্ষার চেষ্টা করে:
+  যথাসম্ভব একটা process কে একই CPU তে রাখা।
+</p>
+
+<p>
+  কিন্তু এটা load balance এর সাথে সংঘর্ষে যায়। যদি CPU 0 তে
+  চারটা task আর CPU 1 খালি থাকে, তাহলে affinity ভেঙে একটা task
+  সরানোই উচিত। Scheduler কে প্রতিবার হিসাব করতে হয়: migration এর
+  খরচ বেশি, নাকি অপেক্ষার খরচ?
+</p>
+
+<h2 id="c7-queues">এক queue না অনেক queue</h2>
+
+<p>দুটো মৌলিক স্থাপত্য:</p>
+
+<pre class="ascii"><code>  SQMS — Single Queue Multiprocessor Scheduling
+
+     ┌──────────────────────────────────┐
+     │  একটাই queue: A B C D E          │
+     └────┬────┬────┬────┬──────────────┘
+          │    │    │    │
+        CPU0 CPU1 CPU2 CPU3
+
+     ✓ সরল, load স্বাভাবিকভাবেই ভারসাম্যপূর্ণ
+     ✗ প্রতিটা সিদ্ধান্তে queue এর lock লাগে
+     ✗ task গুলো CPU বদলাতে থাকে → cache affinity নষ্ট
+
+
+  MQMS — Multi-Queue Multiprocessor Scheduling
+
+     ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
+     │ A C  │ │ B E  │ │  D   │ │      │
+     └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
+       CPU0    CPU1     CPU2     CPU3
+
+     ✓ lock contention নেই (প্রতিটা queue আলাদা)
+     ✓ cache affinity স্বাভাবিকভাবেই রক্ষিত
+     ✗ load অসম হতে পারে → migration দরকার</code></pre>
+
+<p>
+  SQMS এর lock সমস্যাটা core সংখ্যার সাথে ভয়ংকরভাবে বাড়ে।
+  প্রতিটা scheduling সিদ্ধান্তে একই lock — ৪ core এ সহনীয়,
+  কিন্তু ৯৬ core এ ওই lock টাই পুরো ব্যবস্থার গলা টিপে ধরে।
+  এটা একটা সাধারণ নীতি: <strong>যেকোনো global lock একটা
+  scalability cliff</strong>, আর core সংখ্যা বাড়লে সেটা
+  অনিবার্যভাবে ধরা পড়ে।
+</p>
+
+<p>
+  তাই Linux MQMS ব্যবহার করে — প্রতিটা CPU এর নিজের runqueue।
+  Load অসম হলে <strong>work stealing</strong>: খালি CPU অন্যের
+  queue দেখে কাজ চুরি করে আনে।
+</p>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP এই chapter এ "a few CPUs" এর কথা বলে, আর SQMS কে
+    একটা যুক্তিসঙ্গত বিকল্প হিসেবে উপস্থাপন করে। ২০২৬ এ
+    একটা সাধারণ server এ <strong>৬৪–১৯২ core</strong> — দুই
+    মাত্রার ব্যবধান। এই মাপে SQMS কার্যত অচল।
+  </p>
+  <p>
+    আরও দুটো জিনিস OSTEP এ নেই, যেগুলো এই মাপে অপরিহার্য:
+  </p>
+  <ul>
+    <li>
+      <strong>SMT (Simultaneous Multithreading / hyperthreading)</strong>
+      — <code>/proc/cpuinfo</code> এর প্রতিটা "CPU" আসলে একটা
+      hardware thread, একটা পূর্ণ core নয়। একই core এর দুটো
+      sibling cache আর execution unit ভাগ করে, তাই দুটো
+      compute-ভারী thread মিলে ~২ গুণ নয়, ~১.২–১.৩ গুণ কাজ দেয়।
+      <pre><code>$ lscpu --extended | head -5
+CPU NODE SOCKET CORE L1d:L1i:L2:L3 ONLINE
+  0    0      0    0 0:0:0:0          yes
+  1    0      0    0 0:0:0:0          yes   ← CORE 0, একই!
+  2    0      0    1 1:1:1:0          yes</code></pre>
+      Benchmark করার সময় এটা না জানলে ফল অর্থহীন — আপনি হয়তো
+      দুটো thread কে একই physical core এ বসিয়ে "scaling খারাপ"
+      সিদ্ধান্ত নিচ্ছেন।
+    </li>
+    <li>
+      <strong>NUMA (Non-Uniform Memory Access)</strong> — বড়
+      মেশিনে memory ও CPU-ভিত্তিক। নিজের node এর RAM পড়া
+      অন্য node এর চেয়ে ~১.৫–২ গুণ দ্রুত। তাই scheduler কে
+      শুধু cache নয়, memory এর অবস্থানও ভাবতে হয়।
+      <pre><code>$ numactl --hardware | head -6</code></pre>
+    </li>
+  </ul>
+</div>
+
+<h2 id="c7-cgroup">এখন আসল বিষয় — cgroup আর throttling</h2>
+
+<p>
+  এতক্ষণ scheduler এর দৃষ্টিভঙ্গি দেখলাম। কিন্তু আপনি container
+  এ চালান, আর সেখানে scheduler এর উপরে আরেকটা স্তর আছে যেটা
+  <em>জোর করে</em> আপনাকে থামিয়ে দিতে পারে।
+</p>
+
+<p>
+  Chapter 6 এ দুটো জিনিসের পার্থক্য দেখেছি:
+  <code>cpu.weight</code> (আপেক্ষিক ভাগ) আর <code>cpu.max</code>
+  (কঠিন সীমা)। এখন <code>cpu.max</code> ঠিক কীভাবে কাজ করে
+  সেটা দেখা দরকার, কারণ এর ভিতরের mechanism টাই সমস্যার মূল।
+</p>
+
+<pre class="ascii"><code>  $ cat /sys/fs/cgroup/mypod/cpu.max
+  200000 100000
+  └──┬──┘ └──┬──┘
+   quota   period
+
+  অর্থ: প্রতি 100ms (period) এ তুমি সর্বোচ্চ 200ms
+        CPU-সময় পাবে (quota) = 2 core এর সমান
+
+  গুরুত্বপূর্ণ: quota টা সব thread মিলিয়ে গোনা হয়।</code></pre>
+
+<p>
+  এই শেষ লাইনটাই সব। Quota <strong>মোট CPU-সময়</strong>, আর
+  আপনার সব thread মিলে সেটা খরচ করে। Thread বেশি হলে quota
+  দ্রুত শেষ হয়।
+</p>
+
+<h3 id="c7-throttle">Throttling — যেখানে সব ভাঙে</h3>
+
+<pre class="ascii"><code>  পরিস্থিতি: limits.cpu = 2  (quota 200ms / period 100ms)
+             কিন্তু container এ 32টা thread চলছে
+             (কারণ runtime টা host এর 32 core দেখেছে)
+
+  period শুরু (t=0)
+  │
+  │  32টা thread একসাথে চলল
+  │  200ms quota ÷ 32 thread ≈ প্রতিটা 6.25ms পেল
+  │
+  ├── t=6.25ms: quota শেষ!  ← মাত্র 6% period পার হয়েছে
+  │
+  │  ╔═══════════════════════════════════════════╗
+  │  ║  সব thread THROTTLED — জোর করে থামানো     ║
+  │  ║  93.75ms ধরে কিছুই চলবে না                ║
+  │  ╚═══════════════════════════════════════════╝
+  │
+  └── t=100ms: নতুন period, quota ফিরল, আবার শুরু
+
+  ফলাফল: আপনার p99 latency তে 90ms+ এর একটা কাঁটা,
+          অথচ CPU usage দেখাচ্ছে মাত্র ~6%!</code></pre>
+<p class="figcap">
+  Burn-then-stall: quota দ্রুত পুড়ে গিয়ে বাকি period পুরো স্তব্ধ।
+</p>
+
+<p>
+  এটাই সেই বিখ্যাত বিভ্রান্তি: <strong>monitoring এ CPU usage কম
+  দেখাচ্ছে, তবু application ধীর</strong>। কারণ average টা
+  পুরো period এর উপর নেওয়া, আর ওই ৬% এর ভিতরে আপনি সীমা
+  ছুঁয়ে ফেলেছেন।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"CPU usage ২০%, তাই CPU সমস্যা নয় — অন্য কোথাও
+    দেখি।"</strong>
+  </p>
+  <p>
+    Container এ এই যুক্তি ভাঙে। Average usage আর throttling
+    সম্পূর্ণ আলাদা জিনিস। আপনার দেখা দরকার
+    <code>cpu.stat</code>:
+  </p>
+  <pre><code>$ cat /sys/fs/cgroup/cpu.stat
+usage_usec 45230000
+nr_periods 12043          ← কতগুলো period গেছে
+nr_throttled 3871         ← কতগুলোতে throttled হয়েছি
+throttled_usec 288400000  ← মোট কত সময় থেমে থেকেছি
+
+# throttle এর হার
+# 3871 / 12043 = 32% period এ throttled!
+# এটা যেকোনো latency-সংবেদনশীল service এ গুরুতর</code></pre>
+  <p>
+    Kubernetes এ একই তথ্য:
+    <code>container_cpu_cfs_throttled_periods_total</code> /
+    <code>container_cpu_cfs_periods_total</code>। এই অনুপাতটা
+    আপনার dashboard এ থাকা উচিত — CPU usage এর পাশে।
+    ৫% এর উপরে হলে তদন্ত করার মতো।
+  </p>
+</div>
+
+<h3 id="c7-sizing">আসল কারণ — runtime ভুল সংখ্যা দেখছে</h3>
+
+<p>
+  Chapter 2 এ বলেছিলাম container এর ভিতরে
+  <code>/proc/cpuinfo</code> host এর core দেখায়। এখন তার
+  পরিণতিটা স্পষ্ট:
+</p>
+
+<pre class="ascii"><code>  Host: 64 core        Container: limits.cpu = 2
+
+  ┌────────────────────────────────────────────────┐
+  │ Go:      runtime.NumCPU() → 64                 │
+  │          GOMAXPROCS = 64 → 64টা OS thread      │
+  │                                                │
+  │ Java:    availableProcessors() → 64            │
+  │          ForkJoinPool = 63, GC thread = 64...  │
+  │                                                │
+  │ Node:    libuv threadpool default 4 (ঠিক আছে)  │
+  │          কিন্তু cluster.fork() যদি             │
+  │          os.cpus().length ধরে → 64টা process!  │
+  │                                                │
+  │ nginx:   worker_processes auto → 64            │
+  └────────────────────────────────────────────────┘
+            ↓
+  ২ core এর quota, ৬৪ ভাগে ভাগ হচ্ছে
+  → quota দ্রুত পুড়ছে → throttling
+  → সাথে অকারণ context switch (chapter 4 এর খরচ)</code></pre>
+
+<p>সমাধান তিনটা স্তরে:</p>
+
+<div class="codewrap"><span class="lang">yaml</span>
+<pre><code># 1. Go — runtime কে সত্যিটা জানান
+env:
+  - name: GOMAXPROCS
+    valueFrom:
+      resourceFieldRef:
+        resource: limits.cpu     # k8s এই মান inject করবে
+
+# বা code এ automaxprocs library ব্যবহার করুন:
+#   import _ "go.uber.org/automaxprocs"
+# সে cgroup পড়ে GOMAXPROCS ঠিক করে দেয়</code></pre></div>
+
+<div class="codewrap"><span class="lang">bash</span>
+<pre><code># 2. Java — JDK 10+ নিজেই cgroup পড়ে, কিন্তু যাচাই করুন
+$ java -XX:+PrintFlagsFinal -version | grep ActiveProcessorCount
+# জোর করে দিতে চাইলে:
+$ java -XX:ActiveProcessorCount=2 -jar app.jar
+
+# heap ও cgroup-সচেতন করুন (পুরনো -Xmx এর বদলে)
+$ java -XX:MaxRAMPercentage=75 -jar app.jar</code></pre></div>
+
+<div class="codewrap"><span class="lang">javascript</span>
+<pre><code>// 3. Node — cluster এ os.cpus().length ব্যবহার করবেন না
+const os = require('os');
+const fs = require('fs');
+
+function cpuQuota() {
+  try {
+    // cgroup v2: "200000 100000" → 2 cores
+    const [quota, period] = fs
+      .readFileSync('/sys/fs/cgroup/cpu.max', 'utf8')
+      .trim().split(/\s+/);
+    if (quota !== 'max') return Math.max(1, Math.floor(quota / period));
+  } catch (e) { /* not in a cgroup v2 container */ }
+  return os.cpus().length;
+}
+
+const workers = cpuQuota();   // NOT os.cpus().length</code></pre></div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Throttling এড়াতে <code>limits.cpu</code> বাড়িয়ে
+    দিলেই হবে।"</strong>
+  </p>
+  <p>
+    আংশিক সত্য, কিন্তু প্রায়ই ভুল ওষুধ। তিনটা কথা:
+  </p>
+  <ul>
+    <li>
+      <strong>Thread সংখ্যা ঠিক করা বেশি কার্যকর।</strong>
+      ৬৪টা thread কে ২ core এ চালানোর বদলে ২টা thread চালালে
+      quota একই থাকলেও throttling নাটকীয়ভাবে কমে, আর context
+      switch এর খরচও বাঁচে।
+    </li>
+    <li>
+      <strong><code>limits</code> সম্পূর্ণ সরিয়ে দেওয়া</strong>
+      একটা বৈধ কৌশল — শুধু <code>requests</code> রেখে।
+      তাহলে <code>cpu.weight</code> দিয়ে আপেক্ষিক ভাগ নিশ্চিত
+      থাকে, কিন্তু কোনো কঠিন সীমা নেই, তাই throttling ও নেই।
+      অনেক জায়গায় latency-সংবেদনশীল service এর জন্য এটাই
+      সুপারিশ। দাম: একটা pod অন্যদের চেপে ধরতে পারে (noisy
+      neighbor), তাই এটা নির্ভর করে আপনি কাদের সাথে node ভাগ
+      করছেন।
+    </li>
+    <li>
+      <strong>Period ছোট করা</strong> — <code>cpu.max</code> এর
+      দ্বিতীয় সংখ্যাটা কমালে (যেমন ১০০ms → ২০ms) throttling এর
+      স্থবিরতা ছোট ছোট টুকরোয় ভাগ হয়, তাই latency কাঁটা ছোট হয়।
+      Kubernetes এ এটা node-স্তরের setting
+      (<code>cpuCFSQuotaPeriod</code>), pod-স্তরে নয়।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c7-lockholder">Lock holder preemption — যেখানে দুটো বিষয় মেলে</h2>
+
+<p>
+  একটা সূক্ষ্ম কিন্তু মারাত্মক মিথস্ক্রিয়া, যেটা chapter 15
+  (lock) এর সাথে জুড়ে আছে।
+</p>
+
+<p>
+  ধরুন আপনার application এ একটা spin lock আছে — যে thread lock
+  পায়নি সে অপেক্ষা না করে ঘুরতে থাকে (spin), কারণ ধরে নেওয়া হয়
+  lock টা মাইক্রোসেকেন্ডে ছাড়া হবে।
+</p>
+
+<pre class="ascii"><code>  thread A: lock ধরল, critical section এ ঢুকল
+       │
+       │  ⚡ quota শেষ → A throttled!
+       │
+       │  A থেমে আছে ৯০ms, lock এখনো তার হাতে
+       ▼
+  thread B: spin করছে... করছে... করছে...
+            (নিজের quota পোড়াচ্ছে অকারণে,
+             যার ফলে throttling আরও খারাপ হচ্ছে)
+
+  একটা মাইক্রোসেকেন্ডের critical section
+  ৯০ মিলিসেকেন্ডের স্থবিরতা হয়ে গেল।</code></pre>
+
+<p>
+  এখানে single-CPU এর বিশ্লেষণটা শুধু নিরাশাবাদী নয়,
+  <strong>ভুল</strong>। Spin lock এর পুরো যুক্তি দাঁড়িয়ে আছে
+  "lock holder চলছে আর শিগগিরই ছাড়বে" এই অনুমানের উপর। CPU
+  quota থাকলে ওই অনুমানটাই ভেঙে যায় — lock holder জোর করে
+  থামানো থাকতে পারে।
+</p>
+
+<p>
+  এই কারণেই container-চালিত পরিবেশে userspace spin lock বিপজ্জনক,
+  আর এই কারণেই futex-ভিত্তিক mutex (যেটা অল্প spin করে তারপর
+  ঘুমিয়ে পড়ে) ভালো — সেটা chapter 15 এ।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Debug করার সময় এই ক্রমটা অনুসরণ করুন:
+  </p>
+  <pre><code># 1. throttled হচ্ছে কি?
+$ cat /sys/fs/cgroup/cpu.stat | grep -E 'nr_periods|nr_throttled'
+
+# 2. আসল limit কত?
+$ cat /sys/fs/cgroup/cpu.max
+
+# 3. runtime কত core দেখছে?
+$ nproc                       # host এর সংখ্যা দেখাতে পারে
+$ cat /sys/fs/cgroup/cpu.max  # সত্যিকারের বরাদ্দ
+
+# 4. কতগুলো thread আসলে চলছে?
+$ ls /proc/1/task | wc -l
+
+# 5. context switch অস্বাভাবিক বেশি কি?
+$ grep ctxt /proc/1/status</code></pre>
+  <p>
+    ধাপ ১ এ throttle থাকলে ধাপ ৩ আর ৪ প্রায় সবসময় কারণটা
+    দেখিয়ে দেয়: runtime ৬৪ দেখছে, ৬৪টা thread বানিয়েছে,
+    কিন্তু quota ২ core এর।
+  </p>
+</div>
+
+<h2 id="c7-summary">যা মনে রাখতে হবে</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>স্তর</th><th>কে নিয়ন্ত্রণ করে</th><th>ছাড়ালে কী হয়</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Hardware</td>
+      <td>cache, coherence, SMT, NUMA</td>
+      <td>ধীর হয়, কিন্তু চলে</td>
+    </tr>
+    <tr>
+      <td>Scheduler (EEVDF)</td>
+      <td>কোন task, কোন CPU, কখন</td>
+      <td>অপেক্ষা বাড়ে (runqueue wait)</td>
+    </tr>
+    <tr>
+      <td><code>cpu.weight</code></td>
+      <td>প্রতিযোগিতার সময় আপেক্ষিক ভাগ</td>
+      <td>কিছু হয় না — এটা সীমা নয়</td>
+    </tr>
+    <tr>
+      <td><code>cpu.max</code></td>
+      <td>কঠিন quota প্রতি period</td>
+      <td><strong>throttled — জোর করে স্থবির</strong></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটাই এই chapter এর সারকথা। বাকি সব স্তরে সীমা ছাড়ালে
+  আপনি <em>ধীর</em> হন। <code>cpu.max</code> ছাড়ালে আপনি
+  <em>থেমে</em> যান — আর থামার দৈর্ঘ্য period এর বাকি অংশ,
+  আপনার কাজের সাথে সম্পর্কহীন।
+</p>
+
+<div class="qs">
+  <h2 id="c7-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      SQMS এ একটা global lock সব scheduling সিদ্ধান্তে লাগে।
+      ৪ core এ এটা কাজ করে, ৯৬ core এ ভেঙে পড়ে। ব্যর্থতাটা
+      কি ধীরে ধীরে খারাপ হয়, নাকি একটা নির্দিষ্ট বিন্দুর পর
+      হঠাৎ? আপনার উত্তর থেকে বলুন কেন "৮ core এ benchmark
+      করে ৯৬ core এ deploy করা" বিপজ্জনক।
+    </li>
+    <li>
+      আপনার container এ <code>limits.cpu: 1</code>, আর
+      <code>cpu.stat</code> দেখাচ্ছে ৪০% period এ throttled।
+      আপনি <code>limits.cpu: 2</code> করলেন — throttling অর্ধেক
+      হবে বলে আশা করা যায় কি? Thread সংখ্যা যদি ৩২ থাকে,
+      তাহলে কোন সমাধানটা বেশি কার্যকর, আর কেন?
+    </li>
+    <li>
+      <code>lscpu --extended</code> দেখাচ্ছে CPU 0 আর CPU 1
+      একই CORE 0 তে। আপনি দুটো CPU-ভারী thread চালিয়ে দেখলেন
+      মাত্র ১.২ গুণ speedup। এটা কি আপনার code এর scaling
+      সমস্যা, নাকি অন্য কিছু? Benchmark টা ঠিকভাবে করতে
+      কী করতেন?
+    </li>
+    <li>
+      Cache coherence hardware এ সমাধান করা, তবু
+      <code>counter++</code> এ এখনো lock দরকার। Coherence
+      ঠিক কী নিশ্চিত করে, আর কী নিশ্চিত করে <em>না</em>?
+      এই পার্থক্যটা দিয়ে ব্যাখ্যা করুন কেন "আমার CPU cache
+      coherent, তাই shared variable নিরাপদ" যুক্তিটা ভুল।
+    </li>
+    <li>
+      একটা spin lock container এ বিপজ্জনক, কারণ lock holder
+      throttled হতে পারে। কিন্তু kernel এর ভিতরে spin lock
+      ব্যাপকভাবে ব্যবহৃত হয় আর সেখানে সমস্যা হয় না। পার্থক্যটা
+      কী? (সূত্র: kernel code কি throttle হয়, আর সেখানে
+      critical section কতক্ষণের?)
+    </li>
+    <li>
+      আপনার latency-সংবেদনশীল service এ throttling সমস্যা
+      করছে, আর কেউ পরামর্শ দিল <code>limits</code> সম্পূর্ণ
+      সরিয়ে দিতে। এটা কখন ঠিক সিদ্ধান্ত আর কখন বিপজ্জনক?
+      আপনার উত্তরে <code>requests</code> এর ভূমিকা আর node
+      ভাগ করার প্রসঙ্গ আনুন।
+    </li>
+  </ol>
+</div>

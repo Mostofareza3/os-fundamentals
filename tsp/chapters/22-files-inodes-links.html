@@ -1,0 +1,473 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 39, pdf p459–477</span>
+  </div>
+  <h1>File আর directory — inode, fd, link</h1>
+  <p class="ch-lede">
+    একটা file এর আসলে দুটো নাম আছে — একটা আপনি দেখেন, আরেকটা
+    kernel ব্যবহার করে। এই দুটো আলাদা করতে পারলে hard link,
+    <code>unlink</code>, "deleted file তবু disk ভরা", আর
+    atomic rename — সবকিছু একসাথে পরিষ্কার হয়ে যায়।
+  </p>
+</div>
+
+<p>
+  Chapter 20-21 এ device দেখেছি। এখন উপরের স্তর: OS ওই
+  byte গুলোকে কী abstraction হিসেবে দেখায়?
+</p>
+
+<p>
+  দুটো, আর দুটোই অসাধারণভাবে টিকে গেছে:
+</p>
+
+<ul>
+  <li>
+    <strong>File</strong> — byte এর একটা রৈখিক array,
+    যার একটা নাম আছে। OS জানে না ভিতরে কী; সেটা
+    application এর ব্যাপার।
+  </li>
+  <li>
+    <strong>Directory</strong> — নাম থেকে inode number
+    এর একটা তালিকা। Directory নিজেও একটা file, শুধু
+    বিষয়বস্তু নির্দিষ্ট গঠনের।
+  </li>
+</ul>
+
+<h2 id="c22-twonames">দুটো নাম — এটাই মূল কথা</h2>
+
+<pre class="ascii"><code>  উঁচু নাম (human)        নিচু নাম (kernel)
+  ─────────────────       ──────────────────
+  /home/mostofa/a.txt  →  inode 1234567
+
+  Directory টা শুধু একটা mapping রাখে:
+
+  /home/mostofa/  (নিজেও একটা file, inode 998)
+  ┌─────────────┬──────────┐
+  │ name        │ inode    │
+  ├─────────────┼──────────┤
+  │ .           │ 998      │  ← নিজে
+  │ ..          │ 500      │  ← parent
+  │ a.txt       │ 1234567  │
+  │ notes.md    │ 1234890  │
+  └─────────────┴──────────┘
+
+  inode টাই আসল file — সেখানে আছে আকার, permission,
+  timestamp, আর data block গুলোর ঠিকানা।
+  নামটা শুধু একটা pointer।</code></pre>
+
+<pre><code># inode number দেখা
+$ ls -li a.txt
+1234567 -rw-r--r-- 1 mostofa staff 42 Sep 17 14:03 a.txt
+   ↑ এটাই নিচু নাম
+
+$ stat a.txt
+  File: a.txt
+  Size: 42          Blocks: 8          IO Block: 4096   regular file
+Device: fd00h/64768d    Inode: 1234567     Links: 1
+                                                   ↑ কতগুলো নাম
+Access: (0644/-rw-r--r--)  Uid: (  501/mostofa)</code></pre>
+
+<h2 id="c22-fd">File descriptor — তৃতীয় স্তর</h2>
+
+<p>
+  <code>open()</code> করলে আপনি একটা <strong>file
+  descriptor</strong> পান — একটা পূর্ণসংখ্যা। কিন্তু সেটা
+  inode ও নয়, নাম ও নয়। এটা একটা তৃতীয় জিনিস, আর
+  তিনটে স্তরের এই গঠনটা না বুঝলে অনেক আচরণ অব্যাখ্যাত থাকে।
+</p>
+
+<pre class="ascii"><code>  প্রতি-process               system-wide              disk
+  ┌──────────────┐      ┌──────────────────┐      ┌──────────┐
+  │ fd table     │      │ open file table  │      │ inode    │
+  │              │      │                  │      │  table   │
+  │ 0 → ●────────┼─────▶│ offset: 0        │      │          │
+  │ 1 → ●────────┼──┐   │ flags: O_RDONLY  │──┬──▶│ inode    │
+  │ 2 → ●        │  │   │ inode: ●─────────┼──┘   │  1234567 │
+  │ 3 → ●────────┼──┼──▶│ offset: 1024     │      │  size    │
+  └──────────────┘  │   │ inode: ●─────────┼─────▶│  blocks  │
+                    │   └──────────────────┘      └──────────┘
+                    └──▶ (fd 1 আর 3 একই entry
+                         হতে পারে — dup() করলে)
+
+  গুরুত্বপূর্ণ: OFFSET টা open file table এ,
+  inode তে নয়। তাই একই file দুবার open করলে
+  দুটো আলাদা offset — কিন্তু dup() করলে একটাই।</code></pre>
+
+<p>
+  এই গঠনটা ব্যাখ্যা করে chapter 3 এর একটা জিনিস:
+  <code>fork()</code> করলে child এর fd table টা copy হয়,
+  কিন্তু <strong>open file table entry গুলো ভাগ
+  করা</strong>। তাই parent আর child একই offset ভাগ করে —
+  একজন পড়লে অন্যজনের offset ও এগিয়ে যায়।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Two opens vs one open + dup — completely different */
+
+/* Two separate opens: two offsets */
+int a = open("f.txt", O_RDONLY);
+int b = open("f.txt", O_RDONLY);
+read(a, buf, 10);          /* a's offset = 10 */
+read(b, buf, 10);          /* b's offset = 10, reads the SAME bytes */
+
+/* dup: one offset, two descriptors */
+int c = open("f.txt", O_RDONLY);
+int d = dup(c);
+read(c, buf, 10);          /* offset = 10 */
+read(d, buf, 10);          /* offset = 20, continues where c left off */</code></pre></div>
+
+<p>
+  আর এই কারণেই chapter 3 এর shell redirection কাজ করত:
+  <code>close(1)</code> করে <code>open()</code> করলে fd 1
+  একটা নতুন open file table entry তে point করে, আর
+  <code>exec()</code> এর পরেও সেটা টিকে থাকে।
+</p>
+
+<h2 id="c22-link">Hard link — একই file, একাধিক নাম</h2>
+
+<p>
+  দুটো নাম যদি একই inode number এ point করে, তাহলে
+  সেগুলো একই file — কোনটা "আসল" তা বলার উপায় নেই।
+</p>
+
+<pre><code>$ echo "hello" &gt; a.txt
+$ ln a.txt b.txt              # hard link
+
+$ ls -li
+1234567 -rw-r--r-- 2 mostofa staff 6 a.txt
+1234567 -rw-r--r-- 2 mostofa staff 6 b.txt
+   ↑ একই inode        ↑ link count = 2
+
+$ echo "world" &gt;&gt; a.txt       # a তে লিখলাম
+$ cat b.txt                   # b তেও দেখা যাচ্ছে
+hello
+world</code></pre>
+
+<pre class="ascii"><code>  a.txt ──┐
+          ├──▶ inode 1234567 (link count: 2)
+  b.txt ──┘         │
+                    └──▶ data blocks
+
+  rm a.txt করলে:
+    directory থেকে "a.txt" entry মুছল
+    link count 2 → 1
+    inode আর data অটুট (b.txt এখনো আছে)
+
+  rm b.txt করলে:
+    link count 1 → 0
+    এখন inode আর data block মুক্ত করা হলো</code></pre>
+
+<p>
+  এই কারণেই syscall টার নাম <code>rm</code> নয়,
+  <code>unlink()</code> — সে একটা <em>link</em> সরায়,
+  file মুছে না। File মুছে যায় শুধু যখন শেষ link যায়।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"File টা <code>rm</code> করেছি, তাহলে
+    <code>df</code> এ জায়গা ফেরত আসা উচিত।"</strong>
+  </p>
+  <p>
+    Link count শূন্য হওয়াই যথেষ্ট নয় — <strong>কোনো
+    process এর কাছে file টা খোলা থাকলেও inode বাঁচে</strong>।
+    কারণ ওই process এর fd এখনো ওই inode এ point করছে।
+  </p>
+  <p>
+    এটা production এ একটা ক্লাসিক সমস্যা:
+  </p>
+  <pre><code># একটা log file মুছে ফেলা হলো, কিন্তু service এখনো
+# সেটা খোলা রেখে লিখছে
+$ rm /var/log/app.log
+$ df -h /var          # জায়গা কমেনি!
+$ du -sh /var/log     # du কিন্তু ছোট দেখাচ্ছে
+                      # ← du আর df এর অসামঞ্জস্য = এই সমস্যার সংকেত
+
+# অপরাধী খুঁজুন
+$ sudo lsof +L1       # link count &lt; 1 কিন্তু খোলা file
+COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NLINK  NODE NAME
+node    4821  app   3w  REG   253,1   8.2G      0      1234 /var/log/app.log (deleted)
+                                                 ↑ শূন্য
+
+# সমাধান: process কে file টা ছাড়তে বলুন
+$ kill -USR1 4821          # অনেক service এ log reopen করে
+# বা service restart
+# অথবা জায়গা তাৎক্ষণিক ফেরত পেতে:
+$ : &gt; /proc/4821/fd/3      # file টা truncate করুন</code></pre>
+  <p>
+    এই কারণেই <code>logrotate</code> এ
+    <code>copytruncate</code> বা একটা reopen signal
+    দরকার — শুধু <code>rm</code> করলে disk ভরেই থাকবে।
+  </p>
+</div>
+
+<h2 id="c22-symlink">Symbolic link — সম্পূর্ণ আলাদা জিনিস</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Hard link</th><th>Symbolic link</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>কী রাখে</td><td>একই inode number</td><td>একটা <em>path string</em></td></tr>
+    <tr><td>নিজের inode?</td><td>না — একই inode</td><td>হ্যাঁ, আলাদা inode</td></tr>
+    <tr><td>Directory তে?</td><td>না (loop এড়াতে)</td><td>হ্যাঁ</td></tr>
+    <tr><td>Filesystem পার?</td><td>না</td><td>হ্যাঁ</td></tr>
+    <tr><td>Target মুছলে</td><td>কিছু হয় না</td><td><strong>ভেঙে যায়</strong> (dangling)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<pre><code>$ ln -s a.txt s.txt
+$ ls -li
+1234567 -rw-r--r-- 1 mostofa staff  6 a.txt
+1234999 lrwxr-xr-x 1 mostofa staff  5 s.txt -&gt; a.txt
+   ↑ আলাদা inode      ↑ 'l' = symlink   ↑ আকার 5 = "a.txt" এর দৈর্ঘ্য!
+
+$ rm a.txt
+$ cat s.txt
+cat: s.txt: No such file or directory    ← dangling symlink</code></pre>
+
+<p>
+  Symlink এর আকারটা লক্ষ করুন — ৫ byte, কারণ সে শুধু
+  <code>"a.txt"</code> এই string টা ধরে রাখে। এটা
+  Windows এর shortcut এর মতো: একটা নির্দেশিকা, target
+  নিজে নয়।
+</p>
+
+<h2 id="c22-rename">Atomic rename — সবচেয়ে কাজের গ্যারান্টি</h2>
+
+<p>
+  <code>rename()</code> POSIX এর একটা মূল্যবান প্রতিশ্রুতি
+  দেয়: <strong>এটা atomic</strong>। যেকোনো পর্যবেক্ষক হয়
+  পুরনো file দেখবে, নয় নতুনটা — কখনো অর্ধেক অবস্থা নয়।
+</p>
+
+<p>
+  এটাই "safe file update" এর ভিত্তি:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The safe-write pattern. Every step matters. */
+int fd = open("config.json.tmp",
+              O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+write(fd, data, len);
+
+/* 1. Force the DATA to stable storage before renaming.
+      Without this, a crash can leave config.json existing
+      but containing garbage — worse than the old version. */
+fsync(fd);
+close(fd);
+
+/* 2. The atomic swap. */
+rename("config.json.tmp", "config.json");
+
+/* 3. Force the DIRECTORY entry too — chapter 25's subject.
+      Without this, the rename itself can be lost. */
+int dfd = open(".", O_RDONLY | O_DIRECTORY);
+fsync(dfd);
+close(dfd);</code></pre></div>
+
+<p>
+  ধাপ ১ আর ৩ প্রায়ই বাদ পড়ে, আর সেটাই chapter 25 এর
+  পুরো বিষয়। এখানে শুধু মনে রাখুন: <code>rename()</code>
+  atomic হওয়া মানে "crash এ নিরাপদ" নয় — atomicity আর
+  durability দুটো আলাদা গ্যারান্টি।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই pattern টা আপনার চারপাশে:
+  </p>
+  <ul>
+    <li>
+      <strong>Git</strong> — object গুলো immutable, আর ref
+      হালনাগাদ হয় ঠিক এই <code>write-tmp + rename</code>
+      দিয়ে। <code>.git/refs/heads/main.lock</code> file
+      টা এই protocol এর অংশ।
+    </li>
+    <li>
+      <strong>SQLite</strong> এর rollback journal আর
+      atomic commit rename এর উপর নির্ভর করে।
+    </li>
+    <li>
+      <strong>Editor</strong> গুলো (vim, VS Code) save
+      করার সময় এটাই করে — তাই save এর মাঝখানে crash
+      করলেও আপনার পুরনো file অটুট থাকে।
+    </li>
+    <li>
+      <strong>Docker/containerd</strong> image layer
+      লেখার সময় একই pattern, আর সেই কারণেই একটা আংশিক
+      download কখনো corrupt layer হিসেবে দেখা যায় না।
+    </li>
+  </ul>
+</div>
+
+<h2 id="c22-api">API এর বাকি অংশ</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Reading a directory — it is just a file with structure */
+DIR *dp = opendir(".");
+struct dirent *d;
+while ((d = readdir(dp)) != NULL) {
+    printf("%lu %s\n", (unsigned long) d-&gt;d_ino, d-&gt;d_name);
+}
+closedir(dp);
+
+/* Metadata */
+struct stat st;
+stat("a.txt", &amp;st);        /* follows symlinks */
+lstat("s.txt", &amp;st);       /* does NOT follow — inspects the link */
+fstat(fd, &amp;st);            /* by descriptor — no path race */
+
+/* Permissions: chmod, chown */
+chmod("a.txt", 0644);
+
+/* Random access */
+lseek(fd, 1024, SEEK_SET); /* just moves the offset — no I/O */
+
+/* Truncate / extend */
+ftruncate(fd, 0);          /* empty it, keeping the fd valid */</code></pre></div>
+
+<p>
+  ওই <code>fstat</code> বনাম <code>stat</code> পার্থক্যটা
+  নিরাপত্তার জন্য গুরুত্বপূর্ণ: path দিয়ে কাজ করলে
+  <strong>TOCTOU (Time-Of-Check to Time-Of-Use)</strong>
+  race হতে পারে — আপনি check করার পর কেউ path টা একটা
+  symlink দিয়ে বদলে দিল। Descriptor দিয়ে কাজ করলে সেই
+  সুযোগ নেই, কারণ fd টা একটা নির্দিষ্ট inode এ বাঁধা।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* TOCTOU — the check and the use can be separated */
+if (stat(path, &amp;st) == 0 &amp;&amp; S_ISREG(st.st_mode)) {
+    /* ← attacker replaces `path` with a symlink to /etc/passwd */
+    int fd = open(path, O_WRONLY);      /* now writing the wrong file */
+}
+
+/* Safer: open first, then inspect the descriptor */
+int fd = open(path, O_WRONLY | O_NOFOLLOW);
+if (fd &gt;= 0 &amp;&amp; fstat(fd, &amp;st) == 0 &amp;&amp; S_ISREG(st.st_mode)) {
+    /* the fd cannot have been swapped */
+}
+
+/* Better still for directory-relative work: the *at() family */
+int dfd = open("/safe/dir", O_RDONLY | O_DIRECTORY);
+int fd2 = openat(dfd, "file.txt", O_RDONLY);   /* no path re-walk */</code></pre></div>
+
+<h2 id="c22-mount">Mount — নামের space জোড়া লাগানো</h2>
+
+<p>
+  একাধিক file system একটা গাছে জোড়া লাগানো হয়
+  <strong>mount</strong> দিয়ে:
+</p>
+
+<pre class="ascii"><code>  /                    ← root fs (nvme0n1p2, ext4)
+  ├── home/            ← একই fs
+  ├── mnt/
+  │   └── data/        ← ভিন্ন fs এখানে mounted (nvme1n1, xfs)
+  │       └── logs/
+  ├── proc/            ← procfs — disk এ কিছুই নেই (ch 2)
+  ├── sys/             ← sysfs
+  └── dev/shm/         ← tmpfs — RAM এ
+
+  একই inode number দুটো ভিন্ন fs এ থাকতে পারে!
+  তাই একটা file কে বিশ্বজনীনভাবে চিহ্নিত করতে
+  লাগে (device id, inode number) — সেটাই
+  stat এর st_dev আর st_ino।</code></pre>
+
+<p>
+  এটাই কারণ hard link filesystem পার হতে পারে না —
+  inode number অন্য fs এ অর্থহীন।
+</p>
+
+<pre><code>$ findmnt --real | head -6
+TARGET      SOURCE          FSTYPE OPTIONS
+/           /dev/nvme0n1p2  ext4   rw,relatime
+/boot/efi   /dev/nvme0n1p1  vfat   rw,relatime
+/mnt/data   /dev/nvme1n1    xfs    rw,noatime
+
+# একই inode number, ভিন্ন device — ভিন্ন file
+$ stat -c '%d %i %n' / /mnt/data</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"File এর নাম file এর একটা বৈশিষ্ট্য।"</strong>
+  </p>
+  <p>
+    উল্টো। নামটা <em>directory</em> এর বৈশিষ্ট্য, file এর নয়।
+    Inode এর ভিতরে file এর নাম <strong>লেখাই নেই</strong> —
+    আকার, permission, timestamp, block pointer আছে,
+    কিন্তু নাম নেই।
+  </p>
+  <p>
+    এই একটা তথ্য থেকে তিনটে জিনিস ব্যাখ্যা হয়:
+  </p>
+  <ul>
+    <li>
+      একটা file এর অনেক নাম থাকতে পারে (hard link) —
+      কারণ নামটা বাইরে থেকে দেওয়া।
+    </li>
+    <li>
+      একটা file এর <em>কোনো</em> নাম না থাকতেও চলতে পারে —
+      ওই <code>lsof +L1</code> এর deleted-but-open file।
+      এটা একটা কৌশল হিসেবেও ব্যবহৃত হয়: একটা temp file
+      বানিয়ে সাথে সাথে <code>unlink</code> করা, তাহলে
+      process মরলে kernel নিজেই জায়গা ফেরত নেয়।
+    </li>
+    <li>
+      একটা file এর নাম বদলানো (<code>rename</code>) মানে
+      file টা ছোঁয়াই হয় না — শুধু directory entry বদলায়।
+      তাই ১০০GB file এর rename তাৎক্ষণিক।
+    </li>
+  </ul>
+</div>
+
+<div class="qs">
+  <h2 id="c22-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Inode এ file এর নাম লেখা নেই। এই একটা তথ্য থেকে
+      ব্যাখ্যা করুন কেন (ক) একটা ১০০GB file এর
+      <code>mv</code> তাৎক্ষণিক (একই fs এ), কিন্তু
+      (খ) ভিন্ন fs এ <code>mv</code> করলে সময় লাগে।
+    </li>
+    <li>
+      <code>du</code> বলছে ২GB, <code>df</code> বলছে ৫০GB
+      ব্যবহৃত। কী ঘটেছে, কোন কমান্ড দিয়ে নিশ্চিত হবেন,
+      আর service restart ছাড়া জায়গা ফেরত পাওয়ার একটা
+      উপায় বলুন।
+    </li>
+    <li>
+      দুটো <code>open()</code> বনাম একটা <code>open()</code>
+      + <code>dup()</code> — offset এর আচরণ আলাদা। Chapter 3
+      এর <code>fork()</code> কোনটার মতো ব্যবহার করে, আর
+      সেটা কী সমস্যা তৈরি করতে পারে যদি parent আর child
+      দুজনেই একই file এ লেখে?
+    </li>
+    <li>
+      <code>rename()</code> atomic, কিন্তু "crash এ নিরাপদ"
+      নয়। Atomicity আর durability এর পার্থক্যটা একটা
+      concrete ক্রম দিয়ে দেখান — কোথায় crash করলে
+      atomic rename এর পরেও data হারাবে।
+    </li>
+    <li>
+      TOCTOU race এ <code>stat</code> তারপর
+      <code>open</code> অনিরাপদ, কিন্তু <code>open</code>
+      তারপর <code>fstat</code> নিরাপদ। ঠিক কী বদলায় —
+      কোন জিনিসটা fd কে path এর চেয়ে নিরাপদ করে?
+    </li>
+    <li>
+      Hard link filesystem পার হতে পারে না কিন্তু symlink
+      পারে। এই পার্থক্যটা দুটোর <em>কী রাখে</em> সেই
+      তথ্য থেকে বের করুন। আর একটা container এ
+      bind-mount করা directory তে hard link বানাতে গেলে
+      কী হবে বলে আপনার মনে হয়?
+    </li>
+  </ol>
+</div>

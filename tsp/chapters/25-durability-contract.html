@@ -1,0 +1,590 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· সম্পূর্ণ নতুন — outline এর সর্বোচ্চ প্রাধান্য</span>
+  </div>
+  <h1>Durability contract — write, fsync, আর যা হারায়</h1>
+  <p class="ch-lede">
+    Chapter 1 এ প্রশ্নটা তুলেছিলাম: <code>write()</code> ফেরা
+    মানে কি data নিরাপদ? উত্তর: না। এই chapter এ পুরো শৃঙ্খলটা —
+    application থেকে NAND cell পর্যন্ত — আর প্রতিটা ধাপে
+    ঠিক কী প্রতিশ্রুতি আছে। Data হারানো সবচেয়ে খারাপ
+    ব্যর্থতা, আর এই API টা আপনি রোজ ডাকেন।
+  </p>
+</div>
+
+<p>
+  Chapter 24 এ দেখেছি <code>write()</code> শুধু page cache
+  এ পৌঁছায়। এখন প্রশ্ন: তাহলে নিশ্চিত হব কীভাবে?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা লেখা যে সত্যিই টিকে থাকবে — power loss, kernel
+    panic, বা container kill এর পরেও — সেটা নিশ্চিত করতে
+    কী কী করতে হবে? আর প্রতিটা ধাপে কে কী প্রতিশ্রুতি দেয়?
+  </p>
+</div>
+
+<h2 id="c25-chain">পুরো শৃঙ্খল</h2>
+
+<pre class="ascii"><code>  আপনার data কোথায় কোথায় থাকতে পারে:
+
+  ┌──────────────────────────────────────────────────────┐
+  │ ১. application buffer  (যেমন stdio এর FILE*)         │
+  │    হারায়: process crash এ                            │  ← volatile
+  ├──────────────────────────────────────────────────────┤
+  │      ↓ fflush()  বা  বড় লেখা                        │
+  ├──────────────────────────────────────────────────────┤
+  │ ২. kernel page cache                                 │
+  │    হারায়: power loss, kernel panic এ                 │  ← volatile
+  │    টেকে:  process crash, container kill এ ✓          │
+  ├──────────────────────────────────────────────────────┤
+  │      ↓ fsync() / fdatasync()                         │
+  ├──────────────────────────────────────────────────────┤
+  │ ৩. device এর write cache (DRAM, drive এর ভিতরে)      │
+  │    হারায়: power loss এ — যদি PLP না থাকে             │  ← ⚠ এখানেই
+  ├──────────────────────────────────────────────────────┤     বেশিরভাগ
+  │      ↓ FLUSH / FUA command (fsync এটাও পাঠায়)        │     ভুল হয়
+  ├──────────────────────────────────────────────────────┤
+  │ ৪. NAND cell / platter — সত্যিকারের stable storage   │  ← এখন নিরাপদ
+  └──────────────────────────────────────────────────────┘
+
+  মূল কথা: process crash আর power loss দুটো
+           সম্পূর্ণ আলাদা failure mode।
+           ২ নম্বর স্তর প্রথমটায় বাঁচে, দ্বিতীয়টায় নয়।</code></pre>
+
+<p>
+  এই পার্থক্যটা কাজের: আপনার application যদি শুধু নিজের
+  crash থেকে বাঁচতে চায়, page cache যথেষ্ট — kernel বেঁচে
+  আছে, সে পরে লিখে দেবে। কিন্তু power loss বা kernel
+  panic এর বিরুদ্ধে <code>fsync()</code> ছাড়া কিছুই নেই।
+</p>
+
+<h2 id="c25-api">API — কোনটা কী করে</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Call</th><th>কী নিশ্চিত করে</th><th>খরচ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>write()</code></td>
+      <td>data page cache এ</td>
+      <td class="num">~১ µs</td>
+    </tr>
+    <tr>
+      <td><code>fdatasync(fd)</code></td>
+      <td>file এর <strong>data</strong> + অপরিহার্য metadata (size) stable storage এ</td>
+      <td class="num">~১০ µs – ১০ ms</td>
+    </tr>
+    <tr>
+      <td><code>fsync(fd)</code></td>
+      <td>data + <strong>সব</strong> metadata (mtime সহ)</td>
+      <td class="num">~২০ µs – ২০ ms</td>
+    </tr>
+    <tr>
+      <td><code>sync()</code></td>
+      <td>সব file system এর সব dirty page (অন্ধভাবে)</td>
+      <td>খুব বেশি</td>
+    </tr>
+    <tr>
+      <td><code>O_SYNC</code> flag</td>
+      <td>প্রতিটা <code>write()</code> নিজেই sync</td>
+      <td>প্রতি লেখায় পূর্ণ খরচ</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <code>fsync</code> আর <code>fdatasync</code> এর
+  পার্থক্যটা ব্যবহারিক: <code>fsync</code> mtime ও লেখে,
+  যেটা একটা বাড়তি metadata write। একটা database এর WAL
+  file এ mtime কেউ দেখে না — তাই <code>fdatasync</code>
+  যথেষ্ট, আর সেটা মাপা যায় দ্রুত। Postgres এর
+  <code>wal_sync_method</code> ঠিক এই পছন্দটা।
+</p>
+
+<h2 id="c25-parentdir">সবচেয়ে বেশি ভুল হয় — parent directory</h2>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"File টা <code>fsync</code> করেছি, তাই
+    নিরাপদ।"</strong>
+  </p>
+  <p>
+    একটা <em>নতুন</em> file এর ক্ষেত্রে এটা যথেষ্ট নয়।
+    কারণ file এর <strong>নাম</strong> file এর ভিতরে নেই —
+    chapter 22 এর সেই অন্তর্দৃষ্টি: নামটা parent
+    directory তে থাকে।
+  </p>
+  <pre><code>int fd = open("data.txt", O_CREAT | O_WRONLY, 0644);
+write(fd, buf, len);
+fsync(fd);          /* data নিরাপদ, inode নিরাপদ */
+close(fd);
+/* ⚡ power loss এখানে */
+
+/* Reboot এর পর: data.txt টা হয়তো নেই!
+   inode আর data block লেখা হয়েছে, কিন্তু
+   directory তে "data.txt → inode" entry টা
+   এখনো page cache এ ছিল। */</code></pre>
+  <p>
+    সঠিক রূপ — <strong>parent directory ও
+    fsync করতে হবে</strong>:
+  </p>
+  <pre><code>int fd = open("data.txt", O_CREAT | O_WRONLY, 0644);
+write(fd, buf, len);
+fsync(fd);
+close(fd);
+
+int dfd = open(".", O_RDONLY | O_DIRECTORY);
+fsync(dfd);         /* ← এই লাইনটাই বাদ পড়ে */
+close(dfd);</code></pre>
+  <p>
+    কখন লাগে: file <strong>তৈরি</strong>, <strong>মুছা</strong>,
+    বা <strong>rename</strong> করলে — অর্থাৎ যখন directory
+    entry বদলায়। শুধু বিদ্যমান file এ লিখলে লাগে না।
+  </p>
+</div>
+
+<h2 id="c25-safewrite">নিরাপদ update এর সম্পূর্ণ রূপ</h2>
+
+<p>
+  Chapter 22 এ atomic rename দেখেছি। এখন তার সাথে
+  durability যোগ করে পূর্ণ protocol:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The complete safe-replace protocol.
+   Every step exists because of a specific failure mode. */
+int safe_replace(const char *path, const void *data, size_t len) {
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, getpid());
+
+    /* 1. Write to a temporary file */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd &lt; 0) return -1;
+
+    if (write_all(fd, data, len) &lt; 0) goto fail;
+
+    /* 2. Data to stable storage BEFORE the rename.
+          Without this: rename succeeds, then power loss, and
+          config.txt exists but holds garbage — WORSE than
+          keeping the old version. */
+    if (fsync(fd) &lt; 0) goto fail;
+
+    /* 3. Check close() too — on some filesystems (NFS!)
+          errors surface only here. */
+    if (close(fd) &lt; 0) { fd = -1; goto fail; }
+    fd = -1;
+
+    /* 4. The atomic swap (chapter 22) */
+    if (rename(tmp, path) &lt; 0) goto fail;
+
+    /* 5. Persist the DIRECTORY ENTRY created by the rename */
+    int dfd = open(dirname_of(path), O_RDONLY | O_DIRECTORY);
+    if (dfd &lt; 0) return -1;
+    if (fsync(dfd) &lt; 0) { close(dfd); return -1; }
+    close(dfd);
+
+    return 0;
+
+fail:
+    if (fd &gt;= 0) close(fd);
+    unlink(tmp);
+    return -1;
+}</code></pre></div>
+
+<p>
+  পাঁচটা ধাপ, আর প্রতিটা একটা নির্দিষ্ট failure mode এর
+  উত্তর। ধাপ ২ বাদ দিলে সবচেয়ে খারাপ ফল: আপনি পুরনো
+  ভালো version হারিয়ে একটা corrupt নতুন version পাবেন।
+</p>
+
+<h2 id="c25-fsyncgate">fsyncgate — যখন fsync নিজেই মিথ্যা বলে</h2>
+
+<div class="box old">
+  <div class="box-t">২০১৮ — একটা শিক্ষামূলক বিপর্যয়</div>
+  <p>
+    Postgres এর developer রা একটা ভয়ানক জিনিস আবিষ্কার
+    করলেন। প্রশ্নটা ছিল: <code>fsync()</code> যদি
+    <strong>ব্যর্থ</strong> হয়, তখন কী হয়?
+  </p>
+  <pre><code>write(fd, buf, len);      /* page cache এ, DIRTY */
+fsync(fd);                /* → -1, EIO!  disk error */
+
+/* এখন আপনি কী করবেন? স্বাভাবিক প্রতিক্রিয়া: retry */
+fsync(fd);                /* → 0, সফল!  */
+
+/* ⚠ কিন্তু এই "সফল" একটা মিথ্যা।
+   Linux প্রথম ব্যর্থতায় page টাকে CLEAN চিহ্নিত
+   করে দিয়েছিল (error টা রিপোর্ট করার পর সে ধরে
+   নিয়েছিল কাজ শেষ)। তাই দ্বিতীয় fsync এর কাছে
+   লেখার মতো কিছুই নেই — সে সফল হয়, কারণ
+   করার কিছু নেই। আপনার data চিরতরে হারিয়ে গেছে। */</code></pre>
+  <p>
+    এই ঘটনার নাম <strong>fsyncgate</strong>, আর এর
+    ফলাফল:
+  </p>
+  <ul>
+    <li>
+      <strong>Postgres</strong> নিজের আচরণ বদলাল:
+      <code>fsync</code> ব্যর্থ হলে সে এখন
+      <code>PANIC</code> করে — পুরো server বন্ধ করে
+      WAL থেকে recovery চালায়। কারণ একটাই নিরাপদ
+      অনুমান: "আমি জানি না কী হারিয়েছে, তাই আবার শুরু করি।"
+    </li>
+    <li>
+      <strong>MySQL, MongoDB, WiredTiger</strong> — সবাই
+      একই পথে গেল।
+    </li>
+    <li>
+      <strong>Linux kernel</strong> (4.13+) error
+      reporting উন্নত করল, কিন্তু মূল নীতিটা বদলায়নি:
+      <strong>একটা ব্যর্থ <code>fsync</code> retry করা
+      নিরাপদ নয়</strong>।
+    </li>
+  </ul>
+  <p>
+    শিক্ষা: <code>fsync()</code> ব্যর্থ হলে আপনার
+    process এর আর কোনো নিরাপদ পথ নেই তাতে লেখা
+    চালিয়ে যাওয়ার। Crash করুন আর recovery চালান —
+    এটাই সঠিক আচরণ, আর এটা প্রতিস্বজ্ঞাত।
+  </p>
+</div>
+
+<h2 id="c25-device">Device এর প্রতারণা — আর PLP</h2>
+
+<p>
+  <code>fsync()</code> সফল হলো, kernel তার কাজ করেছে।
+  কিন্তু drive কি সত্যিই লিখেছে?
+</p>
+
+<pre class="ascii"><code>  প্রতিটা drive এর ভিতরে একটা DRAM write cache আছে
+  (~২৫৬ MB – ১ GB সাধারণ SSD তে)।
+
+  fsync() একটা FLUSH command পাঠায়:
+    "তোমার cache খালি করে NAND এ লেখো"
+
+  সৎ drive:     FLUSH পেয়ে সত্যিই লেখে, তারপর সাড়া দেয়
+  অসৎ drive:    সাথে সাথে "হয়ে গেছে" বলে দেয় (দ্রুত দেখায়!)
+                → power loss এ ওই data হারায়
+
+  ঐতিহাসিকভাবে কিছু consumer drive এটা করত।
+  আজকের বড় সমস্যা আলাদা:
+
+  PLP (Power Loss Protection — drive এর ভিতরে capacitor,
+  যা power গেলে cache টা NAND এ লেখার মতো যথেষ্ট
+  বিদ্যুৎ জমা রাখে)
+
+  Enterprise SSD  → PLP আছে → cache নিরাপদ, fsync দ্রুত
+  Consumer SSD    → PLP নেই → FLUSH সত্যিই NAND পর্যন্ত
+                                যেতে হয় → ধীর
+
+  এই কারণেই একটা enterprise SSD এ fsync ~২০µs আর
+  একটা consumer SSD এ ~২ms হতে পারে — ১০০ গুণ।
+  Benchmark এ consumer drive দ্রুত দেখাতে পারে
+  (cache এ লিখে সাড়া দেয়), কিন্তু fsync-ভারী
+  workload এ enterprise drive জেতে।</code></pre>
+
+<pre><code># write cache চালু আছে কি
+$ sudo hdparm -W /dev/sda
+ write-caching =  1 (on)
+
+# NVMe তে volatile write cache
+$ sudo nvme id-ctrl /dev/nvme0 | grep -i vwc
+vwc  : 0x1        ← volatile write cache আছে
+
+# drive টা কি FLUSH সমর্থন করে / PLP আছে কি
+$ sudo nvme id-ctrl /dev/nvme0 | grep -i -E 'apsta|rtd3'
+# PLP সাধারণত datasheet এ থাকে; "Enhanced Power Loss
+# Protection" খুঁজুন
+
+# আপনার stack সত্যিই durable কি — পরীক্ষা করার যন্ত্র
+$ # diskchecker.pl (Postgres wiki) — অন্য মেশিন থেকে
+$ # power কেটে যাচাই করে। একমাত্র নির্ভরযোগ্য পরীক্ষা।</code></pre>
+
+<h2 id="c25-cost">খরচ আর trade-off</h2>
+
+<p>
+  <code>fsync()</code> খরচি, তাই প্রতিটা system এ একটা
+  knob থাকে — আর সেই knob টা আসলে
+  "কতটুকু data হারাতে রাজি" এর একটা ঘোষণা:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>System</th><th>Setting</th><th>হারানোর ঝুঁকি</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="2"><strong>Postgres</strong></td>
+      <td><code>synchronous_commit = on</code></td>
+      <td>কিছুই না (committed transaction)</td>
+    </tr>
+    <tr>
+      <td><code>synchronous_commit = off</code></td>
+      <td>শেষ <code>wal_writer_delay</code> (~২০০ms)</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><strong>Redis</strong></td>
+      <td><code>appendfsync always</code></td>
+      <td>কিছুই না (কিন্তু খুব ধীর)</td>
+    </tr>
+    <tr>
+      <td><code>appendfsync everysec</code> (default)</td>
+      <td>শেষ ১ সেকেন্ড</td>
+    </tr>
+    <tr>
+      <td><code>appendfsync no</code></td>
+      <td>OS যা জমিয়েছে (~৩০ সেকেন্ড)</td>
+    </tr>
+    <tr>
+      <td rowspan="2"><strong>SQLite</strong></td>
+      <td><code>PRAGMA synchronous = FULL</code></td>
+      <td>কিছুই না</td>
+    </tr>
+    <tr>
+      <td><code>synchronous = OFF</code></td>
+      <td><strong>database corrupt হতে পারে</strong></td>
+    </tr>
+    <tr>
+      <td><strong>MySQL</strong></td>
+      <td><code>innodb_flush_log_at_trx_commit</code> = 1 / 2 / 0</td>
+      <td>কিছুই না / OS crash এ ১s / ১s</td>
+    </tr>
+    <tr>
+      <td><strong>etcd</strong></td>
+      <td>সবসময় fsync</td>
+      <td>কিছুই না — তাই ধীর disk এ cluster অস্থির</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  SQLite এর শেষ সারিটা লক্ষ করুন — অন্যদের চেয়ে গুরুতর।
+  বেশিরভাগ system এ <code>fsync</code> কমালে আপনি
+  <em>সাম্প্রতিক</em> data হারান, কিন্তু database টা
+  সুস্থ থাকে। SQLite এ <code>synchronous=OFF</code> মানে
+  লেখার <em>ক্রম</em> ও নিশ্চিত নয়, তাই পুরো file
+  corrupt হতে পারে — একটা সম্পূর্ণ ভিন্ন মাপের ক্ষতি।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Group commit — the standard way to make fsync affordable.
+   Instead of one fsync per transaction, batch them. */
+
+/* Naive: 1000 transactions = 1000 fsyncs = 1000 × 2ms = 2 s */
+for (each txn) { write_wal(txn); fsync(wal_fd); }
+
+/* Group commit: wait a moment, collect, then one fsync.
+   1000 transactions = ~10 fsyncs = 20 ms */
+for (;;) {
+    collect_pending_txns(&amp;batch, /* wait */ 1 /* ms */);
+    for (t in batch) write_wal(t);
+    fsync(wal_fd);                    /* ONE fsync for all */
+    for (t in batch) reply_committed(t);
+}</code></pre></div>
+
+<p>
+  এটাই Postgres এর <code>commit_delay</code>, MySQL এর
+  group commit, আর Kafka এর <code>linger.ms</code> —
+  সবগুলো একই ধারণা: <strong>একটু latency যোগ করে
+  throughput অনেক বাড়ানো</strong>।
+</p>
+
+<h2 id="c25-langs">আপনার ভাষায় এটা কোথায়</h2>
+
+<div class="codewrap"><span class="lang">javascript</span>
+<pre><code>// Node — fs.writeFile does NOT fsync. This is not durable:
+await fs.writeFile('data.json', JSON.stringify(obj));
+
+// Durable version:
+const fh = await fs.open('data.json.tmp', 'w');
+await fh.writeFile(JSON.stringify(obj));
+await fh.sync();                      // ← fsync
+await fh.close();
+await fs.rename('data.json.tmp', 'data.json');
+
+// And the parent directory:
+const dh = await fs.open('.', 'r');
+await dh.sync();
+await dh.close();</code></pre></div>
+
+<div class="codewrap"><span class="lang">go</span>
+<pre><code>// Go — os.WriteFile does not sync either
+f, _ := os.CreateTemp(dir, "tmp-*")
+f.Write(data)
+f.Sync()                              // fsync
+f.Close()
+os.Rename(f.Name(), target)
+
+// Parent directory
+d, _ := os.Open(dir)
+d.Sync()
+d.Close()</code></pre></div>
+
+<div class="codewrap"><span class="lang">python</span>
+<pre><code># Python — two levels of buffering to flush!
+with open('data.tmp', 'w') as f:
+    f.write(data)
+    f.flush()            # Python's buffer → kernel
+    os.fsync(f.fileno()) # kernel → disk   ← both needed
+
+os.replace('data.tmp', 'data.json')   # atomic rename
+
+dfd = os.open('.', os.O_DIRECTORY)
+os.fsync(dfd)
+os.close(dfd)</code></pre></div>
+
+<p>
+  Python এর উদাহরণটা শৃঙ্খলের প্রথম স্তরটা দেখায়:
+  <code>f.flush()</code> শুধু Python এর নিজের buffer
+  খালি করে kernel এ পাঠায় — সেটা <code>fsync</code> নয়।
+  দুটোই লাগে। একই কথা C এর <code>fflush()</code> এর
+  জন্য।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার container এ data hostPath volume এ
+    লিখছি আর fsync করছি, তাই নিরাপদ।"</strong>
+  </p>
+  <p>
+    Container আর cloud storage কয়েকটা নতুন স্তর যোগ করে,
+    আর প্রতিটায় প্রশ্নটা আবার করতে হয়:
+  </p>
+  <ul>
+    <li>
+      <strong>overlayfs</strong> — container এর writable
+      layer। <code>fsync</code> কাজ করে, কিন্তু container
+      মুছে ফেললে পুরো layer টাই যায়। "Durable" মানে
+      "container এর জীবনকাল পর্যন্ত"।
+    </li>
+    <li>
+      <strong>Network storage (EBS, EFS, NFS)</strong> —
+      <code>fsync</code> এখন একটা network round-trip।
+      Latency ~১০০µs–কয়েক ms, আর NFS এ error শুধু
+      <code>close()</code> তে আসতে পারে (তাই উপরের
+      protocol এ <code>close()</code> ও check করেছি)।
+    </li>
+    <li>
+      <strong>Replication</strong> — একটা node এ
+      <code>fsync</code> হওয়া মানে সেই node বাঁচলে data
+      আছে। Node টাই হারালে? তাই distributed system এ
+      durability মানে "N টা node এ লেখা হয়েছে", আর
+      Postgres এর <code>synchronous_standby_names</code>
+      বা Kafka এর <code>acks=all</code> সেটাই করে।
+    </li>
+  </ul>
+  <p>
+    সাধারণ নিয়ম: <strong>durability একটা স্তরের ধর্ম নয়,
+    পুরো শৃঙ্খলের</strong>। সবচেয়ে দুর্বল স্তরটাই আপনার
+    আসল গ্যারান্টি।
+  </p>
+</div>
+
+<h2 id="c25-measure">মাপা আর যাচাই</h2>
+
+<pre><code># আপনার disk এ fsync কত খরচি — Postgres এর নিজের যন্ত্র
+$ pg_test_fsync
+        fdatasync                     1234.567 ops/sec     810 usecs/op
+        fsync                          987.654 ops/sec    1012 usecs/op
+        open_sync                      ...
+# ops/sec কম মানে fsync-ভারী workload ধীর হবে
+
+# কে fsync করছে আর কতক্ষণ লাগছে
+$ sudo perf trace -e 'syscalls:sys_enter_fsync' -a sleep 5
+$ sudo funclatency-bpfcc -u 'vfs_fsync'      # latency histogram
+
+# একটা process কত fsync করছে
+$ sudo strace -c -f -e trace=fsync,fdatasync -p &lt;pid&gt;
+
+# ⚠ সত্যিকারের durability পরীক্ষা করার একমাত্র উপায়:
+#   একটা লেখা চালিয়ে power cable খুলে ফেলুন, তারপর
+#   যাচাই করুন। diskchecker.pl এটাই স্বয়ংক্রিয় করে।
+#   Software দিয়ে drive এর মিথ্যা ধরা যায় না।</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    একটা ব্যবহারিক তালিকা, যেটা code review তে কাজে লাগে:
+  </p>
+  <ul>
+    <li>
+      <strong>Config/state file লিখছেন?</strong> —
+      write-tmp + fsync + rename + fsync(dir)। চারটে ধাপ,
+      কম নয়।
+    </li>
+    <li>
+      <strong>একটা library ব্যবহার করছেন?</strong> —
+      যাচাই করুন সে fsync করে কি না। বেশিরভাগ
+      <code>writeFile</code> করে <em>না</em>।
+    </li>
+    <li>
+      <strong><code>fsync</code> ব্যর্থ হলে?</strong> —
+      retry করবেন না। Crash করুন, recovery চালান।
+    </li>
+    <li>
+      <strong>Durability বিক্রি করছেন?</strong> — করুন,
+      কিন্তu সচেতনভাবে আর নথিবদ্ধ করে। "আমরা সবচেয়ে
+      খারাপ ক্ষেত্রে ১ সেকেন্ডের data হারাতে পারি" একটা
+      বৈধ সিদ্ধান্ত; "আমরা জানি না" নয়।
+    </li>
+    <li>
+      <strong>Test করছেন?</strong> — fsync এর সঠিকতা
+      unit test এ ধরা পড়ে না। একমাত্র পরীক্ষা হলো
+      power কাটা, বা একটা fault-injection layer
+      (dm-flakey, CharybdeFS)।
+    </li>
+  </ul>
+</div>
+
+<div class="qs">
+  <h2 id="c25-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Process crash আর power loss দুটো আলাদা failure mode।
+      শৃঙ্খলের কোন স্তরটা প্রথমটায় বাঁচে কিন্তু দ্বিতীয়টায়
+      নয়? এই তথ্য থেকে বলুন কেন একটা container-kill test
+      আপনার durability প্রমাণ করে না।
+    </li>
+    <li>
+      Parent directory fsync না করলে file টা "নেই" হয়ে
+      যেতে পারে, যদিও data লেখা হয়েছে। Chapter 22 এর
+      কোন তথ্যটা এটা ব্যাখ্যা করে? আর কোন তিনটে
+      operation এর পর dir fsync লাগে?
+    </li>
+    <li>
+      Safe-replace protocol এ ধাপ ২ (rename এর আগে
+      fsync) বাদ দিলে সবচেয়ে খারাপ ফল কী? কেন সেটা
+      "পুরনো version রেখে দেওয়া" এর চেয়ে খারাপ?
+    </li>
+    <li>
+      fsyncgate এ একটা ব্যর্থ <code>fsync</code> retry
+      করলে "সফল" হয় কিন্তু data হারায়। Kernel এর কোন
+      সিদ্ধান্তটা এর কারণ, আর Postgres এর PANIC করার
+      প্রতিক্রিয়াটা কেন প্রতিস্বজ্ঞাত হলেও সঠিক?
+    </li>
+    <li>
+      একটা consumer SSD benchmark এ enterprise SSD এর
+      চেয়ে দ্রুত দেখাচ্ছে, কিন্তু আপনার database
+      workload এ ধীর। PLP দিয়ে এটা ব্যাখ্যা করুন, আর
+      বলুন কোন benchmark টা এই পার্থক্যটা ধরতে পারবে।
+    </li>
+    <li>
+      Redis এর <code>appendfsync everysec</code> মানে
+      সর্বোচ্চ ১ সেকেন্ডের data হারানো। এখন ধরুন আপনার
+      Redis তিনটে replica সহ চলছে। "১ সেকেন্ড" সংখ্যাটা
+      কি বদলায়? Durability কে "শৃঙ্খলের ধর্ম" হিসেবে
+      দেখে উত্তর দিন।
+    </li>
+  </ol>
+</div>

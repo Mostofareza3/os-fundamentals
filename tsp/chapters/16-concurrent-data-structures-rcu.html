@@ -1,0 +1,630 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 29, pdf p333–345 · + RCU, reclamation</span>
+  </div>
+  <h1>Concurrent data structure আর lock granularity</h1>
+  <p class="ch-lede">
+    একটা lock দিয়ে সবকিছু ঢেকে দিলে code সঠিক হয় কিন্তু
+    scale করে না। এই chapter এ contention কমানোর তিনটে কৌশল,
+    আর তারপর সেই প্রশ্ন যা lock-free programming কে আসলে
+    কঠিন করে — memory কখন free করবেন?
+  </p>
+</div>
+
+<p>
+  Chapter 15 এ একটা কাজ করা lock পেয়েছি। এখন প্রশ্ন: সেটা
+  কোথায় বসাব? একটা data structure এর কতটুকু একটা lock দিয়ে
+  ঢাকব?
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা data structure কে thread-safe করার সহজ উপায় হলো
+    সবকিছু একটা lock দিয়ে ঢেকে দেওয়া। সেটা সঠিক, কিন্তু
+    core সংখ্যা বাড়লে ভেঙে পড়ে। সঠিকতা না হারিয়ে
+    contention কীভাবে কমাব?
+  </p>
+</div>
+
+<h2 id="c16-counter">Counter — সবচেয়ে সরল উদাহরণ, সবচেয়ে বড় শিক্ষা</h2>
+
+<p>
+  একটা thread-safe counter। প্রথম প্রচেষ্টা সোজা:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Correct, and it does not scale. */
+typedef struct {
+    int value;
+    pthread_mutex_t lock;
+} counter_t;
+
+void increment(counter_t *c) {
+    pthread_mutex_lock(&amp;c-&gt;lock);
+    c-&gt;value++;
+    pthread_mutex_unlock(&amp;c-&gt;lock);
+}
+
+int get(counter_t *c) {
+    pthread_mutex_lock(&amp;c-&gt;lock);
+    int v = c-&gt;value;
+    pthread_mutex_unlock(&amp;c-&gt;lock);
+    return v;
+}</code></pre></div>
+
+<p>
+  সঠিক। কিন্তু মেপে দেখলে:
+</p>
+
+<pre class="ascii"><code>  চারটে thread, প্রত্যেকে ১ মিলিয়ন increment:
+
+  1 thread  : 0.03 s
+  2 threads : 0.42 s   ← ধীর হলো!
+  4 threads : 1.85 s   ← আরও ধীর
+
+  কাজ চারগুণ হলো, সময় ৬০ গুণ।
+  এটা শুধু "scale করছে না" নয় — এটা নেতিবাচকভাবে scale করছে।</code></pre>
+
+<p>
+  কারণ: প্রতিটা increment এ একই cache line এর exclusive
+  ownership দরকার (chapter 13), আর একই lock এর জন্য সবাই
+  লড়ছে (chapter 15)। Thread বাড়ালে শুধু coherence traffic
+  বাড়ে।
+</p>
+
+<h3 id="c16-sloppy">Sloppy counter — নির্ভুলতা বিক্রি করে scalability কেনা</h3>
+
+<p>
+  সমাধান: প্রতিটা CPU এর নিজের local counter দাও, আর মাঝে
+  মাঝে global এ যোগ করো।
+</p>
+
+<pre class="ascii"><code>  threshold S = 5
+
+  CPU 0: local=4 ─┐
+  CPU 1: local=2  │  local counter এ কোনো lock নেই
+  CPU 2: local=3  │  (বা প্রতি-CPU আলাদা lock)
+  CPU 3: local=1 ─┘
+                    │
+     local ≥ S হলে  │  global lock নাও, যোগ করো,
+                    ▼  local শূন্য করো
+             global = 47
+
+  পড়ার সময়: global পড়ো (কিছু পিছিয়ে থাকতে পারে)
+
+  S ছোট  → global বেশি নির্ভুল, কম scalable
+  S বড়   → বেশি scalable, global বেশি পিছিয়ে</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Sloppy counter — per-CPU locals, periodic flush to global.
+   Trades read accuracy for write scalability. */
+typedef struct {
+    int global;
+    pthread_mutex_t glock;
+    int local[NUMCPUS];
+    pthread_mutex_t llock[NUMCPUS];
+    int threshold;                    /* S */
+} sloppy_t;
+
+void sloppy_update(sloppy_t *c, int cpu, int amt) {
+    pthread_mutex_lock(&amp;c-&gt;llock[cpu]);
+    c-&gt;local[cpu] += amt;
+    if (c-&gt;local[cpu] &gt;= c-&gt;threshold) {
+        /* flush to global — the only contended step */
+        pthread_mutex_lock(&amp;c-&gt;glock);
+        c-&gt;global += c-&gt;local[cpu];
+        pthread_mutex_unlock(&amp;c-&gt;glock);
+        c-&gt;local[cpu] = 0;
+    }
+    pthread_mutex_unlock(&amp;c-&gt;llock[cpu]);
+}
+
+/* NOTE: local[] and llock[] MUST be cache-line padded, or
+   false sharing (chapter 13) undoes the whole optimisation. */</code></pre></div>
+
+<p>
+  ওই শেষ comment টা গুরুত্বপূর্ণ আর OSTEP এ নেই: একটা
+  <code>int local[NUMCPUS]</code> array এ চারটে int একই
+  cache line এ পড়ে, তাই per-CPU করার পুরো লাভটাই false
+  sharing খেয়ে ফেলবে। Chapter 13 এর padding এখানে
+  আবশ্যক, optional নয়।
+</p>
+
+<p>
+  Threshold S = ১০২৪ দিয়ে ফল নাটকীয়ভাবে বদলায়:
+</p>
+
+<pre class="ascii"><code>  4 threads, 1M increment প্রতিটা:
+
+  একটা lock       : 1.85 s
+  sloppy (S=1024) : 0.04 s     ← ৪৬ গুণ দ্রুত
+
+  দাম: get() একটা কিছুটা পুরনো মান দেয়
+       (সর্বোচ্চ NUMCPUS × S কম হতে পারে)</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই নকশাটা আপনার চারপাশে আছে, প্রায়ই "approximate" নামে:
+  </p>
+  <ul>
+    <li>
+      <strong>Linux kernel</strong> এর <code>percpu_counter</code>
+      হুবহু এটাই — আর <code>/proc/meminfo</code> এর কিছু সংখ্যা
+      তাই সামান্য পিছিয়ে থাকে।
+    </li>
+    <li>
+      <strong>Prometheus client</strong> library গুলো counter
+      এ per-thread/per-goroutine জমা করে, scrape এর সময় যোগ করে।
+    </li>
+    <li>
+      <strong>Postgres</strong> এর statistics collector
+      asynchronous — তাই <code>pg_stat_user_tables</code> এর
+      সংখ্যা তাৎক্ষণিক নয়। একই trade-off।
+    </li>
+  </ul>
+  <p>
+    সাধারণ শিক্ষাটা: <strong>metrics এ নির্ভুলতা প্রায়ই
+    অপ্রয়োজনীয়, কিন্তু scalability অপরিহার্য</strong>। একটা
+    request counter ১০০০ পিছিয়ে থাকলে কিছু যায় আসে না;
+    কিন্তু সেটা hot path কে ধীর করলে অনেক কিছু যায় আসে।
+  </p>
+</div>
+
+<h2 id="c16-list">Linked list — lock এর দানা ছোট করা</h2>
+
+<p>
+  একটা list এ পুরোটা একটা lock দিয়ে ঢাকা সহজ। কিন্তু
+  একটা লম্বা list এ দুটো thread যদি দুই প্রান্তে কাজ করে,
+  তাদের পরস্পরের অপেক্ষা করার কোনো কারণ নেই।
+</p>
+
+<pre class="ascii"><code>  ১. একটা lock পুরো list এ (coarse-grained)
+
+     ┌──── একটাই lock ────────────────┐
+     │  A ──▶ B ──▶ C ──▶ D ──▶ E     │
+     └────────────────────────────────┘
+     সরল, সঠিক, কোনো scalability নেই
+
+
+  ২. প্রতি node এ একটা lock — hand-over-hand
+
+     [A]🔒 ──▶ [B]🔒 ──▶ [C]🔒 ──▶ [D]🔒
+      ↑         ↑
+      │         └── thread 2 এখানে
+      └── thread 1 এখানে
+
+     চলার নিয়ম: পরের node এর lock নাও,
+                তারপর এখনকার lock ছাড়ো
+                (তাই "hand over hand")
+
+     তত্ত্বে বেশি concurrency।
+     বাস্তবে প্রায়ই ধীর! কারণ প্রতি node এ
+     দুটো atomic operation — traversal এর খরচ
+     concurrency এর লাভ খেয়ে ফেলে।
+
+
+  ৩. Sharding / striping — ব্যবহারিক মধ্যপথ
+
+     hash(key) % 16 → কোন bucket
+     প্রতি bucket এর নিজের lock
+
+     ┌──lock 0──┐ ┌──lock 1──┐ ... ┌──lock 15──┐
+     │ A ──▶ Q  │ │ B ──▶ R  │     │ C ──▶ S   │
+     └──────────┘ └──────────┘     └───────────┘
+
+     ১৬ গুণ কম contention, traversal এর খরচ অপরিবর্তিত।
+     এটাই বাস্তবে ব্যবহৃত হয়।</code></pre>
+
+<p>
+  দ্বিতীয় পদ্ধতিটা একটা গুরুত্বপূর্ণ শিক্ষা দেয়:
+  <strong>বেশি concurrency মানে বেশি performance নয়</strong>।
+  Hand-over-hand তত্ত্বে সুন্দর কিন্তু প্রায়ই একটা lock এর
+  চেয়ে ধীর, কারণ প্রতিটা lock/unlock এর নিজের খরচ আছে।
+</p>
+
+<p>
+  OSTEP এর নিজের পরামর্শটা এখানে ঠিক, আর সেটা মনে রাখার মতো:
+  <strong>আগে সরল করে বানান, তারপর মেপে দেখুন সত্যিই
+  bottleneck কি না</strong>। Knuth এর সেই কথাটা এখানে
+  বিশেষভাবে প্রযোজ্য, কারণ concurrent code এ ভুল
+  optimization শুধু জটিলতা নয়, bug ও আনে।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Sharded hash map — the practical pattern.
+   Each bucket has its own lock, padded to a cache line. */
+#define NSHARDS 16
+
+typedef struct {
+    node_t *head;
+    pthread_mutex_t lock;
+    char pad[64 - (sizeof(node_t *) + sizeof(pthread_mutex_t)) % 64];
+} shard_t;
+
+typedef struct { shard_t shard[NSHARDS]; } map_t;
+
+void map_insert(map_t *m, int key, int val) {
+    shard_t *s = &amp;m-&gt;shard[key % NSHARDS];
+    pthread_mutex_lock(&amp;s-&gt;lock);
+    /* ... insert into s-&gt;head ... */
+    pthread_mutex_unlock(&amp;s-&gt;lock);
+}</code></pre></div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Lock এর দানা যত ছোট, তত ভালো — প্রতিটা node এ
+    lock দিলে সর্বোচ্চ concurrency পাব।"</strong>
+  </p>
+  <p>
+    Hand-over-hand এর benchmark প্রায়ই উল্টো ফল দেয়। প্রতিটা
+    node এ একটা lock আর একটা unlock মানে দুটো atomic
+    operation — একটা ১০০০-node list traversal এ ২০০০ টা
+    atomic। একটা lock দিয়ে সেটা দুটো।
+  </p>
+  <p>
+    আর একটা লুকানো খরচ: প্রতিটা node এ একটা
+    <code>pthread_mutex_t</code> (৪০ byte) যোগ করলে node
+    এর আকার বাড়ে, তাই একই cache line এ কম node ধরে — অর্থাৎ
+    traversal এ বেশি cache miss।
+  </p>
+  <p>
+    ব্যবহারিক নিয়ম: <strong>sharding প্রায় সবসময় সঠিক
+    উত্তর</strong>। যথেষ্ট concurrency দেয়, আর per-operation
+    খরচ বাড়ায় না।
+  </p>
+</div>
+
+<h2 id="c16-rwlock">Read-write lock — আর কেন প্রায়ই ফাঁদ</h2>
+
+<p>
+  যদি পাঠক অনেক আর লেখক কম, তাহলে পাঠকদের একসাথে ঢুকতে
+  দেওয়া যায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>pthread_rwlock_t rw = PTHREAD_RWLOCK_INITIALIZER;
+
+/* অনেক পাঠক একসাথে */
+pthread_rwlock_rdlock(&amp;rw);
+int v = shared_data;
+pthread_rwlock_unlock(&amp;rw);
+
+/* একজন লেখক, একা */
+pthread_rwlock_wrlock(&amp;rw);
+shared_data = 42;
+pthread_rwlock_unlock(&amp;rw);</code></pre></div>
+
+<p>
+  শোনাচ্ছে নিখুঁত। কিন্তু একটা সমস্যা আছে যা স্বজ্ঞাবিরোধী:
+</p>
+
+<pre class="ascii"><code>  rdlock() নিজেই একটা লেখা!
+
+  reader count বাড়াতে হয় → একটা atomic increment
+  → cache line এর exclusive ownership দরকার
+  → chapter 13 এর সেই ping-pong
+
+  ফল: ১০টা thread শুধু পড়ছে, তবু তারা একটা
+      cache line এর জন্য লড়ছে।
+
+  পরিমাপ (৮ core, শুধু read):
+    mutex    : 42 ns/op
+    rwlock   : 61 ns/op     ← বেশি খরচি!
+    RCU      :  1 ns/op     ← নিচে দেখুন</code></pre>
+
+<p>
+  অর্থাৎ read-write lock শুধু তখনই লাভজনক যখন critical
+  section <em>দীর্ঘ</em> — নইলে reader count এর accounting
+  এর খরচই সব লাভ খেয়ে ফেলে। ছোট read এর জন্য এটা প্রায়ই
+  একটা সাধারণ mutex এর চেয়ে খারাপ।
+</p>
+
+<h2 id="c16-rcu">RCU — পাঠকদের জন্য শূন্য খরচ</h2>
+
+<p>
+  এখন একটা সম্পূর্ণ ভিন্ন দৃষ্টিভঙ্গি, আর এটা OSTEP এ নেই
+  যদিও Linux এর ভিতরে এটা সর্বত্র।
+</p>
+
+<p>
+  <strong>RCU (Read-Copy-Update — পাঠকরা কোনো
+  synchronization ছাড়াই পড়ে, আর লেখক পুরনো copy টা
+  ততক্ষণ রাখে যতক্ষণ সব পুরনো পাঠক শেষ না হয়)</strong>।
+</p>
+
+<pre class="ascii"><code>  মূল ধারণা: data কখনো জায়গায় বদলাও না।
+             নতুন copy বানাও, pointer টা atomically সরাও।
+
+  শুরুতে:
+     ptr ──▶ [ old config ]
+              ↑ তিনজন পাঠক পড়ছে
+
+  লেখক copy বানাল আর pointer সরাল:
+     ptr ──▶ [ new config ]  ← নতুন পাঠকরা এটা পায়
+              
+             [ old config ]  ← পুরনো পাঠকরা এখনো এটায়
+              ↑ এখনো তিনজন
+
+  লেখক এখন অপেক্ষা করে: "grace period"
+     = সব pre-existing reader তাদের read section শেষ করা
+       পর্যন্ত অপেক্ষা
+
+  grace period শেষ:
+     ptr ──▶ [ new config ]
+             free([ old config ])   ← এখন নিরাপদ</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Kernel-style RCU. The read side is the point:
+   rcu_read_lock() compiles to NOTHING on a non-preemptible
+   kernel — no atomic, no barrier, no cache line contention. */
+
+/* --- reader --- */
+rcu_read_lock();
+struct config *c = rcu_dereference(global_config);
+use(c-&gt;timeout);                  /* safe: c cannot be freed yet */
+rcu_read_unlock();
+
+/* --- writer --- */
+struct config *new = kmalloc(sizeof(*new), GFP_KERNEL);
+*new = *old;                      /* copy */
+new-&gt;timeout = 60;                /* update the copy */
+
+rcu_assign_pointer(global_config, new);   /* publish (release) */
+
+synchronize_rcu();                /* wait for the grace period */
+kfree(old);                       /* now nobody can be reading it */</code></pre></div>
+
+<p>
+  দামটা অসমভাবে ভাগ করা, আর সেটাই RCU এর সৌন্দর্য:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>খরচ</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Reader</td><td>প্রায় শূন্য — কোনো atomic, কোনো barrier, কোনো contention</td></tr>
+    <tr><td>Writer</td><td>বেশি — copy বানানো + grace period এর অপেক্ষা</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  তাই RCU ঠিক সেই জায়গায় কাজ করে যেখানে
+  <strong>read অনেক, write বিরল</strong> — routing table,
+  configuration, kernel এর module list, network device list।
+  Linux এ এটা এতটাই মৌলিক যে
+  <code>/proc/sys/kernel/</code> এ এর নিজের tuning আছে।
+</p>
+
+<p>
+  Userspace এ ব্যবহার করা যায় <code>liburcu</code> দিয়ে,
+  কিন্তু সেখানে read side একেবারে বিনামূল্যে নয় (kernel এর
+  preemption-সংক্রান্ত সুবিধাটা নেই)।
+</p>
+
+<h2 id="c16-reclamation">আসল কঠিন সমস্যা — কখন free করবেন</h2>
+
+<p>
+  Chapter 14 এর publication pattern এ একটা ফাঁক রেখে
+  এসেছিলাম: পুরনো object টা কখন <code>free()</code> করবেন?
+  এখন সেটার উত্তর, কারণ <strong>এটাই lock-free
+  programming কে কঠিন করে</strong>।
+</p>
+
+<p>
+  Algorithm লেখাটা সহজ অংশ। কঠিন অংশ হলো memory
+  reclamation, আর তার কারণ ABA সমস্যা:
+</p>
+
+<pre class="ascii"><code>  ABA problem:
+
+  thread 1: stack এর top পড়ল → node A
+            (CAS করার প্রস্তুতি নিচ্ছে)
+       ⏸  preempt হলো
+
+  thread 2: A কে pop করল, free করল
+            B কে push করল
+            আবার একটা নতুন node allocate করল —
+            allocator ঠিক A এর জায়গাটাই ফেরত দিল!
+            সেটাকে push করল → top আবার "A" এর ঠিকানায়
+
+  thread 1: ▶ আবার চলল
+            CAS(top, A, A->next) → সফল!
+            কারণ ঠিকানা মিলে গেছে
+            কিন্তু এটা সম্পূর্ণ অন্য একটা node,
+            আর A->next এখন আবর্জনা
+            → list corrupt
+
+  pointer এর মান একই, কিন্তু অর্থ বদলে গেছে।</code></pre>
+
+<p>
+  সমাধানগুলো সবই "পুরনো object টা এখনো কেউ দেখছে কি" —
+  এই প্রশ্নের উত্তর দেওয়ার চেষ্টা:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>পদ্ধতি</th><th>কীভাবে</th><th>ব্যবহার</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>RCU</strong></td>
+      <td>Grace period — সব পুরনো reader শেষ হওয়ার অপেক্ষা</td>
+      <td>Linux kernel</td>
+    </tr>
+    <tr>
+      <td><strong>Hazard pointer</strong></td>
+      <td>প্রতিটা reader ঘোষণা করে সে কোন pointer দেখছে</td>
+      <td>Folly, কিছু C++ library</td>
+    </tr>
+    <tr>
+      <td><strong>Epoch-based</strong></td>
+      <td>Global epoch counter; পুরনো epoch এর object মুক্ত</td>
+      <td>Rust এর crossbeam</td>
+    </tr>
+    <tr>
+      <td><strong>GC</strong></td>
+      <td>Runtime নিজেই সামলায়</td>
+      <td>Java, Go, C# — <strong>সমস্যাটাই নেই</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Tagged pointer</strong></td>
+      <td>Pointer এর সাথে একটা version counter</td>
+      <td>ABA এড়ানোর সরল কৌশল</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  শেষ সারিটা লক্ষ করুন: GC থাকলে এই পুরো সমস্যাটাই অদৃশ্য।
+  এই কারণেই Java আর Go তে lock-free structure লেখা
+  অনেক সহজ — reclamation টা runtime এর দায়িত্ব।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Lock-free data structure lock-based এর চেয়ে
+    দ্রুত, তাই আমার উচ্চ-চাপের path এ একটা লিখব।"</strong>
+  </p>
+  <p>
+    OSTEP এর সময়ে একটা উল্টো ভুলও প্রচলিত ছিল — যে
+    lock-free "জটিল আর কেবল মাঝে মাঝে ব্যবহৃত"। ২০২৬ এ
+    সেটা মিথ্যা: আপনি যে প্রতিটা runtime ব্যবহার করেন তার
+    ভিতরে lock-free structure আছে (Linux এর RCU, Go এর
+    runqueue, Java এর <code>ConcurrentHashMap</code>,
+    jemalloc এর thread cache)।
+  </p>
+  <p>
+    কিন্তু <strong>ব্যবহার করা আর লেখা সম্পূর্ণ আলাদা</strong>।
+    নিজে লেখার তিনটে বিপদ:
+  </p>
+  <ul>
+    <li>
+      Algorithm এর অংশটা সহজ; reclamation এর অংশটা কঠিন,
+      আর সেখানেই ABA এর মতো bug লুকায় যা মাসে একবার প্রকাশ পায়।
+    </li>
+    <li>
+      Lock-free মানে অপেক্ষা-মুক্ত নয়। উচ্চ contention এ
+      একটা CAS loop বারবার retry করে — throughput একটা
+      mutex এর চেয়ে <em>খারাপ</em> হতে পারে।
+    </li>
+    <li>
+      Chapter 14 এর memory ordering ভুল হলে code টা x86 এ
+      কাজ করবে আর ARM64 এ ভাঙবে।
+    </li>
+  </ul>
+  <p>
+    ব্যবহারিক পরামর্শ: <strong>library ব্যবহার করুন, নিজে
+    লিখবেন না।</strong> আর যদি লিখতেই হয়, formal
+    verification tool (CDSChecker, herd7) ব্যবহার করুন —
+    test যথেষ্ট নয়।
+  </p>
+</div>
+
+<h2 id="c16-practical">ব্যবহারিক সিদ্ধান্তের ক্রম</h2>
+
+<pre class="ascii"><code>  একটা shared data structure দরকার। ক্রমানুসারে চেষ্টা করুন:
+
+  ১. ভাগ করা এড়ান
+       thread-local + মাঝে মাঝে merge (sloppy counter)
+       বা message passing (Go channel)
+       → কোনো synchronization এর দরকারই নেই
+
+  ২. আপনার standard library এর concurrent structure নিন
+       Java: ConcurrentHashMap
+       Go:   sync.Map (শুধু নির্দিষ্ট pattern এ), বা
+             একটা sharded map
+       C++:  TBB, folly
+       → কেউ আগেই এটা ঠিক করে লিখেছে
+
+  ৩. একটা mutex দিয়ে ঢাকুন, তারপর মাপুন
+       ~২০ns uncontended — প্রায়ই যথেষ্ট
+
+  ৪. Shard করুন
+       hash(key) % N, প্রতি shard এ lock
+       → সহজ, কার্যকর, নিরাপদ
+
+  ৫. RCU বা lock-free
+       শুধু যখন মেপে প্রমাণ হয়েছে এটাই bottleneck,
+       আর read:write অনুপাত অত্যন্ত অসম</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Go</strong> এর <code>sync.Map</code> একটা
+    শিক্ষামূলক উদাহরণ: এটা <em>সাধারণ উদ্দেশ্যের map নয়</em>।
+    Documentation স্পষ্টভাবে বলে এটা দুটো নির্দিষ্ট
+    pattern এর জন্য — (ক) key একবার লেখা হয় তারপর বহুবার
+    পড়া হয়, (খ) একাধিক goroutine অসংলগ্ন key তে কাজ করে।
+    অন্য ক্ষেত্রে একটা <code>map</code> +
+    <code>RWMutex</code> ভালো। ভিতরে এটা একটা read-mostly
+    কৌশল ব্যবহার করে যা RCU এর ধারণার কাছাকাছি।
+  </p>
+  <p>
+    <strong>Java</strong> এর <code>ConcurrentHashMap</code>
+    ঠিক আমাদের তৃতীয় কৌশলটাই — bucket-স্তরের lock
+    (আগে segment, এখন প্রতি-bin CAS)। অর্থাৎ sharding
+    production-grade আকারে।
+  </p>
+  <p>
+    <strong>Postgres</strong> এর buffer pool partitioned
+    (<code>NUM_BUFFER_PARTITIONS</code>) — একই কারণে।
+    <code>pg_stat_activity</code> এ
+    <code>BufferMapping</code> wait দেখলে সেটা এই
+    partition গুলোর contention।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c16-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      একটা lock দিয়ে counter এ ১ thread থেকে ৪ thread এ গেলে
+      সময় ৬০ গুণ বাড়ল। কাজ বাড়ল ৪ গুণ। বাকি ১৫ গুণ কোথায়
+      গেল? Chapter 13 আর 15 এর কোন দুটো প্রক্রিয়া মিলে
+      এটা ঘটায়?
+    </li>
+    <li>
+      Sloppy counter এ <code>local[]</code> array padding
+      না করলে পুরো optimization ব্যর্থ হয়। কেন? আর
+      threshold S বাড়ালে কী পাওয়া যায় আর কী হারানো যায় —
+      একটা metrics counter আর একটা quota enforcement
+      counter এর জন্য S আলাদা হবে কি?
+    </li>
+    <li>
+      Hand-over-hand locking তত্ত্বে বেশি concurrency দেয়
+      কিন্তু বাস্তবে প্রায়ই ধীর। দুটো আলাদা কারণ বলুন —
+      একটা atomic operation সংক্রান্ত, আরেকটা cache
+      সংক্রান্ত।
+    </li>
+    <li>
+      <code>rdlock()</code> নিজেই একটা লেখা, তাই ছোট read
+      এর জন্য rwlock একটা mutex এর চেয়ে খারাপ হতে পারে।
+      তাহলে rwlock কখন সত্যিই লাভজনক? একটা concrete
+      পরিস্থিতি দিন যেখানে এটা স্পষ্ট জয়।
+    </li>
+    <li>
+      RCU তে reader এর খরচ প্রায় শূন্য কিন্তু writer কে
+      grace period অপেক্ষা করতে হয়। এই অসম বিতরণটা কোন
+      ধরনের workload এ আদর্শ, আর কোন ধরনের workload এ
+      বিপর্যয়? আপনার উত্তরে একটা concrete counter-উদাহরণ
+      দিন।
+    </li>
+    <li>
+      ABA সমস্যায় pointer এর মান একই থাকে কিন্তু অর্থ
+      বদলায়। Java বা Go তে lock-free stack লিখলে এই
+      নির্দিষ্ট সমস্যাটা কেন হয় না? আর সেই তথ্যটা থেকে
+      বলুন GC থাকা ভাষায় lock-free programming কতটা সহজ,
+      আর কোন সমস্যাগুলো তবু থাকে।
+    </li>
+  </ol>
+</div>

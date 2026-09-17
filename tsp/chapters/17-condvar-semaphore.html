@@ -1,0 +1,566 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 30–31, pdf p346–378</span>
+  </div>
+  <h1>Condition variable আর semaphore</h1>
+  <p class="ch-lede">
+    Lock বলে "একসাথে একজন"। কিন্তু প্রায়ই দরকার হয় "একটা শর্ত
+    সত্যি হওয়া পর্যন্ত অপেক্ষা করো"। এই দুটো সম্পূর্ণ আলাদা
+    সমস্যা, আর দ্বিতীয়টার জন্য একটা নিয়ম আছে যেটা ভাঙলে
+    bug টা বছরে একবার প্রকাশ পায়।
+  </p>
+</div>
+
+<p>
+  Chapter 15-16 এ mutual exclusion পেয়েছি। কিন্তু একটা
+  ভিন্ন ধরনের অপেক্ষা আছে: "queue তে কিছু আসা পর্যন্ত অপেক্ষা
+  করো", "সব worker শেষ হওয়া পর্যন্ত অপেক্ষা করো",
+  "connection পাওয়া পর্যন্ত অপেক্ষা করো"।
+</p>
+
+<p>
+  এটা lock দিয়ে করা যায় না — lock এর কাজ পালা ঠিক করা,
+  শর্ত পাহারা দেওয়া নয়।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটা thread কে একটা শর্তের অপেক্ষায় থাকতে হবে, আর
+    শর্তটা অন্য thread পূরণ করবে। Spin না করে, CPU নষ্ট না
+    করে — কীভাবে?
+  </p>
+</div>
+
+<h2 id="c17-naive">প্রথমে দেখি কেন spin চলবে না</h2>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Parent waits for child. Correct, and wasteful. */
+volatile int done = 0;
+
+void *child(void *arg) {
+    printf("child\n");
+    done = 1;
+    return NULL;
+}
+
+int main(void) {
+    pthread_t c;
+    pthread_create(&amp;c, NULL, child, NULL);
+    while (done == 0)
+        ;                     /* spin — burns a whole core */
+    printf("parent\n");
+    return 0;
+}</code></pre></div>
+
+<p>
+  এটা কাজ করে (chapter 14 এর হিসাবে <code>volatile</code>
+  এখানেও ভুল, কিন্তু সেটা আলাদা প্রসঙ্গ), কিন্তু একটা
+  সম্পূর্ণ core পুড়িয়ে দেয়। Child যদি এক সেকেন্ড সময় নেয়,
+  parent এক সেকেন্ড ধরে অর্থহীন loop চালাবে।
+</p>
+
+<p>
+  Chapter 7 এর container প্রসঙ্গে এটা আরও খারাপ: ওই spin
+  আপনার <code>cpu.max</code> quota পোড়াচ্ছে, যা child এর
+  কাজকেই ধীর করে দিচ্ছে।
+</p>
+
+<h2 id="c17-cv">Condition variable</h2>
+
+<p>
+  <strong>Condition variable</strong> হলো একটা queue যেখানে
+  thread ঘুমিয়ে অপেক্ষা করে, আর অন্য কেউ জাগিয়ে দেয়।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The same wait, done properly. */
+pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  c = PTHREAD_COND_INITIALIZER;
+int done = 0;
+
+void thr_exit(void) {
+    pthread_mutex_lock(&amp;m);
+    done = 1;
+    pthread_cond_signal(&amp;c);      /* wake one waiter */
+    pthread_mutex_unlock(&amp;m);
+}
+
+void thr_join(void) {
+    pthread_mutex_lock(&amp;m);
+    while (done == 0)             /* WHILE, not if — see below */
+        pthread_cond_wait(&amp;c, &amp;m);
+    pthread_mutex_unlock(&amp;m);
+}</code></pre></div>
+
+<p>
+  <code>pthread_cond_wait()</code> তিনটে কাজ atomically করে,
+  আর এই তিনটেই বোঝা দরকার:
+</p>
+
+<pre class="ascii"><code>  pthread_cond_wait(&c, &m) যা করে:
+
+  ১. lock m ছেড়ে দেয়        ← নইলে signal দেওয়া অসম্ভব হতো
+  ২. thread টাকে ঘুম পাড়ায়   ← CPU মুক্ত
+  ৩. জাগার পর আবার m নেয়    ← ফেরার সময় lock ধরা অবস্থায়
+
+  ১ আর ২ atomically হওয়া অপরিহার্য।
+  যদি lock ছেড়ে দেওয়ার পর কিন্তু ঘুমানোর আগে
+  signal চলে আসে → সেই signal হারিয়ে যাবে →
+  চিরকাল ঘুম (lost wakeup)</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা — Part 2 এর সবচেয়ে ব্যবহারিক নিয়ম</div>
+  <p>
+    <strong><code>while</code> এর বদলে <code>if</code> দিলেও
+    চলবে — signal তো এসেছে, মানে শর্তটা সত্যি হয়ে গেছে।"</strong>
+  </p>
+  <p>
+    না, আর এটা তিনটে স্বাধীন কারণে:
+  </p>
+  <ul>
+    <li>
+      <strong>Mesa semantics</strong> — কার্যত প্রতিটা বাস্তব
+      system এই নিয়ম ব্যবহার করে: <code>signal()</code> মানে
+      "শর্তটা হয়তো এখন সত্যি, গিয়ে দেখো", নয় "শর্তটা সত্যি,
+      নিশ্চিত"। (বিকল্প ছিল Hoare semantics — শক্তিশালী
+      গ্যারান্টি, কিন্তু বানানো কঠিন, তাই কেউ ব্যবহার করে না।)
+    </li>
+    <li>
+      <strong>অন্য কেউ আগে ঢুকে পড়তে পারে</strong> — আপনি
+      জেগেছেন কিন্তু lock পাওয়ার আগে তৃতীয় একটা thread
+      ঢুকে শর্তটা আবার মিথ্যা করে দিয়েছে।
+    </li>
+    <li>
+      <strong>Spurious wakeup</strong> — POSIX স্পষ্টভাবে
+      অনুমতি দেয় যে <code>cond_wait</code> কোনো signal
+      ছাড়াই ফিরে আসতে পারে। Linux এ এটা সত্যিই ঘটে
+      (signal handler এর কারণে)।
+    </li>
+  </ul>
+  <p>
+    তাই নিয়মটা নিঃশর্ত:
+    <strong>শর্ত সবসময় একটা <code>while</code> loop এ
+    পরীক্ষা করুন, আর lock ধরা অবস্থায় করুন</strong>।
+  </p>
+  <pre><code>/* ভুল */
+if (queue_empty) pthread_cond_wait(&amp;c, &amp;m);
+
+/* ঠিক */
+while (queue_empty) pthread_cond_wait(&amp;c, &amp;m);</code></pre>
+  <p>
+    আধুনিক API গুলো এই ভুলটা অসম্ভব করে দিয়েছে —
+    C++ এর <code>cv.wait(lock, predicate)</code> আর Rust
+    এর <code>wait_while</code> শর্তটাই argument হিসেবে নেয়।
+  </p>
+</div>
+
+<h2 id="c17-producer">Producer/consumer — আসল উদাহরণ</h2>
+
+<p>
+  এটাই সবচেয়ে বেশি ব্যবহৃত pattern, আর ভুল করার সবচেয়ে বেশি
+  সুযোগও এখানে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Bounded buffer with two condition variables.
+   TWO is the important part — see below. */
+#define MAX 10
+
+int buffer[MAX];
+int fill = 0, use = 0, count = 0;
+
+pthread_mutex_t m    = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  full = PTHREAD_COND_INITIALIZER;   /* "buffer has room" */
+pthread_cond_t  empty = PTHREAD_COND_INITIALIZER;  /* "buffer has data" */
+
+static void put(int value) {
+    buffer[fill] = value;
+    fill = (fill + 1) % MAX;
+    count++;
+}
+
+static int get(void) {
+    int tmp = buffer[use];
+    use = (use + 1) % MAX;
+    count--;
+    return tmp;
+}
+
+void *producer(void *arg) {
+    for (int i = 0; i &lt; LOOPS; i++) {
+        pthread_mutex_lock(&amp;m);
+        while (count == MAX)                 /* while! */
+            pthread_cond_wait(&amp;full, &amp;m);    /* wait for room */
+        put(i);
+        pthread_cond_signal(&amp;empty);         /* tell a consumer */
+        pthread_mutex_unlock(&amp;m);
+    }
+    return NULL;
+}
+
+void *consumer(void *arg) {
+    for (int i = 0; i &lt; LOOPS; i++) {
+        pthread_mutex_lock(&amp;m);
+        while (count == 0)                   /* while! */
+            pthread_cond_wait(&amp;empty, &amp;m);   /* wait for data */
+        int tmp = get();
+        pthread_cond_signal(&amp;full);          /* tell a producer */
+        pthread_mutex_unlock(&amp;m);
+        printf("%d\n", tmp);
+    }
+    return NULL;
+}</code></pre></div>
+
+<p>
+  <strong>দুটো আলাদা condition variable কেন?</strong> এটাই
+  এই code এর সবচেয়ে গুরুত্বপূর্ণ সিদ্ধান্ত। একটা দিয়ে চেষ্টা
+  করলে যা হয়:
+</p>
+
+<pre class="ascii"><code>  একটাই CV হলে (ভুল নকশা):
+
+  buffer ভরা। দুটো producer অপেক্ষা করছে, একটা consumer।
+
+  consumer একটা item নিল, signal() দিল
+       │
+       └─ কে জাগবে? CV তে অপেক্ষারত যেকেউ!
+          → হয়তো আরেকটা PRODUCER জাগল
+          → সে দেখল buffer এখনো... না, জায়গা আছে, ঠিক আছে
+
+  কিন্তু উল্টো ক্ষেত্রে:
+  buffer খালি। দুটো consumer অপেক্ষা করছে।
+  একটা consumer signal পেল কিন্তু সে তো CONSUMER —
+  সে অন্য consumer কে জাগাল, যে দেখল buffer খালি,
+  আবার ঘুমিয়ে পড়ল।
+       → প্রকৃত producer কখনো জাগল না
+       → সবাই ঘুমিয়ে → DEADLOCK
+
+  দুটো CV থাকলে: "জায়গা হলো" আর "data হলো"
+  দুটো আলাদা সংকেত — ভুল পক্ষ কখনো জাগে না।</code></pre>
+
+<p>
+  একটা বিকল্প আছে — <code>pthread_cond_broadcast()</code>
+  দিয়ে সবাইকে জাগানো। এটা সঠিক হয়ে যায়, কিন্তু অপচয়:
+  ১০০ জনকে জাগিয়ে ৯৯ জন আবার ঘুমাতে যাবে (thundering herd)।
+  তাই নিয়মটা হলো:
+</p>
+
+<pre class="ascii"><code>  signal()    → একজনকে জাগাও।
+                ব্যবহার করুন যখন যেকোনো একজন waiter
+                কাজটা সামলাতে পারে (একই শর্ত, একই CV)
+
+  broadcast() → সবাইকে জাগাও।
+                ব্যবহার করুন যখন শর্তটা একাধিক ধরনের
+                waiter কে প্রভাবিত করে, বা যখন
+                কতজন এগোতে পারবে তা অজানা
+                (যেমন একটা barrier, বা shutdown signal)</code></pre>
+
+<h2 id="c17-semaphore">Semaphore — একটাই primitive, দুটো কাজ</h2>
+
+<p>
+  Semaphore হলো একটা integer সহ দুটো atomic operation।
+  Dijkstra এর মূল নাম ছিল <code>P</code> আর <code>V</code>;
+  POSIX এ <code>sem_wait</code> আর <code>sem_post</code>:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>#include &lt;semaphore.h&gt;
+
+sem_t s;
+sem_init(&amp;s, 0, X);     /* X = initial value; 0 = not process-shared */
+
+/* sem_wait: মান ১ কমাও; নেগেটিভ হলে ঘুমাও */
+sem_wait(&amp;s);
+
+/* sem_post: মান ১ বাড়াও; কেউ অপেক্ষা করলে একজনকে জাগাও */
+sem_post(&amp;s);</code></pre></div>
+
+<p>
+  Initial value টাই ঠিক করে দেয় semaphore টা কী করবে —
+  আর এটাই semaphore এর সৌন্দর্য আর বিভ্রান্তি দুটোরই কারণ:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Initial</th><th>নাম</th><th>কী করে</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>1</code></td>
+      <td><strong>Binary semaphore</strong> (mutex এর মতো)</td>
+      <td>একসাথে একজন — mutual exclusion</td>
+    </tr>
+    <tr>
+      <td><code>0</code></td>
+      <td><strong>Signalling</strong> (condition variable এর মতো)</td>
+      <td>একটা ঘটনার অপেক্ষা</td>
+    </tr>
+    <tr>
+      <td><code>N</code></td>
+      <td><strong>Counting semaphore</strong></td>
+      <td>একসাথে সর্বোচ্চ N জন — resource pool</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Initial 1 — as a lock */
+sem_t m;
+sem_init(&amp;m, 0, 1);
+sem_wait(&amp;m);   counter++;   sem_post(&amp;m);
+
+/* Initial 0 — as a completion signal (like thr_join) */
+sem_t done;
+sem_init(&amp;done, 0, 0);
+/* child: */  sem_post(&amp;done);
+/* parent: */ sem_wait(&amp;done);     /* blocks until the child posts */
+
+/* Initial N — as a connection pool limiter */
+sem_t slots;
+sem_init(&amp;slots, 0, 10);           /* at most 10 concurrent */
+sem_wait(&amp;slots);
+    do_database_query();
+sem_post(&amp;slots);</code></pre></div>
+
+<p>
+  তৃতীয়টাই বাস্তবে সবচেয়ে কাজের, আর এটা condition variable
+  দিয়ে করা বেশি ঝামেলার। একটা connection pool, একটা rate
+  limiter, একটা "সর্বোচ্চ ৫টা concurrent upload" — সবই
+  counting semaphore।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Semaphore আর mutex একই জিনিস, শুধু নাম আলাদা।"</strong>
+  </p>
+  <p>
+    একটা binary semaphore দিয়ে mutual exclusion পাওয়া যায়,
+    কিন্তু দুটো গুরুত্বপূর্ণ পার্থক্য আছে:
+  </p>
+  <ul>
+    <li>
+      <strong>Mutex এর একজন মালিক আছে</strong> — যে lock
+      করেছে, শুধু সেই unlock করতে পারে। এর ফলে kernel
+      priority inheritance করতে পারে (একটা উচ্চ-priority
+      thread যদি একটা নিম্ন-priority holder এর অপেক্ষায়
+      থাকে, holder এর priority তুলে দেওয়া হয়)।
+      Semaphore এর মালিক নেই — যেকেউ <code>post</code>
+      করতে পারে।
+    </li>
+    <li>
+      <strong>Deadlock debug করা আলাদা</strong> — mutex এ
+      "কে ধরে আছে" জানা যায়, তাই lockdep এর মতো tool
+      কাজ করে। Semaphore এ সেটা জানা যায় না।
+    </li>
+  </ul>
+  <p>
+    ব্যবহারিক নিয়ম: <strong>mutual exclusion এর জন্য
+    mutex, সংকেতের জন্য condition variable, গণনার জন্য
+    semaphore</strong>। তিনটেই থাকার কারণ আছে।
+  </p>
+</div>
+
+<div class="box old">
+  <div class="box-t">যা আমরা বাদ দিলাম</div>
+  <p>
+    OSTEP এই দুটো chapter এ dining philosophers সমস্যাটায়
+    উল্লেখযোগ্য জায়গা দেয়। আমরা সেটা বাদ দিয়েছি, আর
+    কারণটা স্পষ্ট করে বলা ভালো।
+  </p>
+  <p>
+    Dining philosophers একটা সুন্দর তাত্ত্বিক ধাঁধা, আর
+    deadlock এর চারটে শর্ত বোঝানোর একটা উপায়। কিন্তু
+    একজন working engineer এর কাছে এর গঠনটা কখনো আসে না —
+    আপনি পাঁচটা কাঁটা-চামচ নিয়ে symmetric resource
+    acquisition সমস্যা সমাধান করেন না।
+  </p>
+  <p>
+    যেটা সত্যিই আসে সেটা হলো: <strong>দুটো transaction
+    দুটো row কে বিপরীত ক্রমে lock করছে</strong>। ধারণাটা
+    একই (circular wait), কিন্তু রূপটা সম্পূর্ণ আলাদা।
+    তাই এই জায়গাটা chapter 18 এ খরচ করছি — ওখানে
+    Postgres এর <code>40P01 deadlock detected</code>,
+    lock ordering, আর TSan/lockdep থাকবে।
+  </p>
+</div>
+
+<h2 id="c17-modern">আধুনিক বিকল্প</h2>
+
+<p>
+  ২০২৬ এ আপনি সম্ভবত এই primitive গুলো সরাসরি ব্যবহার করবেন
+  না। উঁচু স্তরের abstraction গুলো একই কাজ করে, কম ভুলের
+  সুযোগ দিয়ে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* C++20 — the predicate form makes the while-loop bug impossible */
+std::mutex m;
+std::condition_variable cv;
+std::queue&lt;int&gt; q;
+
+/* consumer */
+std::unique_lock lk(m);
+cv.wait(lk, []{ return !q.empty(); });   /* loops internally */
+int v = q.front(); q.pop();
+
+/* C++20 also has real counting semaphores and latches */
+std::counting_semaphore&lt;10&gt; slots(10);
+std::latch done(n_workers);</code></pre></div>
+
+<div class="codewrap"><span class="lang">go</span>
+<pre><code>// Go — a buffered channel IS a bounded producer/consumer queue.
+// No condition variable, no while loop, no lost wakeup.
+ch := make(chan int, 10)          // capacity 10 = the bounded buffer
+
+// producer
+ch &lt;- value                        // blocks if full
+
+// consumer
+v := &lt;-ch                          // blocks if empty
+
+// WaitGroup replaces the "wait for all workers" pattern
+var wg sync.WaitGroup
+wg.Add(n)
+// each worker: defer wg.Done()
+wg.Wait()
+
+// A counting semaphore, idiomatically
+sem := make(chan struct{}, 10)
+sem &lt;- struct{}{}                  // acquire
+defer func() { &lt;-sem }()           // release</code></pre></div>
+
+<div class="codewrap"><span class="lang">javascript</span>
+<pre><code>// Node — the event loop removes the problem entirely for I/O.
+// For limiting concurrency you use a semaphore-shaped library:
+import pLimit from 'p-limit';
+const limit = pLimit(10);          // at most 10 concurrent
+await Promise.all(urls.map(u =&gt; limit(() =&gt; fetch(u))));
+
+// Backpressure in streams is the bounded-buffer idea:
+readable.pipe(writable);           // pauses when the sink is full</code></pre></div>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Bounded buffer টা আপনার architecture এ সর্বত্র, আর
+    "bounded" শব্দটাই আসল বিষয়:
+  </p>
+  <ul>
+    <li>
+      <strong>Connection pool</strong> (PgBouncer, HikariCP)
+      একটা counting semaphore। Pool শেষ হলে আপনার request
+      অপেক্ষা করে — সেটা <em>ভালো</em>, কারণ বিকল্প হলো
+      database কে ডুবিয়ে দেওয়া।
+    </li>
+    <li>
+      <strong>Kafka consumer</strong> এর <code>max.poll.records</code>
+      আর Node stream এর <code>highWaterMark</code> — দুটোই
+      একই bounded buffer, আর দুটোই backpressure প্রয়োগ করে।
+    </li>
+    <li>
+      <strong>একটা unbounded queue একটা bug</strong> —
+      producer যদি consumer এর চেয়ে দ্রুত হয়, unbounded
+      queue মানে memory শেষ হওয়া পর্যন্ত বাড়তে থাকা, তারপর
+      chapter 11 এর OOM kill। Bounded buffer চাপটা
+      producer এর দিকে ফেরত পাঠায়, যেটাই সঠিক আচরণ।
+    </li>
+  </ul>
+  <p>
+    Go তে <code>make(chan int)</code> (unbuffered) আর
+    <code>make(chan int, 1000000)</code> এর মধ্যে সিদ্ধান্তটা
+    ঠিক এই আলোচনা — আর উত্তরটা প্রায় সবসময় ছোট buffer।
+  </p>
+</div>
+
+<h2 id="c17-summary">কোনটা কখন</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>দরকার</th><th>হাতিয়ার</th><th>Go/JS এ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>একসাথে একজন</td>
+      <td><code>mutex</code></td>
+      <td><code>sync.Mutex</code></td>
+    </tr>
+    <tr>
+      <td>একটা শর্তের অপেক্ষা</td>
+      <td><code>condition variable</code></td>
+      <td>channel</td>
+    </tr>
+    <tr>
+      <td>সর্বোচ্চ N জন</td>
+      <td>counting <code>semaphore</code></td>
+      <td>buffered channel / <code>p-limit</code></td>
+    </tr>
+    <tr>
+      <td>সবার শেষ হওয়ার অপেক্ষা</td>
+      <td><code>cond</code> + counter, বা barrier</td>
+      <td><code>sync.WaitGroup</code> / <code>Promise.all</code></td>
+    </tr>
+    <tr>
+      <td>Producer/consumer</td>
+      <td>bounded buffer (২টা CV)</td>
+      <td>buffered channel</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  ডান কলামটা লক্ষ করুন: আধুনিক ভাষায় প্রায় সব সারির উত্তর
+  একটা channel। এটা কাকতালীয় নয় — channel হলো এই
+  primitive গুলোর একটা সমন্বিত, কম-ভুল-প্রবণ রূপ।
+  Chapter 14 এর সেই পরামর্শটাই: <strong>সবচেয়ে ভালো
+  সমাধান হলো shared mutable state এড়ানো</strong>।
+</p>
+
+<div class="qs">
+  <h2 id="c17-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      <code>pthread_cond_wait()</code> lock ছাড়া আর ঘুমানো —
+      দুটো কাজ atomically করে। যদি atomic না হতো, তাহলে
+      ঠিক কোন interleaving এ একটা thread চিরকাল ঘুমিয়ে
+      থাকত? ক্রমটা লিখুন।
+    </li>
+    <li>
+      <code>while</code> এর বদলে <code>if</code> দিলে তিনটে
+      স্বাধীন কারণে ভাঙতে পারে। তিনটের মধ্যে কোনটা আপনার
+      নিজের code এ কখনো ঘটবে না বলে আপনি যুক্তি দিতে পারেন,
+      আর কোনটা আপনি কখনো নিয়ন্ত্রণ করতে পারবেন না?
+    </li>
+    <li>
+      Producer/consumer এ একটা CV দিয়ে deadlock হতে পারে।
+      <code>broadcast()</code> ব্যবহার করলে সেটা সারবে —
+      কিন্তু কী দাম দিয়ে? ১০০ consumer আর ১টা item এর
+      পরিস্থিতিতে হিসাব করুন কতগুলো অর্থহীন wake-up হবে।
+    </li>
+    <li>
+      Mutex এর মালিক আছে, semaphore এর নেই। এই একটা
+      পার্থক্য থেকে দুটো ব্যবহারিক পরিণতি বের করুন — একটা
+      priority সংক্রান্ত, আরেকটা debugging সংক্রান্ত।
+    </li>
+    <li>
+      একটা unbounded queue কেন একটা bug? Producer consumer
+      এর চেয়ে ২০% দ্রুত হলে কী ঘটবে, আর chapter 11 এর
+      কোন mechanism শেষে হস্তক্ষেপ করবে? Bounded buffer
+      এই পরিস্থিতিতে কী আলাদা করে?
+    </li>
+    <li>
+      Go তে প্রায় সব synchronization pattern এর উত্তর একটা
+      channel। কিন্তু channel নিজেই ভিতরে mutex আর
+      condition variable ব্যবহার করে। তাহলে channel কী
+      যোগ করে যা primitive গুলো দেয় না — আর কোন
+      পরিস্থিতিতে আপনি তবু সরাসরি <code>sync.Mutex</code>
+      ব্যবহার করবেন?
+    </li>
+  </ol>
+</div>

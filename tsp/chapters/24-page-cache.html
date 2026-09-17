@@ -1,0 +1,543 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· সম্পূর্ণ নতুন — OSTEP এ page cache এর আলাদা আলোচনা নেই</span>
+  </div>
+  <h1>Page cache — লেখা কোথায় যায়</h1>
+  <p class="ch-lede">
+    Chapter 23 এ দেখেছি একটা খালি file বানাতে ~১০টা I/O লাগে।
+    তবু আপনার program এ <code>write()</code> ফেরে microsecond এ।
+    মাঝখানে যে layer টা আছে সেটাই page cache — আর "free memory
+    কম" বা "RSS বাড়ছে" এর বেশিরভাগ রহস্য এখানেই।
+  </p>
+</div>
+
+<p>
+  Chapter 23 এর হিসাবটা মনে করুন: একটা file create এ ~১০টা
+  disk I/O, একটা ৪KB লেখায় আরও ৫টা। Disk এ প্রতিটা I/O
+  ~২০µs (NVMe) থেকে ~১০ms (HDD)। তাহলে একটা সাধারণ
+  <code>write()</code> কেন ~১µs এ ফেরে?
+</p>
+
+<p>
+  কারণ সেটা disk এ যায়ই না। যায় <strong>page cache</strong> এ —
+  RAM এ।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Disk RAM এর চেয়ে হাজার গুণ ধীর, কিন্তু একই data
+    বারবার লাগে। OS কীভাবে RAM কে disk এর cache হিসেবে
+    ব্যবহার করবে — আর কতটা RAM এতে দেবে?
+  </p>
+</div>
+
+<h2 id="c24-what">Page cache কী</h2>
+
+<pre class="ascii"><code>  ┌──────────────────────────────────────────────┐
+  │  application:  read(fd, buf, 4096)           │
+  └────────────────────┬─────────────────────────┘
+                       │
+  ┌────────────────────▼─────────────────────────┐
+  │  PAGE CACHE  (RAM এ, page-আকারের খণ্ডে)      │
+  │                                              │
+  │  ┌────────┬────────┬────────┬────────┐       │
+  │  │ file A │ file A │ file B │ file C │       │
+  │  │ page 0 │ page 1 │ page 7 │ page 0 │  ...  │
+  │  └────────┴────────┴────────┴────────┘       │
+  │                                              │
+  │  cache এ আছে?  ──▶ হ্যাঁ: সাথে সাথে ফেরত     │
+  │                    (~১ µs, কোনো disk I/O নেই) │
+  └────────────────────┬─────────────────────────┘
+                       │ না: minor→major fault (ch 9)
+  ┌────────────────────▼─────────────────────────┐
+  │  file system → block layer → device          │
+  └──────────────────────────────────────────────┘
+
+  একক: একটা PAGE (৪KB) — chapter 9 এর সেই page।
+  এই কারণেই file system এর block size ও ৪KB।</code></pre>
+
+<p>
+  গুরুত্বপূর্ণ কথা: <strong>Linux এ page cache এর আকার
+  স্থির নয়</strong>। সে যত RAM খালি আছে তার প্রায় সবটাই
+  নিয়ে নেয়, আর দরকার হলে ছেড়ে দেয় (chapter 11 এর
+  reclaim)। এটাই সবচেয়ে বড় বিভ্রান্তির উৎস।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা — সম্ভবত সবচেয়ে প্রচলিত</div>
+  <p>
+    <strong>"<code>free -h</code> বলছে মাত্র ২০০MB free —
+    আমার server এর RAM শেষ হয়ে যাচ্ছে!"</strong>
+  </p>
+  <pre><code>$ free -h
+              total   used   free   shared  buff/cache  available
+Mem:           31Gi   8.2Gi  210Mi   1.1Gi      23Gi       22Gi
+                             ↑ ভয় পাওয়ার মতো    ↑ এটাই আসল উত্তর
+                                        ↑ এটা page cache</code></pre>
+  <p>
+    ওই ২৩GB <code>buff/cache</code> হলো page cache —
+    আর সেটা <strong>reclaimable</strong>। কোনো process
+    memory চাইলে kernel সাথে সাথে ওখান থেকে ছেড়ে দেবে
+    (clean page ফেলে দিতে কোনো খরচ নেই, disk এ copy আছেই)।
+  </p>
+  <p>
+    দেখার সংখ্যাটা <code>free</code> নয়,
+    <strong><code>available</code></strong> — ২২GB।
+    Kernel নিজেই হিসাব করে বলে দেয় কতটা সত্যিই পাওয়া যাবে।
+  </p>
+  <p>
+    আসলে <strong>কম <code>free</code> থাকা ভালো লক্ষণ</strong> —
+    মানে আপনার RAM কাজে লাগছে। খালি RAM অপচয়।
+    "unused memory is wasted memory" — Linux এর নকশার
+    একটা মৌলিক নীতি।
+  </p>
+</div>
+
+<h2 id="c24-read">পড়ার পথ — আর readahead</h2>
+
+<pre class="ascii"><code>  read(fd, buf, 4096)
+
+  ১. offset থেকে page index হিসাব করো
+  ২. page cache এ খোঁজো (একটা radix tree / xarray তে)
+       │
+       ├── পাওয়া গেল  → buf এ copy করো, ফেরত  (~১ µs)
+       │                 ↑ এটাই "minor" পথ
+       │
+       └── নেই → disk থেকে আনতে হবে
+             │
+             ├── একটা page চাও, কিন্তu kernel বেশি আনে!
+             │   ← READAHEAD
+             ▼
+           block layer → device → page cache এ বসাও
+           তারপর copy করে ফেরত  (~২০ µs – ১০ ms)</code></pre>
+
+<p>
+  <strong>Readahead</strong> টা গুরুত্বপূর্ণ: kernel যদি
+  দেখে আপনি ক্রমিকভাবে পড়ছেন, সে আপনার চাওয়ার আগেই পরের
+  page গুলো এনে রাখে। এই কারণেই sequential read এ প্রথম
+  read ধীর আর বাকিগুলো দ্রুত।
+</p>
+
+<pre><code># readahead এর আকার (KB তে)
+$ cat /sys/block/nvme0n1/queue/read_ahead_kb
+128
+
+# কোনো file এর কতটা এখন cache এ আছে
+$ vmtouch -v /var/lib/postgresql/data/base/16384/1259
+[OOo                    ] 12/1024   1%
+#  ↑ প্রতিটা অক্ষর একটা page গুচ্ছ; O = cached
+
+# নিজের application এ readahead নিয়ন্ত্রণ
+$ # posix_fadvise() দিয়ে hint দেওয়া যায় — নিচে দেখুন</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Telling the kernel what you are about to do.
+   These are hints, not commands — but they work well. */
+#include &lt;fcntl.h&gt;
+
+/* "I will read this whole file sequentially" → aggressive readahead */
+posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+/* "I will jump around" → disable readahead, stop wasting I/O */
+posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+
+/* "I am done with this range" → drop it from the cache,
+   so it does not evict data someone else needs.
+   This is what a backup or a log-shipper should do. */
+posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+
+/* "I will need this soon" → start reading now, in the background */
+posix_fadvise(fd, offset, len, POSIX_FADV_WILLNEED);</code></pre></div>
+
+<p>
+  ওই <code>DONTNEED</code> টা বিশেষভাবে কাজের, আর একটা
+  বাস্তব সমস্যা সারায়: একটা nightly backup পুরো database
+  পড়ে, আর তাতে page cache ভরে যায় backup এর data দিয়ে —
+  যেটা আর কখনো লাগবে না। ফলে আপনার আসল hot data cache
+  থেকে বেরিয়ে যায়, আর সকালে সব query ধীর। এটাই
+  <strong>cache pollution</strong>, আর <code>DONTNEED</code>
+  এর উত্তর।
+</p>
+
+<h2 id="c24-write">লেখার পথ — writeback</h2>
+
+<p>
+  এখন সবচেয়ে গুরুত্বপূর্ণ অংশ, আর যেটা chapter 25 এর
+  ভিত্তি।
+</p>
+
+<pre class="ascii"><code>  write(fd, buf, 4096)
+
+  ১. page cache এ page টা খোঁজো (বা বানাও)
+  ২. buf থেকে ওই page এ copy করো
+  ৩. page টাকে DIRTY চিহ্নিত করো
+  ৪. ফেরত যাও  ←── এখানেই write() শেষ!  (~১ µs)
+
+     ┌───────────────────────────────────────┐
+     │  ⚠  data এখন শুধু RAM এ আছে।          │
+     │     power গেলে হারিয়ে যাবে।           │
+     └───────────────────────────────────────┘
+
+  পরে, স্বাধীনভাবে:
+
+  ৫. kswapd বা একটা writeback thread (flusher)
+     dirty page গুলো disk এ লেখে
+  ৬. page টা CLEAN হয়ে যায়
+
+  কখন ধাপ ৫ হয়? তিনটে কারণে:
+    • সময় পার হয়েছে   (dirty_expire_centisecs, default ৩০s)
+    • dirty অনুপাত বেশি (dirty_ratio, dirty_background_ratio)
+    • কেউ জোর করেছে     (fsync, sync, umount)</code></pre>
+
+<p>
+  এই বিলম্বটা ইচ্ছাকৃত, আর তিনটে সুবিধা দেয়:
+</p>
+
+<ul>
+  <li>
+    <strong>Batching</strong> — অনেক ছোট লেখা একসাথে বড়
+    করে পাঠানো। Chapter 21 এর write amplification এর
+    জন্য এটা সরাসরি লাভ।
+  </li>
+  <li>
+    <strong>Write coalescing</strong> — একই page বারবার
+    লিখলে disk এ একবারই যায়। একটা counter যদি সেকেন্ডে
+    ১০০০ বার বদলায়, disk এ যায় ৩০ সেকেন্ডে একবার।
+  </li>
+  <li>
+    <strong>বাতিল হওয়া লেখা</strong> — একটা temp file
+    লিখে মুছে ফেললে disk এ কিছুই যেতে পারে না।
+  </li>
+</ul>
+
+<pre><code># এই মুহূর্তে কত dirty data RAM এ ঝুলে আছে
+$ grep -E 'Dirty|Writeback' /proc/meminfo
+Dirty:            524288 kB     ← ৫১২ MB এখনো disk এ যায়নি!
+Writeback:          8192 kB     ← এই মুহূর্তে লেখা হচ্ছে
+
+# writeback এর নিয়ন্ত্রণ
+$ sysctl vm.dirty_background_ratio   # ১০% — flusher শুরু হয়
+$ sysctl vm.dirty_ratio              # ২০% — লেখক নিজেই আটকে যায়!
+$ sysctl vm.dirty_expire_centisecs   # ৩০০০ = ৩০ সেকেন্ড
+
+# byte-ভিত্তিক বিকল্প (বড় RAM এ ratio বিপজ্জনক)
+$ sysctl vm.dirty_background_bytes vm.dirty_bytes</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong><code>dirty_ratio</code> শুধু একটা tuning
+    knob — বাড়িয়ে দিলে লেখা দ্রুত হবে।"</strong>
+  </p>
+  <p>
+    <code>dirty_ratio</code> ছাড়ালে যা হয় তা tuning নয়,
+    একটা <strong>cliff</strong>: লেখক process নিজেই
+    writeback করতে বাধ্য হয় (throttled write)। আপনার
+    <code>write()</code> যেটা ~১µs ছিল, হঠাৎ কয়েকশো
+    millisecond নেয়।
+  </p>
+  <p>
+    আর ৩২GB RAM এ <code>dirty_ratio=20</code> মানে
+    ৬.৪GB dirty data জমতে পারে। সেটা যখন একসাথে disk
+    এ যাবে, আপনার latency তে একটা বিশাল কাঁটা পড়বে —
+    আর সেই সময়ে অন্য সব I/O ও আটকে থাকবে।
+  </p>
+  <p>
+    এই কারণেই বড় RAM এর মেশিনে <code>*_bytes</code>
+    variant ব্যবহার করা ভালো (যেমন
+    <code>dirty_background_bytes = 256MB</code>) —
+    একটা স্থির, পূর্বানুমেয় সীমা, RAM এর আকারের সাথে
+    বাড়ে না।
+  </p>
+</div>
+
+<h2 id="c24-mmap">mmap — cache টা সরাসরি দেখা</h2>
+
+<p>
+  <code>read()</code> করলে page cache থেকে আপনার buffer এ
+  একটা <strong>copy</strong> হয়। <code>mmap()</code> সেই
+  copy টা বাদ দেয় — cache এর page গুলোই সরাসরি আপনার
+  address space এ map করে দেয়।
+</p>
+
+<pre class="ascii"><code>  read():
+    disk → page cache → আপনার buffer     (দুটো copy)
+                        ↑ এই copy টা বাদ দেওয়া যায়
+
+  mmap():
+    disk → page cache ←─ আপনার pointer সরাসরি এখানে
+                         (কোনো copy নেই)
+
+  ┌─────────────────────────────────────────┐
+  │  process এর address space               │
+  │  ┌───────────────────────────────┐      │
+  │  │ mmap করা অঞ্চল                 │      │
+  │  │  page table entry ────────────┼──┐   │
+  │  └───────────────────────────────┘  │   │
+  └─────────────────────────────────────┼───┘
+                                        │
+  page cache ┌────────┐ ◀───────────────┘
+             │ file   │  একই physical page!
+             │ page 7 │  একাধিক process ভাগ করতে পারে
+             └────────┘</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* mmap: the file becomes an array */
+int fd = open("data.bin", O_RDWR);
+struct stat st; fstat(fd, &amp;st);
+
+char *p = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE,
+               MAP_SHARED, fd, 0);
+
+p[1000] = 'X';          /* a write() with no syscall at all */
+
+/* Force it to disk — the mmap equivalent of fsync */
+msync(p, st.st_size, MS_SYNC);
+munmap(p, st.st_size);</code></pre></div>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th><code>read()</code>/<code>write()</code></th><th><code>mmap()</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Copy</td><td>একটা copy</td><td>কোনো copy নেই</td></tr>
+    <tr><td>Syscall</td><td>প্রতি call এ একটা</td><td>শুধু setup এ</td></tr>
+    <tr><td>খরচ</td><td>syscall (~৫০–৪০০ns)</td><td>page fault (~১µs প্রতি নতুন page)</td></tr>
+    <tr><td>Error handling</td><td><code>errno</code> ফেরত</td><td><strong><code>SIGBUS</code></strong> — সামলানো কঠিন</td></tr>
+    <tr><td>ভালো যখন</td><td>ক্রমিক, বড় I/O, stream</td><td>random access, বারবার একই data</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong><code>mmap</code> copy বাদ দেয়, তাই এটা
+    সবসময় দ্রুত।"</strong>
+  </p>
+  <p>
+    Copy বাঁচে, কিন্তু নতুন খরচ আসে:
+  </p>
+  <ul>
+    <li>
+      প্রতিটা নতুন page ছোঁয়ায় একটা <strong>page
+      fault</strong> (~১µs) — একটা বড় sequential scan এ
+      হাজারো fault, যেটা একটা বড় <code>read()</code>
+      এর চেয়ে বেশি খরচি।
+    </li>
+    <li>
+      <code>munmap</code> এ <strong>TLB shootdown</strong>
+      (chapter 10) — বহু-core মেশিনে IPI ঝড়।
+    </li>
+    <li>
+      <strong>Error গুলো signal হয়ে আসে।</strong> Disk এ
+      I/O error হলে আপনি <code>SIGBUS</code> পাবেন,
+      <code>errno</code> নয়। একটা signal handler থেকে
+      সুন্দরভাবে পুনরুদ্ধার করা কঠিন — এই কারণেই
+      <strong>Postgres ইচ্ছাকৃতভাবে data file এ
+      <code>mmap</code> ব্যবহার করে না</strong>, বরং
+      নিজের <code>shared_buffers</code> রাখে।
+    </li>
+  </ul>
+  <p>
+    আর SQLite এর <code>mmap_size</code> default ০ —
+    একই কারণে। যারা ব্যবহার করে (LMDB, LevelDB এর কিছু
+    অংশ) তারা সচেতনভাবে random-access pattern এর জন্য
+    বেছে নেয়।
+  </p>
+</div>
+
+<h2 id="c24-odirect">O_DIRECT — cache পাশ কাটানো</h2>
+
+<p>
+  কখনো আপনি page cache চান না। একটা database এর নিজের
+  buffer pool আছে, তাই OS এর cache টা <strong>double
+  caching</strong> — একই data দুবার RAM এ।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* O_DIRECT — bypass the page cache entirely.
+   The kernel DMAs straight into your buffer (chapter 20). */
+int fd = open("data.db", O_RDWR | O_DIRECT);
+
+/* Strict alignment requirements — this is the hard part:
+   buffer address, offset, AND length must all be aligned
+   to the logical block size (usually 512 or 4096). */
+void *buf;
+posix_memalign(&amp;buf, 4096, 4096);      /* not malloc()! */
+pread(fd, buf, 4096, 0);                /* offset and len aligned too */</code></pre></div>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>কে ব্যবহার করে</th><th>কেন</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Postgres</strong></td>
+      <td>না (WAL এ কিছু ক্ষেত্রে) — page cache এর উপর নির্ভর করে, তাই <code>shared_buffers</code> RAM এর ২৫% রাখার পরামর্শ</td>
+    </tr>
+    <tr>
+      <td><strong>MySQL/InnoDB</strong></td>
+      <td>হ্যাঁ (<code>O_DIRECT</code> default) — নিজের buffer pool RAM এর ~৭০%</td>
+    </tr>
+    <tr>
+      <td><strong>Oracle, SQL Server</strong></td>
+      <td>হ্যাঁ — সম্পূর্ণ নিজের cache ব্যবস্থাপনা</td>
+    </tr>
+    <tr>
+      <td><strong>Kafka</strong></td>
+      <td>না — ইচ্ছাকৃতভাবে page cache এর উপর নির্ভর করে, আর <code>sendfile()</code> দিয়ে zero-copy পাঠায়</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  Postgres আর MySQL এর এই বিপরীত পছন্দটা শিক্ষামূলক:
+  একই সমস্যা, দুটো বৈধ উত্তর। Postgres বলে "kernel cache
+  ভালো জানে, আমি ছোট buffer রাখি"; MySQL বলে "আমি আমার
+  access pattern ভালো জানি, আমাকে নিয়ন্ত্রণ দাও"।
+  তাই দুটোর memory tuning এর উপদেশ সম্পূর্ণ আলাদা —
+  আর একটার নিয়ম অন্যটায় লাগালে RAM নষ্ট হয়।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Container এ page cache একটা বিশেষ ফাঁদ তৈরি করে,
+    আর chapter 11 এর সাথে এটা সরাসরি জোড়া:
+  </p>
+  <pre><code># cgroup এর memory.max এ page cache ও গোনা হয়!
+$ cat /sys/fs/cgroup/memory.stat | grep -E '^(anon|file) '
+anon 524288000       ← আপনার heap
+file 402653184       ← page cache — এটাও limit এর ভিতরে
+
+# তাই একটা service যা প্রচুর file পড়ে, তার page cache
+# limit ভরিয়ে ফেলতে পারে। সৌভাগ্যক্রমে এটা reclaimable,
+# তাই kernel আগে এটাই বের করে — কিন্তু তখন আপনার
+# read গুলো আবার disk এ যাবে → হঠাৎ ধীর।</code></pre>
+    <p>
+      এই কারণেই একটা container এ <code>memory.max</code>
+      শুধু heap এর হিসাবে দিলে performance অপ্রত্যাশিতভাবে
+      খারাপ হয় — heap fit করে, কিন্তু cache এর জন্য
+      জায়গা থাকে না, তাই প্রতিটা read disk এ যায়।
+    </p>
+  <p>
+    <strong>Kafka</strong> এর নকশাটা এই chapter এর সেরা
+    উদাহরণ: সে ইচ্ছাকৃতভাবে নিজের cache রাখে না, page
+    cache এর উপর নির্ভর করে, আর consumer কে data পাঠায়
+    <code>sendfile()</code> দিয়ে — page cache থেকে
+    সরাসরি socket এ, userspace ছোঁয়াই না।
+    Producer এর লেখা তখনো cache এ গরম, তাই consumer
+    প্রায়ই disk ছোঁয়াই না। এই কারণেই Kafka এত দ্রুত,
+    আর এই কারণেই Kafka broker এ প্রচুর RAM (কিন্তু বড়
+    JVM heap নয়) সুপারিশ করা হয়।
+  </p>
+</div>
+
+<h2 id="c24-tools">দেখার যন্ত্রপাতি</h2>
+
+<pre><code># cache hit/miss — bcc/eBPF দিয়ে
+$ sudo cachestat 1
+    HITS   MISSES  DIRTIES  HITRATIO   BUFFERS_MB  CACHED_MB
+   14832      120      450    99.20%           82       4821
+
+# কোন file cache এর কত জায়গা নিচ্ছে
+$ sudo pcstat /var/lib/postgresql/data/base/*/[0-9]*
+$ vmtouch -v /path/to/file
+
+# একটা file cache এ গরম করে রাখা (test এর জন্য)
+$ vmtouch -t /path/to/file
+# বা cache পরিষ্কার করে benchmark করা:
+$ sync &amp;&amp; echo 3 | sudo tee /proc/sys/vm/drop_caches
+# ⚠ শুধু benchmark এ — production এ কখনো নয়
+
+# writeback এখন কী করছে
+$ cat /proc/meminfo | grep -E 'Dirty|Writeback'
+$ sudo iotop -o                 # কে সত্যিই disk I/O করছে</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>drop_caches</code> দিয়ে memory মুক্ত
+    করলে server দ্রুত হবে।"</strong>
+  </p>
+  <p>
+    উল্টোটা। Page cache ফেলে দিলে পরের প্রতিটা read
+    disk এ যাবে — আপনি ইচ্ছে করে সব cache miss বানালেন।
+    Server তাৎক্ষণিকভাবে <em>ধীর</em> হবে, তারপর ধীরে
+    ধীরে cache আবার গরম হবে।
+  </p>
+  <p>
+    এর একমাত্র বৈধ ব্যবহার হলো benchmark — যখন আপনি
+    cold-cache performance মাপতে চান। Production এ
+    এটা চালানো একটা self-inflicted outage।
+  </p>
+</div>
+
+<h2 id="c24-next">আর যা এখনো সমাধান হয়নি</h2>
+
+<p>
+  এই chapter এ একটা জিনিস ইচ্ছাকৃতভাবে ঝুলিয়ে রেখেছি:
+  <code>write()</code> ফেরার পরেও data শুধু RAM এ,
+  আর power গেলে হারিয়ে যায়।
+</p>
+
+<p>
+  Chapter 1 এ এই ভুল ধারণাটা প্রথম flag করেছিলাম, আর
+  বলেছিলাম "chapter 25 এর বিষয়"। এখন আমরা সেখানে
+  পৌঁছেছি — পরের chapter সম্পূর্ণভাবে এই প্রশ্নের:
+  <strong>কীভাবে নিশ্চিত হবেন যে data সত্যিই টিকে
+  থাকবে?</strong> আর কেন সেই প্রশ্নের উত্তর
+  <code>fsync()</code> ডাকার চেয়ে অনেক বেশি সূক্ষ্ম।
+</p>
+
+<div class="qs">
+  <h2 id="c24-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      <code>free -h</code> এ <code>free</code> মাত্র
+      ২০০MB কিন্তু <code>available</code> ২২GB। এই দুটো
+      সংখ্যার পার্থক্যটা কী মাপে, আর কেন কম
+      <code>free</code> থাকা ভালো লক্ষণ? Chapter 11 এর
+      reclaim এর সাথে সম্পর্কটা বলুন।
+    </li>
+    <li>
+      একটা nightly backup পুরো database পড়ে, আর সকালে
+      সব query ধীর হয়ে যায়। কী ঘটেছে, আর
+      <code>posix_fadvise</code> এর কোন flag দিয়ে backup
+      script টা সংশোধন করবেন?
+    </li>
+    <li>
+      ৩২GB RAM এ <code>dirty_ratio=20</code>। একটা bulk
+      import ১০GB লিখছে। ঠিক কোন মুহূর্তে আপনার
+      <code>write()</code> এর latency লাফিয়ে বাড়বে, আর
+      কেন? <code>dirty_background_bytes</code> ব্যবহার
+      করলে আচরণটা কীভাবে বদলাবে?
+    </li>
+    <li>
+      Postgres <code>mmap</code> এড়ায় কিন্তু page cache
+      ব্যবহার করে; MySQL <code>O_DIRECT</code> ব্যবহার করে
+      আর নিজের buffer pool রাখে। দুটোই বৈধ — প্রতিটার
+      পিছনের যুক্তি বলুন, আর বলুন কেন একটার memory
+      tuning নিয়ম অন্যটায় প্রয়োগ করলে RAM নষ্ট হয়।
+    </li>
+    <li>
+      <code>mmap</code> এ I/O error <code>SIGBUS</code>
+      হিসেবে আসে, <code>errno</code> নয়। কেন এটা একটা
+      database এর জন্য অগ্রহণযোগ্য? Chapter 10 এর TLB
+      shootdown <code>mmap</code> এর আরেকটা কোন খরচ যোগ করে?
+    </li>
+    <li>
+      একটা container এ <code>memory.max = 1Gi</code>, heap
+      ৭০০MB। Service টা প্রচুর file পড়ে। Performance
+      কেন অপ্রত্যাশিতভাবে খারাপ হবে, যদিও কোনো OOM kill
+      হচ্ছে না? সমাধান কী — আর Kafka এর নকশা এই সমস্যাটা
+      কীভাবে ব্যবহার করে নিজের সুবিধায়?
+    </li>
+  </ol>
+</div>

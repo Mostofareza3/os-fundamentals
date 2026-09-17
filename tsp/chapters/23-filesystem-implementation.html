@@ -1,0 +1,472 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p3">
+    Part 3 · Persistence
+    <span class="src">· OSTEP ch 40–41, pdf p478–507</span>
+  </div>
+  <h1>File system implementation — disk এ আসলে কী লেখা থাকে</h1>
+  <p class="ch-lede">
+    Chapter 22 এ inode এর কথা বলেছি কিন্তু সেটা disk এ কোথায়
+    তা বলিনি। এই chapter এ একটা সম্পূর্ণ file system এর
+    layout, একটা path lookup এ ঠিক কতগুলো I/O লাগে তার
+    হিসাব, আর কেন locality এত গুরুত্বপূর্ণ।
+  </p>
+</div>
+
+<p>
+  একটা file system বানাতে দুটো জিনিস ঠিক করতে হয়:
+</p>
+
+<ul>
+  <li>
+    <strong>Data structure</strong> — disk এ কী কী লেখা
+    থাকবে, কোন গঠনে?
+  </li>
+  <li>
+    <strong>Access method</strong> — <code>open()</code>,
+    <code>read()</code>, <code>write()</code> ওই গঠনগুলোর
+    উপর কীভাবে অনুবাদ হবে?
+  </li>
+</ul>
+
+<p>
+  একটা সরল কিন্তু পূর্ণাঙ্গ উদাহরণ দিয়ে শুরু করি — OSTEP
+  এর <strong>vsfs (Very Simple File System)</strong>।
+</p>
+
+<h2 id="c23-layout">Disk এর layout</h2>
+
+<p>
+  Disk কে সমান আকারের block এ ভাগ করা হয় — সাধারণত ৪KB,
+  যেটা chapter 9 এর page size এর সমান (কাকতালীয় নয় —
+  page cache এর সাথে মেলানোর জন্য)।
+</p>
+
+<pre class="ascii"><code>  ৬৪টা block এর একটা ছোট disk (মোট ২৫৬ KB):
+
+  block:  0    1    2    3    4    5    6    7   ...  63
+        ┌────┬────┬────┬────┬────┬────┬────┬────┬───┬────┐
+        │ S  │ i  │ d  │ I  │ I  │ I  │ I  │ I  │ D │ D  │
+        └────┴────┴────┴────┴────┴────┴────┴────┴───┴────┘
+          ▲    ▲    ▲    └──────────┬─────────┘  └───┬──┘
+          │    │    │               │                │
+          │    │    │        inode table       data region
+          │    │    │        (৫ block)         (৫৬ block)
+          │    │    │
+          │    │    └── data bitmap: কোন data block মুক্ত
+          │    └─────── inode bitmap: কোন inode মুক্ত
+          └──────────── superblock: fs এর metadata
+                        (কত inode, কত block, কোথায় কী,
+                         magic number দিয়ে fs type চেনা)
+
+  ৪KB block, প্রতি inode ২৫৬ byte
+  → প্রতি block এ ১৬টা inode
+  → ৫ block × ১৬ = ৮০টা inode সর্বোচ্চ</code></pre>
+
+<p>
+  ওই শেষ লাইনটা একটা বাস্তব সীমা: <strong>inode সংখ্যা
+  format করার সময়ই স্থির হয়ে যায়</strong>। Disk এ জায়গা
+  থাকলেও inode শেষ হয়ে যেতে পারে:
+</p>
+
+<pre><code>$ df -h /
+Filesystem  Size  Used Avail Use% Mounted on
+/dev/nvme0n1  500G  210G  265G  45% /      ← জায়গা আছে
+
+$ df -i /
+Filesystem   Inodes  IUsed  IFree IUse% Mounted on
+/dev/nvme0n1  32M     32M      0  100% /   ← inode শেষ!
+
+# ফলাফল: "No space left on device" যদিও df বলছে জায়গা আছে
+# সাধারণ কারণ: লক্ষ লক্ষ ছোট file (npm cache, session file,
+#              container layer)
+
+# কোথায় file জমেছে
+$ sudo find / -xdev -type f | awk -F/ '{print $2"/"$3}' | sort | uniq -c | sort -rn | head</code></pre>
+
+<p>
+  এই কারণেই XFS আর btrfs dynamic inode allocation করে —
+  আগে থেকে স্থির করে না। ext4 এ এখনো স্থির, তাই
+  <code>mkfs.ext4 -i</code> দিয়ে অনুপাত ঠিক করতে হয়।
+</p>
+
+<h2 id="c23-inode">Inode এর ভিতরে — indirect pointer</h2>
+
+<p>
+  Inode তে file এর block গুলোর ঠিকানা থাকে। কিন্তু একটা
+  inode মাত্র ২৫৬ byte — তাতে কত ঠিকানা রাখা যায়?
+</p>
+
+<pre class="ascii"><code>  inode (256 byte)
+  ┌──────────────────────────────┐
+  │ mode, uid, gid, size         │
+  │ atime, mtime, ctime          │
+  │ link count                   │
+  ├──────────────────────────────┤
+  │ direct[0]  ──▶ data block    │  ১২টা direct pointer
+  │ direct[1]  ──▶ data block    │  = ১২ × ৪KB = ৪৮ KB
+  │    ...                       │
+  │ direct[11] ──▶ data block    │
+  ├──────────────────────────────┤
+  │ single indirect ──▶ [block]  │  একটা block ভরা pointer
+  │                      ├──▶ data│ ৪KB / ৪ byte = ১০২৪টা
+  │                      ├──▶ data│ = ১০২৪ × ৪KB = ৪ MB
+  │                      └──▶ ... │
+  ├──────────────────────────────┤
+  │ double indirect ──▶ [block]  │  ১০২৪ × ১০২৪ × ৪KB
+  │                      └──▶[blk]│ = ৪ GB
+  ├──────────────────────────────┤
+  │ triple indirect ──▶ ...      │  ~৪ TB
+  └──────────────────────────────┘
+
+  এটা একটা অসম গাছ — আর সেটা ইচ্ছাকৃত:
+  ছোট file (বেশিরভাগ file) এ শুধু direct pointer লাগে,
+  তাই একটা মাত্র I/O তে সব ঠিকানা পাওয়া যায়।
+  বড় file এর জন্য বাড়তি স্তর, কিন্তু সেগুলো কম।</code></pre>
+
+<p>
+  Chapter 9 এর multi-level page table এর সাথে গঠনটা
+  প্রায় একই — একই সমস্যা (বিরল, বড় address space), একই
+  সমাধান (গাছ)। কিন্তু একটা পার্থক্য: এখানে প্রথম কয়েকটা
+  স্তর এড়িয়ে যাওয়া যায় (direct pointer), কারণ বেশিরভাগ
+  file ছোট।
+</p>
+
+<p>
+  আধুনিক file system একটা ভিন্ন পথ নিয়েছে —
+  <strong>extent</strong>:
+</p>
+
+<pre class="ascii"><code>  Pointer-ভিত্তিক (ext2/3):
+    block 100, 101, 102, 103, ..., 1123
+    → ১০২৪টা আলাদা pointer, ৪KB metadata
+
+  Extent-ভিত্তিক (ext4, XFS, btrfs):
+    (start: 100, length: 1024)
+    → একটা entry, ১২ byte
+
+  ৪MB file এর জন্য ৪KB metadata বনাম ১২ byte।
+  Sequential file এ এটা বিশাল সঞ্চয় — আর disk এ
+  কম metadata মানে কম I/O।</code></pre>
+
+<h2 id="c23-open">একটা <code>open()</code> এ কত I/O</h2>
+
+<p>
+  এবার সবচেয়ে শিক্ষামূলক হিসাবটা:
+  <code>open("/foo/bar", O_RDONLY)</code> করলে ঠিক কী কী
+  পড়তে হয়?
+</p>
+
+<pre class="ascii"><code>  open("/foo/bar")
+
+  ১. root directory এর inode পড়ো
+       (inode number ২ — এটা প্রথা, তাই খুঁজতে হয় না)     [read]
+  ২. root এর data block পড়ো → "foo" এর inode খুঁজো        [read]
+  ৩. foo এর inode পড়ো                                     [read]
+  ৪. foo এর data block পড়ো → "bar" এর inode খুঁজো         [read]
+  ৫. bar এর inode পড়ো                                      [read]
+  ৬. open file table এ entry বানাও, fd ফেরত দাও
+
+  মোট: ৫টা read — শুধু file টা খুলতে!
+       এখনো একটা byte ও পড়া হয়নি।
+
+  আর path যত গভীর, তত বেশি:
+  /a/b/c/d/e/file.txt → ১১টা read
+
+  এই কারণেই kernel এ dentry cache (dcache) আছে —
+  path থেকে inode এর ফলাফল cache করে রাখা।</code></pre>
+
+<pre><code># dentry cache এর আকার দেখা
+$ sudo slabtop -o | grep dentry
+$ grep dentry /proc/slabinfo | awk '{print $1, $2, $3}'
+
+# cache miss কতটা হচ্ছে (ধীর path lookup এর সংকেত)
+$ sudo perf stat -e 'ext4:*' -a sleep 5 2>&1 | head</code></pre>
+
+<p>
+  একটা লেখা আরও বেশি খরচি:
+</p>
+
+<pre class="ascii"><code>  একটা নতুন file বানানো: create("/foo/bar")
+
+  read  inode bitmap        (মুক্ত inode খোঁজো)
+  write inode bitmap        (দখল চিহ্নিত করো)
+  read  foo এর inode
+  write foo এর data block   (নতুন entry যোগ)
+  write bar এর inode        (নতুন inode শুরু করো)
+  write foo এর inode        (mtime, size হালনাগাদ)
+                            ─────────────────────
+                            ~১০টা I/O একটা খালি file বানাতে!
+
+  তারপর একটা ৪KB লেখা:
+  read  data bitmap
+  write data bitmap
+  write data block
+  read  inode
+  write inode               (size, block pointer)
+                            ─────────────────────
+                            আরও ৫টা
+
+  এই সংখ্যাগুলোই ব্যাখ্যা করে কেন page cache (ch 24)
+  আর journaling (ch 26) অপরিহার্য — নইলে প্রতিটা
+  ছোট কাজে ডজনখানেক disk I/O।</code></pre>
+
+<h2 id="c23-ffs">FFS — locality এর আবিষ্কার</h2>
+
+<p>
+  প্রথম UNIX file system এর একটা মারাত্মক সমস্যা ছিল:
+  সে disk কে একটা random-access array হিসেবে দেখত, আর
+  inode গুলো এক প্রান্তে, data অন্য প্রান্তে রাখত।
+</p>
+
+<pre class="ascii"><code>  পুরনো UNIX fs:
+
+  ┌─────────────┬──────────────────────────────────┐
+  │ inode গুলো  │  data block গুলো                 │
+  └─────────────┴──────────────────────────────────┘
+       ▲                    ▲
+       └────── seek ────────┘
+       প্রতিটা file access এ disk এর এক প্রান্ত থেকে
+       অন্য প্রান্তে যাওয়া → chapter 21 এর ১৯০ গুণ জরিমানা
+
+  আর সময়ের সাথে fragmentation: একটা file এর block গুলো
+  disk জুড়ে ছড়িয়ে পড়ত। মাপা হয়েছিল — কয়েক মাস পরে
+  পুরনো fs তার সম্ভাব্য bandwidth এর মাত্র ~২% ব্যবহার করত।</code></pre>
+
+<p>
+  <strong>FFS (Fast File System, Berkeley, ১৯৮৪)</strong>
+  এর সমাধান: disk এর <em>ভূগোল</em> সম্পর্কে সচেতন হও।
+  Disk কে <strong>cylinder group</strong> এ ভাগ করো, আর
+  প্রতিটা group এ নিজের inode আর data একসাথে রাখো।
+</p>
+
+<pre class="ascii"><code>  FFS:
+
+  ┌──── group 0 ────┬──── group 1 ────┬──── group 2 ────┐
+  │ S i d [inodes]  │ S i d [inodes]  │ S i d [inodes]  │
+  │     [data...]   │     [data...]   │     [data...]   │
+  └─────────────────┴─────────────────┴─────────────────┘
+
+  নীতি: সম্পর্কিত জিনিস একই group এ রাখো
+
+  • একটা file এর inode আর তার data — একই group
+  • একই directory এর সব file — একই group
+  • একটা নতুন directory — যে group এ জায়গা বেশি
+
+  ব্যতিক্রম (large file exception):
+    একটা বিশাল file পুরো group ভরে ফেললে বাকি সব
+    file কে সরাতে হবে। তাই বড় file এর block গুলো
+    ইচ্ছে করে কয়েকটা group এ ভাগ করা হয় —
+    locality সামান্য ত্যাগ করে ভারসাম্য রক্ষা।</code></pre>
+
+<p>
+  FFS এর অবদান শুধু একটা layout নয়, বরং একটা
+  <strong>নীতি</strong>: file system কে নিচের device এর
+  বৈশিষ্ট্য জানতে হবে। এই ধারণাটা এখনো টিকে আছে, শুধু
+  device বদলেছে।
+</p>
+
+<div class="box old">
+  <div class="box-t">FFS আজ — কী টিকেছে, কী যায়নি</div>
+  <p>
+    <strong>যা অপ্রাসঙ্গিক হয়েছে:</strong> "cylinder"
+    ধারণাটাই মৃত। আধুনিক drive এর আসল geometry লুকানো
+    (LBA abstraction), আর SSD তে physical অবস্থান FTL
+    ঠিক করে (chapter 21) — আপনি যাই বলুন। তাই
+    "seek কমাতে পাশাপাশি রাখো" — এই নির্দিষ্ট যুক্তিটা
+    আর খাটে না।
+  </p>
+  <p>
+    <strong>যা এখনো সত্য — আর আরও বেশি:</strong>
+  </p>
+  <ul>
+    <li>
+      <strong>একসাথে রাখা এখনো লাভজনক</strong>, কিন্তু
+      নতুন কারণে: বড় sequential লেখা মানে কম write
+      amplification (ch 21), আর একটা ৪KB block এর
+      পাশে আরেকটা পড়া মানে একই page cache page (ch 24)।
+    </li>
+    <li>
+      <strong>ext4 এর block group</strong> সরাসরি FFS এর
+      cylinder group এর উত্তরসূরি — নামটাও প্রায় একই।
+    </li>
+    <li>
+      <strong>Delayed allocation</strong> — ext4 আর XFS
+      লেখার সিদ্ধান্ত যতদূর সম্ভব পিছিয়ে দেয়, যাতে
+      পুরো file এর আকার জেনে একটা বড় extent বরাদ্দ করা
+      যায়। এটা FFS এর locality নীতির আধুনিক রূপ, আর
+      এটা fragmentation নাটকীয়ভাবে কমায়।
+    </li>
+  </ul>
+  <pre><code># আপনার fs এ fragmentation কত
+$ sudo e2freefrag /dev/nvme0n1p2 | head -8
+$ sudo xfs_db -r -c frag /dev/nvme1n1        # XFS এর জন্য
+
+# ext4 এর block group দেখা
+$ sudo dumpe2fs /dev/nvme0n1p2 2>/dev/null | grep -A3 'Group 0'</code></pre>
+</div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমার file system ৪৫% ভরা, তাই performance
+    ঠিক থাকবে।"</strong>
+  </p>
+  <p>
+    দুটো আলাদা কারণে এটা ভাঙতে পারে, আর দুটোই আপনি
+    <code>df</code> এ দেখবেন না:
+  </p>
+  <ul>
+    <li>
+      <strong>Inode শেষ হওয়া</strong> — উপরে দেখেছি।
+      <code>df -i</code> ছাড়া ধরা পড়ে না।
+    </li>
+    <li>
+      <strong>Free space fragmentation</strong> — ৫০%
+      মুক্ত আছে কিন্তু সব ছোট ছোট টুকরোয়। তখন একটা বড়
+      file এর জন্য নিরবচ্ছিন্ন extent পাওয়া যায় না,
+      তাই সে টুকরো টুকরো হয়ে লেখা হয়। এটা chapter 8 এর
+      external fragmentation, শুধু disk এর মাপে।
+    </li>
+  </ul>
+  <p>
+    আর একটা সাধারণ নিয়ম: <strong>file system ৮০% এর
+    বেশি ভরলে allocator এর কাজ কঠিন হয়ে যায়</strong> —
+    কারণ ভালো জায়গা খোঁজার বিকল্প কমে যায়। SSD তে
+    এটা আরও গুরুত্বপূর্ণ, কারণ over-provisioning কমে
+    গেলে WAF বাড়ে (ch 21)। ৮০% একটা ভালো alarm
+    threshold, ৯৫% নয়।
+  </p>
+</div>
+
+<h2 id="c23-modern">আধুনিক file system — কে কী বেছেছে</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>ext4</th><th>XFS</th><th>btrfs / ZFS</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Inode</strong></td>
+      <td>স্থির (format এ)</td>
+      <td>Dynamic</td>
+      <td>Dynamic</td>
+    </tr>
+    <tr>
+      <td><strong>Block map</strong></td>
+      <td>Extent</td>
+      <td>Extent + B+tree</td>
+      <td>CoW B-tree</td>
+    </tr>
+    <tr>
+      <td><strong>Checksum</strong></td>
+      <td>Metadata only</td>
+      <td>Metadata only</td>
+      <td><strong>Data ও</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Snapshot</strong></td>
+      <td>না (LVM লাগে)</td>
+      <td>না (reflink আছে)</td>
+      <td><strong>হ্যাঁ, native</strong></td>
+    </tr>
+    <tr>
+      <td><strong>শক্তি</strong></td>
+      <td>পরিণত, সর্বত্র</td>
+      <td>বড় file, parallel I/O</td>
+      <td>Integrity, snapshot</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  OSTEP লেখার সময় btrfs কে "recent" বলা হয়েছিল। এখন
+  এটা ১৮ বছরের পুরনো, Fedora আর openSUSE এর default
+  root filesystem, আর Meta এ বড় মাপে চলে। ZFS ও
+  OpenZFS 2.x এ পরিণত, Ubuntu তে native।
+</p>
+
+<p>
+  ওই <strong>data checksum</strong> সারিটা গুরুত্বপূর্ণ,
+  আর chapter 28 এ ফিরব: ext4/XFS আপনার metadata রক্ষা
+  করে কিন্তু data নয়। একটা bit পচে গেলে (silent
+  corruption) তারা জানতেই পারবে না।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর I/O হিসাবগুলো সরাসরি আপনার সিদ্ধান্তে আসে:
+  </p>
+  <ul>
+    <li>
+      <strong>লক্ষ লক্ষ ছোট file এড়ান</strong> — প্রতিটা
+      file একটা inode, একটা directory entry, আর অন্তত
+      একটা block (৪KB) নেয়। ১০০ byte এর ১০ লক্ষ file
+      মানে ৪GB disk আর ১০ লক্ষ inode। এই কারণেই Kafka
+      segment file বড় রাখে, আর Git একাধিক object কে
+      packfile এ জমা করে।
+    </li>
+    <li>
+      <strong>Docker layer</strong> — প্রতিটা layer এ
+      হাজারো ছোট file, আর overlayfs সেগুলো স্তরে স্তরে
+      সাজায়। এই কারণেই একটা <code>node_modules</code>
+      সহ image এর build আর pull এত ধীর — inode আর
+      path lookup এর খরচ, byte এর নয়।
+    </li>
+    <li>
+      <strong>Postgres</strong> প্রতিটা table কে ১GB
+      segment এ ভাগ করে — উপরের extent আর group
+      যুক্তির সাথে মেলানো।
+    </li>
+    <li>
+      <strong>Monitoring এ <code>df -i</code> রাখুন</strong>,
+      শুধু <code>df -h</code> নয়। Inode শেষ হওয়া একটা
+      অপ্রত্যাশিত outage এর সাধারণ কারণ।
+    </li>
+  </ul>
+</div>
+
+<div class="qs">
+  <h2 id="c23-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      <code>open("/a/b/c/file.txt")</code> এ কতগুলো disk
+      read লাগে (cache ছাড়া), আর সেটা path এর গভীরতার
+      সাথে কীভাবে বাড়ে? dentry cache ঠিক কোন কাজটা
+      বাঁচায়, আর সেটা কখন কাজে লাগে না?
+    </li>
+    <li>
+      একটা খালি file বানাতে ~১০টা I/O লাগে। এই সংখ্যাটা
+      থেকে ব্যাখ্যা করুন কেন একটা build process যা ১০,০০০
+      ছোট file লেখে, সেটা একটা single ১০০MB file লেখার
+      চেয়ে অনেক ধীর — যদিও মোট byte কম।
+    </li>
+    <li>
+      Inode এর direct/indirect গঠনটা chapter 9 এর
+      multi-level page table এর মতো, কিন্তু একটা
+      পার্থক্য আছে: এখানে ১২টা direct pointer আছে।
+      কেন এই অসমতা? Page table এ এমন কিছু নেই কেন?
+    </li>
+    <li>
+      Extent-ভিত্তিক metadata একটা ৪MB sequential file এ
+      pointer এর চেয়ে ৩০০ গুণ ছোট। কিন্তু একটা অত্যন্ত
+      fragmented file এ extent এর লাভ কত? এই তথ্য থেকে
+      বলুন কেন delayed allocation extent কে আরও কার্যকর
+      করে।
+    </li>
+    <li>
+      FFS এর "cylinder" ধারণা মৃত, কিন্তু "একসাথে রাখো"
+      নীতি টিকে আছে — নতুন কারণে। পুরনো কারণ আর নতুন
+      দুটো কারণ বলুন (একটা ch 21 থেকে, একটা ch 24 এর
+      দিকে ইশারা করে)।
+    </li>
+    <li>
+      <code>df -h</code> বলছে ৪৫% ভরা, তবু লেখা ব্যর্থ
+      হচ্ছে "No space left on device" দিয়ে। দুটো সম্ভাব্য
+      কারণ বলুন, প্রতিটার জন্য নির্ণয়ের কমান্ড দিন, আর
+      বলুন কোনটা তাৎক্ষণিক সারানো যায় আর কোনটা নয়।
+    </li>
+  </ol>
+</div>

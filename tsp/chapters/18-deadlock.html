@@ -1,0 +1,527 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p2">
+    Part 2 · Concurrency
+    <span class="src">· OSTEP ch 32, pdf p379–393 · + TSan, lockdep, Postgres 40P01</span>
+  </div>
+  <h1>Deadlock — আর যা সত্যিই আটকায়</h1>
+  <p class="ch-lede">
+    Lock সমস্যা সমাধান করে, আর নতুন সমস্যা তৈরি করে। দুটো thread
+    পরস্পরের অপেক্ষায় চিরকাল বসে থাকতে পারে। এর তত্ত্বটা সরল —
+    চারটে শর্ত — কিন্তু আপনি এর সাথে প্রথম দেখা করবেন সম্ভবত
+    একটা Postgres error message এ।
+  </p>
+</div>
+
+<p>
+  সবচেয়ে ছোট উদাহরণটা দিয়ে শুরু করি:
+</p>
+
+<pre class="ascii"><code>  Thread 1                      Thread 2
+  ─────────────────────         ─────────────────────
+  lock(L1)     ✓                lock(L2)     ✓
+       │                             │
+  lock(L2)  ⏳ অপেক্ষা           lock(L1)  ⏳ অপেক্ষা
+       │                             │
+       └──── T2 এর জন্য ───┐  ┌── T1 এর জন্য ────┘
+                          ▼  ▼
+                    চিরকাল আটকে
+
+  কেউ ছাড়বে না, কারণ কেউ এগোতে পারছে না।</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* The classic. Both orders look reasonable in isolation. */
+void *thread1(void *arg) {
+    pthread_mutex_lock(&amp;L1);
+    pthread_mutex_lock(&amp;L2);      /* ← waits for thread2 */
+    /* ... */
+    pthread_mutex_unlock(&amp;L2);
+    pthread_mutex_unlock(&amp;L1);
+    return NULL;
+}
+
+void *thread2(void *arg) {
+    pthread_mutex_lock(&amp;L2);      /* opposite order! */
+    pthread_mutex_lock(&amp;L1);      /* ← waits for thread1 */
+    /* ... */
+    pthread_mutex_unlock(&amp;L1);
+    pthread_mutex_unlock(&amp;L2);
+    return NULL;
+}</code></pre></div>
+
+<p>
+  লক্ষ করুন দুটো function আলাদাভাবে দেখলে কোনো ভুল নেই।
+  Bug টা তাদের <em>সম্পর্কে</em> — আর এই কারণেই deadhead
+  code review তে ধরা পড়া কঠিন: আপনাকে দুটো ফাইলের দুটো
+  function একসাথে দেখতে হবে।
+</p>
+
+<h2 id="c18-four">চারটে শর্ত</h2>
+
+<p>
+  Deadlock হতে <strong>চারটে শর্তই</strong> একসাথে লাগে।
+  যেকোনো একটা ভাঙলে deadlock অসম্ভব — আর এটাই সব প্রতিরোধ
+  কৌশলের ভিত্তি:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>শর্ত</th><th>মানে</th><th>ভাঙার উপায়</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Mutual exclusion</strong></td>
+      <td>Resource একসাথে একজনই ধরতে পারে</td>
+      <td>Lock-free structure (ch 16) — কঠিন</td>
+    </tr>
+    <tr>
+      <td><strong>Hold-and-wait</strong></td>
+      <td>একটা ধরে রেখে আরেকটার অপেক্ষা</td>
+      <td>সব lock একসাথে নাও, নয়তো কিছুই না</td>
+    </tr>
+    <tr>
+      <td><strong>No preemption</strong></td>
+      <td>জোর করে কারো lock কেড়ে নেওয়া যায় না</td>
+      <td><code>trylock()</code> + ছেড়ে দিয়ে আবার চেষ্টা</td>
+    </tr>
+    <tr>
+      <td><strong>Circular wait</strong></td>
+      <td>অপেক্ষার একটা বৃত্ত তৈরি হওয়া</td>
+      <td><strong>Lock ordering</strong> ← সবচেয়ে ব্যবহারিক</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="c18-ordering">১. Lock ordering — বাস্তবে যেটা ব্যবহার করবেন</h3>
+
+<p>
+  সবচেয়ে সরল আর কার্যকর: <strong>সব lock সবসময় একই ক্রমে
+  নাও</strong>। তাহলে বৃত্ত তৈরি হতেই পারে না।
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Both threads now take L1 before L2, always. */
+void *thread2_fixed(void *arg) {
+    pthread_mutex_lock(&amp;L1);      /* was L2 first */
+    pthread_mutex_lock(&amp;L2);
+    /* ... */
+    pthread_mutex_unlock(&amp;L2);
+    pthread_mutex_unlock(&amp;L1);
+    return NULL;
+}</code></pre></div>
+
+<p>
+  কিন্তু একটা সমস্যা: lock গুলো যদি runtime এ নির্ধারিত হয়
+  (যেমন দুটো account এর মধ্যে টাকা সরানো), তখন "L1 আগে"
+  বলার কোনো স্থির অর্থ নেই। সমাধান — একটা
+  <strong>মোট ক্রম</strong> তৈরি করো, address দিয়ে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Transfer between two accounts, with a total order derived
+   from the lock addresses themselves. Any pair of threads
+   will agree on the order, whatever accounts they picked. */
+void transfer(account_t *from, account_t *to, int amount) {
+    account_t *first, *second;
+
+    if (from &lt; to) {              /* compare ADDRESSES */
+        first = from; second = to;
+    } else {
+        first = to;   second = from;
+    }
+
+    pthread_mutex_lock(&amp;first-&gt;lock);
+    pthread_mutex_lock(&amp;second-&gt;lock);
+
+    from-&gt;balance -= amount;
+    to-&gt;balance   += amount;
+
+    pthread_mutex_unlock(&amp;second-&gt;lock);
+    pthread_mutex_unlock(&amp;first-&gt;lock);
+}
+
+/* Bonus: also handles from == to safely if you add a check. */</code></pre></div>
+
+<p>
+  এই কৌশলটা মনে রাখার মতো, কারণ database এও ঠিক একই সমাধান
+  ব্যবহার করা হয় — নিচে দেখব।
+</p>
+
+<h3 id="c18-trylock">২. <code>trylock</code> — preemption নকল করা</h3>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* If the second lock is busy, give up the first and retry.
+   Breaks hold-and-wait. */
+for (;;) {
+    pthread_mutex_lock(&amp;L1);
+    if (pthread_mutex_trylock(&amp;L2) == 0)
+        break;                        /* got both */
+    pthread_mutex_unlock(&amp;L1);        /* back off */
+    /* সামান্য random অপেক্ষা — নইলে livelock, নিচে দেখুন */
+}
+/* ... critical section ... */
+pthread_mutex_unlock(&amp;L2);
+pthread_mutex_unlock(&amp;L1);</code></pre></div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>trylock</code> + retry দিয়ে deadhead
+    সম্পূর্ণ সমাধান হয়ে গেল।"</strong>
+  </p>
+  <p>
+    Deadlock গেল, কিন্তু <strong>livelock</strong> এল:
+    দুটো thread একই সাথে চেষ্টা করছে, একই সাথে ব্যর্থ হচ্ছে,
+    একই সাথে ছেড়ে দিচ্ছে, একই সাথে আবার চেষ্টা করছে —
+    অনির্দিষ্টকাল। কেউ আটকে নেই (তাই deadlock নয়), কিন্তু
+    কেউ এগোচ্ছেও না।
+  </p>
+  <p>
+    সমাধান: retry এর আগে একটা <strong>random</strong> অপেক্ষা
+    (exponential backoff with jitter)। এটা ঠিক সেই কৌশল
+    যা আপনি network retry তে ব্যবহার করেন — একই কারণে।
+  </p>
+  <p>
+    আরও একটা ফাঁদ: <code>trylock</code> loop এ যদি আপনি
+    ইতিমধ্যে কিছু কাজ করে ফেলেছেন, তাহলে retry এর আগে
+    সেটা undo করতে হবে। এই কারণেই lock ordering সাধারণত
+    সহজ পথ।
+  </p>
+</div>
+
+<h3 id="c18-banker">৩. Avoidance — আর কেন এটা অপ্রাসঙ্গিক</h3>
+
+<div class="box old">
+  <div class="box-t">যা আমরা সংক্ষেপে সারছি</div>
+  <p>
+    OSTEP এ (আর প্রায় প্রতিটা OS পাঠ্যবইয়ে) Dijkstra এর
+    <strong>Banker's Algorithm</strong> আছে — একটা scheduler
+    যা আগে থেকে জানে কে কোন resource কতটা চাইবে, আর সেই
+    জ্ঞান দিয়ে deadlock এড়িয়ে চলে।
+  </p>
+  <p>
+    এটা একটা ঐতিহাসিক টীকা হিসেবেই যথেষ্ট, কারণ শর্তটাই
+    অবাস্তব: <strong>আপনাকে আগে থেকে সম্পূর্ণ resource
+    চাহিদা জানতে হবে</strong>। একটা সাধারণ program এ সেটা
+    অজানা। OSTEP নিজেই স্বীকার করে এটা কেবল embedded
+    system এ কাজে লাগে, যেখানে workload আগে থেকে জানা।
+  </p>
+  <p>
+    তাই এই পাতাটা আমরা খরচ করছি সেই জিনিসে যা আপনি সত্যিই
+    চালাবেন — TSan, lockdep, আর database deadlock detector।
+  </p>
+</div>
+
+<h2 id="c18-detect">Deadlock ধরা</h2>
+
+<p>
+  প্রতিরোধ সবসময় সম্ভব নয়, তাই ধরার ব্যবস্থাও দরকার।
+  কৌশলটা একটা <strong>wait-for graph</strong>:
+</p>
+
+<pre class="ascii"><code>  কে কার অপেক্ষায় — একটা directed graph বানাও:
+
+     T1 ──────▶ T2
+     ▲           │
+     │           ▼
+     T4 ◀────── T3
+
+  বৃত্ত আছে → deadlock আছে।
+
+  এই graph টা খুঁজে বৃত্ত সনাক্ত করা একটা সাধারণ
+  algorithm — আর database রা ঠিক এটাই করে।</code></pre>
+
+<h3 id="c18-tsan">আপনার code এ — TSan আর lockdep</h3>
+
+<pre><code># ThreadSanitizer শুধু data race নয়, lock ordering ও দেখে
+$ gcc -fsanitize=thread -g -O1 prog.c -o prog -pthread
+$ ./prog
+
+WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)
+  Cycle in lock order graph:
+    M1 (0x5578...) =&gt; M2 (0x5578...) =&gt; M1
+
+# গুরুত্বপূর্ণ: deadlock সত্যিই ঘটার দরকার নেই!
+# TSan শুধু দেখে যে দুটো ক্রম পরস্পরবিরোধী।</code></pre>
+
+<p>
+  এই শেষ কথাটাই TSan কে অমূল্য করে। Deadlock একটা
+  timing-নির্ভর ঘটনা — হাজারবার চালিয়েও না ঘটতে পারে।
+  TSan অপেক্ষা করে না; সে <em>ক্রমের বিরোধ</em> দেখে,
+  আর একবার দুটো path দেখলেই সতর্ক করে।
+</p>
+
+<pre><code># Go — একই জিনিস, built-in
+$ go test -race ./...
+
+# Go runtime নিজেই সব goroutine আটকে গেলে ধরে ফেলে:
+fatal error: all goroutines are asleep - deadlock!
+
+# Linux kernel এর নিজের lock validator
+$ dmesg | grep -A20 "possible circular locking dependency"
+# CONFIG_PROVE_LOCKING চালু থাকলে kernel প্রতিটা
+# lock acquisition এর ক্রম যাচাই করে
+
+# চলমান process এ আটকে থাকা thread দেখা
+$ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2&gt;/dev/null | grep -A3 lock
+# বা দ্রুত উপায়:
+$ cat /proc/&lt;pid&gt;/task/*/stack 2&gt;/dev/null | head</code></pre>
+
+<h2 id="c18-db">Database deadlock — আপনি এটাই বেশি দেখবেন</h2>
+
+<p>
+  একজন working engineer এর deadlock এর সাথে প্রথম দেখা
+  প্রায় সবসময় একটা database error message এ, thread এ নয়:
+</p>
+
+<pre><code>ERROR:  deadlock detected
+DETAIL: Process 12345 waits for ShareLock on transaction 678;
+        blocked by process 12346.
+        Process 12346 waits for ShareLock on transaction 679;
+        blocked by process 12345.
+HINT:   See server log for query details.
+SQLSTATE: 40P01</code></pre>
+
+<p>
+  কারণটা হুবহু উপরের সেই ছবি, শুধু lock এর বদলে row:
+</p>
+
+<pre class="ascii"><code>  Transaction A                    Transaction B
+  ──────────────────────           ──────────────────────
+  UPDATE accounts                  UPDATE accounts
+    SET bal = bal - 100              SET bal = bal - 50
+    WHERE id = 1;    ✓ row 1 lock    WHERE id = 2;   ✓ row 2 lock
+         │                                │
+  UPDATE accounts                  UPDATE accounts
+    SET bal = bal + 100              SET bal = bal + 50
+    WHERE id = 2;   ⏳ অপেক্ষা        WHERE id = 1;  ⏳ অপেক্ষা
+         │                                │
+         └────── circular wait ───────────┘
+
+  Postgres ~1 সেকেন্ড পর (deadlock_timeout) graph যাচাই করে,
+  বৃত্ত পায়, আর একটা transaction কে "victim" বেছে abort করে।</code></pre>
+
+<p>
+  <strong>সমাধানটা application এর দিকে, database এর নয়</strong> —
+  আর সেটা ঠিক উপরের সেই lock ordering:
+</p>
+
+<div class="codewrap"><span class="lang">sql</span>
+<pre><code>-- ভুল: ক্রম নির্ভর করে কে কোন account থেকে পাঠাচ্ছে
+BEGIN;
+UPDATE accounts SET bal = bal - 100 WHERE id = :from;
+UPDATE accounts SET bal = bal + 100 WHERE id = :to;
+COMMIT;
+
+-- ঠিক: সবসময় id এর ক্রমে lock নাও
+BEGIN;
+SELECT id FROM accounts
+  WHERE id IN (:from, :to)
+  ORDER BY id                    -- ← deterministic order
+  FOR UPDATE;                    -- ← lock both, in that order
+UPDATE accounts SET bal = bal - 100 WHERE id = :from;
+UPDATE accounts SET bal = bal + 100 WHERE id = :to;
+COMMIT;</code></pre></div>
+
+<p>
+  লক্ষ করুন এটা <em>একই কৌশল</em> যা C তে address তুলনা
+  করে করেছিলাম — শুধু address এর বদলে primary key। ধারণাটা
+  অপরিবর্তিত: <strong>একটা মোট ক্রম তৈরি করো যেটা সব
+  participant স্বাধীনভাবে একইভাবে হিসাব করতে পারে</strong>।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Deadlock কমানোর ব্যবহারিক তালিকা:
+  </p>
+  <ul>
+    <li>
+      <strong>Deterministic key ordering</strong> — উপরের
+      <code>ORDER BY id FOR UPDATE</code>। সবচেয়ে কার্যকর
+      একক পরিবর্তন।
+    </li>
+    <li>
+      <strong>Transaction ছোট রাখা</strong> — lock ধরার
+      সময় কমালে সংঘর্ষের সম্ভাবনা কমে। বিশেষত: transaction
+      এর ভিতরে কখনো external API call করবেন না (আপনি একটা
+      HTTP timeout এর সময় ধরে row lock ধরে রাখবেন)।
+    </li>
+    <li>
+      <strong>Retry করা</strong> — <code>40P01</code> একটা
+      <em>প্রত্যাশিত</em> error, bug নয়। আপনার ORM layer এ
+      এটা ধরে backoff দিয়ে retry করা উচিত। এটা optimistic
+      concurrency এর স্বাভাবিক অংশ।
+    </li>
+    <li>
+      <strong>Isolation level বোঝা</strong> —
+      <code>SERIALIZABLE</code> এ Postgres serialization
+      failure (<code>40001</code>) দেয়, যা আরও ঘন ঘন হয়
+      কিন্তু deadlock এর চেয়ে সস্তা। দুটোরই retry দরকার।
+    </li>
+  </ul>
+  <pre><code>-- আপনার deadlock গুলো কোথায় হচ্ছে
+$ grep -i deadlock /var/log/postgresql/*.log
+-- MySQL/InnoDB এ:
+mysql&gt; SHOW ENGINE INNODB STATUS\G    -- LATEST DETECTED DEADLOCK অংশ</code></pre>
+</div>
+
+<h2 id="c18-other">অন্য ধরনের আটকে যাওয়া</h2>
+
+<p>
+  Deadlock একটা শ্রেণী মাত্র। যে সমস্যাগুলো একইরকম দেখায়
+  কিন্তু আলাদা:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>সমস্যা</th><th>কী ঘটে</th><th>লক্ষণ</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Deadlock</strong></td>
+      <td>বৃত্তাকার অপেক্ষা</td>
+      <td>CPU ০%, কেউ এগোচ্ছে না</td>
+    </tr>
+    <tr>
+      <td><strong>Livelock</strong></td>
+      <td>সবাই চেষ্টা করছে, সবাই ব্যর্থ</td>
+      <td>CPU ১০০%, তবু কাজ এগোচ্ছে না</td>
+    </tr>
+    <tr>
+      <td><strong>Starvation</strong></td>
+      <td>একজন বারবার হারছে</td>
+      <td>একটা thread এর latency অস্বাভাবিক</td>
+    </tr>
+    <tr>
+      <td><strong>Priority inversion</strong></td>
+      <td>নিম্ন-priority holder উচ্চ-priority waiter কে আটকাচ্ছে</td>
+      <td>Real-time deadline মিস</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  <strong>Priority inversion</strong> টা বিশেষভাবে
+  শিক্ষামূলক, কারণ এর একটা বিখ্যাত ঘটনা আছে: ১৯৯৭ সালে
+  Mars Pathfinder rover মঙ্গলগ্রহে বারবার reset হতে
+  শুরু করেছিল। কারণ ছিল একটা নিম্ন-priority thread একটা
+  mutex ধরে রেখেছিল, যেটা একটা উচ্চ-priority thread এর
+  দরকার ছিল, আর মাঝের একটা মাঝারি-priority thread নিম্ন
+  টাকে চলতেই দিচ্ছিল না।
+</p>
+
+<p>
+  সমাধান <strong>priority inheritance</strong> — holder এর
+  priority সাময়িকভাবে waiter এর সমান করে দেওয়া। Chapter 17
+  এ বলেছিলাম mutex এর মালিক থাকে আর semaphore এর থাকে না;
+  এই feature টা সেই মালিকানার উপরই নির্ভর করে:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Ask for priority inheritance — needs an owner, which is why
+   this exists for mutexes and not for semaphores. */
+pthread_mutexattr_t attr;
+pthread_mutexattr_init(&amp;attr);
+pthread_mutexattr_setprotocol(&amp;attr, PTHREAD_PRIO_INHERIT);
+pthread_mutex_init(&amp;m, &amp;attr);</code></pre></div>
+
+<h2 id="c18-avoid">সবচেয়ে ভালো কৌশল — lock ই না রাখা</h2>
+
+<p>
+  Chapter 14 আর 16 এর সেই একই উপদেশ, আর deadlock এর
+  ক্ষেত্রে এটা সবচেয়ে জোরালো: <strong>যেখানে একটাই lock,
+  সেখানে deadlock অসম্ভব</strong>।
+</p>
+
+<pre class="ascii"><code>  deadlock প্রতিরোধের ক্রম, পছন্দ অনুসারে:
+
+  ১. একটাই lock ব্যবহার করুন
+       দুটো lock না থাকলে বৃত্ত তৈরি হতে পারে না।
+       (দাম: কম concurrency — ch 16 এর trade-off)
+
+  ২. lock একদম এড়িয়ে যান
+       message passing (Go channel), immutable data,
+       single-threaded event loop (ch 19)
+
+  ৩. একটা মোট ক্রম মানুন
+       address, id, বা যেকোনো স্থির tie-breaker
+       → CI তে TSan দিয়ে যাচাই করুন
+
+  ৪. trylock + backoff
+       শুধু যখন ক্রম আরোপ করা অসম্ভব
+
+  ৫. detect + recover
+       database যেটা করে — abort করে retry
+       (আপনার application এও এটা বৈধ কৌশল)</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"আমাদের code এ deadlock নেই — আমরা কয়েক বছর
+    ধরে চালাচ্ছি, কখনো হয়নি।"</strong>
+  </p>
+  <p>
+    Deadlock একটা timing-নির্ভর ঘটনা। দুটো পরস্পরবিরোধী
+    lock ক্রম থাকা মানে সম্ভাবনাটা <em>আছে</em>; সেটা
+    প্রকাশ পেতে দরকার শুধু ঠিক সেই interleaving।
+  </p>
+  <p>
+    আর সেই interleaving এর সম্ভাবনা বাড়ে যখন: load বাড়ে,
+    core সংখ্যা বাড়ে, একটা নতুন code path যোগ হয়, বা
+    একটা lock এর নিচে হঠাৎ ধীর কিছু চলে আসে (যেমন একটা
+    query ধীর হয়ে গেল)। অর্থাৎ ঠিক সেই মুহূর্তে যখন
+    আপনার system এর উপর সবচেয়ে বেশি চাপ।
+  </p>
+  <p>
+    তাই "কখনো হয়নি" প্রমাণ নয়। TSan এর সতর্কবার্তা প্রমাণ,
+    কারণ সে ঘটনার অপেক্ষা না করে <em>কারণ</em> দেখে।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c18-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      চারটে শর্তের যেকোনো একটা ভাঙলে deadlock অসম্ভব।
+      প্রতিটা শর্তের জন্য একটা ভাঙার কৌশল আছে, কিন্তু
+      বাস্তবে প্রায় সবাই একটাই বেছে নেয় (circular wait)।
+      বাকি তিনটে কেন কম ব্যবহারিক — প্রতিটার জন্য একটা
+      কারণ দিন।
+    </li>
+    <li>
+      Address তুলনা করে lock ordering আর SQL এ
+      <code>ORDER BY id FOR UPDATE</code> — দুটো একই কৌশল।
+      সাধারণ নীতিটা কী? এখন একটা পরিস্থিতি ভাবুন যেখানে
+      কোনো স্থির tie-breaker নেই — তখন কী করবেন?
+    </li>
+    <li>
+      <code>trylock</code> + retry deadlock সারায় কিন্তু
+      livelock আনতে পারে। দুটোর লক্ষণ কীভাবে আলাদা
+      (বিশেষত CPU ব্যবহারে)? আর random backoff ঠিক কোন
+      প্রক্রিয়াটা ভাঙে?
+    </li>
+    <li>
+      TSan deadlock না ঘটলেও lock-order-inversion ধরে।
+      এটা কীভাবে সম্ভব — সে কী তথ্য জমা করে? আর এই
+      ক্ষমতাটা কেন একটা stress test এর চেয়ে বেশি
+      নির্ভরযোগ্য?
+    </li>
+    <li>
+      Postgres এর <code>40P01</code> একটা প্রত্যাশিত error,
+      bug নয়। এই দৃষ্টিভঙ্গিটা মানলে আপনার application
+      code এ কী থাকা উচিত? আর <code>SERIALIZABLE</code>
+      isolation এ যে <code>40001</code> বেশি ঘন ঘন আসে,
+      সেটা কি খারাপ খবর?
+    </li>
+    <li>
+      Mars Pathfinder এ priority inversion ঘটেছিল একটা
+      mutex এর কারণে। Chapter 17 এ শিখেছি semaphore এর
+      মালিক নেই। তাহলে ওখানে semaphore ব্যবহার করলে
+      সমস্যাটা এড়ানো যেত, নাকি আরও খারাপ হতো? কেন?
+    </li>
+  </ol>
+</div>

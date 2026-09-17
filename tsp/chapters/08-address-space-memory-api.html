@@ -1,0 +1,527 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 13, 14, 16, 17 · pdf p132–194</span>
+  </div>
+  <h1>Address space আর memory API</h1>
+  <p class="ch-lede">
+    প্রতিটা process ভাবে পুরো memory তার একলার, আর শূন্য থেকে শুরু।
+    এই illusion টার গঠন, তার ভিতরে <code>malloc()</code> আসলে কী করে,
+    আর কেন আপনার allocator একটা list ঘেঁটে জায়গা খোঁজে না —
+    যদিও পাঠ্যবই সেটাই বলে।
+  </p>
+</div>
+
+<p>
+  Chapter 1 এ <code>mem.c</code> চালিয়ে দেখেছিলাম দুটো process একই
+  address <code>0x200000</code> পায়, অথচ একজন অন্যজনের মান নষ্ট করে
+  না। এখন সেই illusion টার নাম দিই: <strong>address space</strong>।
+</p>
+
+<p>
+  Address space হলো একটা process এর পুরো memory অবস্থা — তার
+  instruction, তার data, তার stack, তার heap। Process এর দৃষ্টিতে
+  এটা ০ থেকে শুরু হওয়া byte এর একটা নিরবচ্ছিন্ন array।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    একটাই physical memory, অনেক process। OS কীভাবে প্রত্যেককে
+    বিশ্বাস করাবে যে পুরো memory তার — আর তা করবে দ্রুত, আর
+    একজনকে অন্যজনের থেকে সুরক্ষিত রেখে?
+  </p>
+</div>
+
+<h2 id="c8-layout">Address space এর গঠন</h2>
+
+<pre class="ascii"><code>  0x7fff_ffff_ffff  ┌────────────────────────┐  উঁচু address
+                    │  [stack]               │
+                    │  argc, argv, env       │
+                    │         ↓ নিচে বাড়ে    │
+                    ├────────────────────────┤
+                    │                        │
+                    │      (বিশাল ফাঁকা)     │  ← এখানে কোনো
+                    │                        │    physical page নেই
+                    ├────────────────────────┤
+                    │  mmap region           │  ← shared library,
+                    │  libc.so, ...          │    বড় malloc
+                    ├────────────────────────┤
+                    │         ↑ উপরে বাড়ে    │
+                    │  [heap]                │  ← malloc() এখান থেকে
+                    ├────────────────────────┤
+                    │  .bss   (শূন্য data)   │
+                    │  .data  (init করা)     │
+                    ├────────────────────────┤
+                    │  .rodata (const)       │
+                    │  .text  (code)         │  ← read-only, execute
+  0x0000_0040_0000  └────────────────────────┘
+  0x0             (প্রথম page ইচ্ছে করে unmapped —
+                   তাই NULL pointer dereference
+                   সাথে সাথে SIGSEGV দেয়)</code></pre>
+<p class="figcap">
+  x86-64 এ একটা সাধারণ address space। Stack আর heap বিপরীত দিকে
+  বাড়ে, যাতে মাঝের ফাঁকা জায়গা দুজনেই ব্যবহার করতে পারে।
+</p>
+
+<p>
+  কয়েকটা সিদ্ধান্ত লক্ষ করুন, কারণ প্রতিটার পিছনে কারণ আছে:
+</p>
+
+<ul>
+  <li>
+    <strong>Address 0 unmapped</strong> — এটা ইচ্ছাকৃত। তাই
+    <code>*(int*)NULL = 5</code> সাথে সাথে ধরা পড়ে, নীরবে
+    কিছু নষ্ট না করে।
+  </li>
+  <li>
+    <strong>Code read-only</strong> — নিজের instruction বদলানো
+    আটকায়, আর একই binary এর সব copy ওই page গুলো ভাগ করতে পারে
+    (chapter 3 এর COW)।
+  </li>
+  <li>
+    <strong>Stack আর heap উল্টো দিকে</strong> — মাঝের ফাঁকা
+    জায়গাটা যেকোনো একজন যত দরকার তত নিতে পারে, আগে থেকে ভাগ
+    করে রাখতে হয় না।
+  </li>
+</ul>
+
+<p>
+  আসলে দেখা যায়, chapter 2 এর মতোই:
+</p>
+
+<pre><code>$ cat /proc/self/maps | awk '{print $1, $2, $6}'
+5581c4c00000-5581c4c02000 r--p /usr/bin/cat      ← .text (read)
+5581c4c02000-5581c4c06000 r-xp /usr/bin/cat      ← .text (execute)
+5581c4c09000-5581c4c0a000 rw-p /usr/bin/cat      ← .data
+5581c5f0a000-5581c5f2b000 rw-p [heap]
+7f2a1c000000-7f2a1c028000 r--p /lib/libc.so.6
+7ffd4a5c0000-7ffd4a5e1000 rw-p [stack]</code></pre>
+
+<p>
+  ওই <code>r--p</code> / <code>r-xp</code> / <code>rw-p</code>
+  অংশটা permission — read, write, execute, আর private।
+  Hardware এই bit গুলো প্রতিটা access এ পরীক্ষা করে। Chapter 9 এ
+  দেখব কোথায় রাখা থাকে।
+</p>
+
+<h2 id="c8-goals">তিনটা লক্ষ্য</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>লক্ষ্য</th><th>মানে</th><th>ভাঙলে কী হয়</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Transparency</strong></td>
+      <td>Process জানবেই না যে memory virtualized</td>
+      <td>প্রতিটা program কে memory ভাগ করে নেওয়ার code লিখতে হতো</td>
+    </tr>
+    <tr>
+      <td><strong>Efficiency</strong></td>
+      <td>সময়ে আর জায়গায় — দুদিকেই কম overhead</td>
+      <td>প্রতিটা memory access ধীর হতো (chapter 10 এর TLB এর কারণ)</td>
+    </tr>
+    <tr>
+      <td><strong>Protection</strong></td>
+      <td>একজন অন্যজনকে বা kernel কে ছুঁতে পারবে না</td>
+      <td>যেকোনো bug বা attacker পুরো মেশিন নিতে পারত</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="c8-malloc">Memory API — <code>malloc</code> আর <code>free</code></h2>
+
+<p>
+  C তে heap থেকে memory নেওয়ার interface টা ছোট:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>void *malloc(size_t size);   /* size byte দাও, বা NULL */
+void  free(void *ptr);       /* ফেরত নাও */
+
+/* একটা int এর জায়গা */
+int *x = malloc(sizeof(int));        /* sizeof, 4 নয় — portable */
+if (x == NULL) { /* handle it */ }
+*x = 42;
+free(x);
+
+/* 100টা int এর array */
+int *arr = malloc(100 * sizeof(int));
+
+/* শূন্য দিয়ে ভরা */
+int *zeroed = calloc(100, sizeof(int));
+
+/* আকার বদলানো — পুরনো data রেখে */
+arr = realloc(arr, 200 * sizeof(int));</code></pre></div>
+
+<p>
+  <code>sizeof</code> ব্যবহার করা গুরুত্বপূর্ণ — এটা compile time
+  এ হিসাব হয়, আর platform বদলালেও ঠিক থাকে। একটা সাধারণ ফাঁদ:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>int *x = malloc(10 * sizeof(int));
+printf("%zu\n", sizeof(x));    /* 8 — pointer এর আকার, array এর নয়! */
+
+/* string এ off-by-one */
+char *src = "hello";
+char *dst = malloc(strlen(src));       /* ভুল — '\0' এর জায়গা নেই */
+char *ok  = malloc(strlen(src) + 1);   /* ঠিক */
+strcpy(ok, src);</code></pre></div>
+
+<h3 id="c8-bugs">চারটা ক্লাসিক bug</h3>
+
+<pre class="ascii"><code>  ১. Uninitialized read
+     int *x = malloc(sizeof(int));
+     printf("%d", *x);        ← আগের কারো ফেলে যাওয়া byte
+
+  ২. Memory leak
+     void f() { malloc(100); }   ← pointer হারিয়ে গেল,
+     for(;;) f();                  memory ফেরত দেওয়ার উপায় নেই
+
+  ৩. Dangling pointer (use after free)
+     free(x);
+     *x = 5;                  ← ওই জায়গা এখন অন্য কারো
+
+  ৪. Double free
+     free(x);
+     free(x);                 ← allocator এর নিজের গঠন নষ্ট হয়</code></pre>
+
+<p>
+  শেষ দুটো বিশেষভাবে বিপজ্জনক, কারণ এগুলো <em>সাথে সাথে</em>
+  crash করে না। Use-after-free অনেক সময় কাজ করে যায় — যতক্ষণ
+  ওই জায়গা কেউ পুনর্ব্যবহার করেনি। তারপর একদিন, অন্য কোথাও,
+  অসংলগ্নভাবে ভাঙে। আর এটাই security exploit এর একটা প্রধান পথ।
+</p>
+
+<p>এগুলো ধরার যন্ত্রপাতি আছে, আর সেগুলো ব্যবহার করা উচিত:</p>
+
+<pre><code># ASan — দ্রুত, use-after-free আর overflow ধরে
+$ gcc -fsanitize=address -g prog.c &amp;&amp; ./a.out
+
+# Valgrind — ধীর, কিন্তু leak এর পূর্ণ হিসাব দেয়
+$ valgrind --leak-check=full ./prog
+
+# শুধু leak খুঁজতে (ASan এর নিজের leak checker)
+$ ASAN_OPTIONS=detect_leaks=1 ./a.out</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>malloc()</code> আর <code>free()</code> system
+    call, তাই খরচি" —</strong> বা
+    <strong>"<code>free()</code> করলে memory OS কে ফেরত যায়।"</strong>
+  </p>
+  <p>
+    দুটোই ভুল, আর দ্বিতীয়টা প্রায় সব "memory leak" তদন্তের
+    মূলে।
+  </p>
+  <p>
+    <code>malloc()</code> একটা <strong>library function</strong>।
+    সে kernel থেকে বড় বড় খণ্ডে memory নেয় (<code>mmap()</code> বা
+    <code>brk()</code> দিয়ে), তারপর সেই খণ্ড নিজে কেটে কেটে
+    আপনাকে দেয়। বেশিরভাগ <code>malloc()</code> কোনো syscall
+    করেই না — ~১৫–২৫ ন্যানোসেকেন্ডে ফেরে।
+  </p>
+  <p>
+    <code>free()</code> শুধু allocator কে বলে "এই টুকরো আবার
+    ব্যবহারযোগ্য"। Memory টা <strong>process এর কাছেই থাকে</strong>।
+    তাই <code>free()</code> করার পরেও <code>top</code> এ RSS
+    কমে না — আর এটা leak নয়।
+  </p>
+  <p>
+    এই কারণেই আপনার Node/Python/Java service এর RSS বাড়ে তারপর
+    একটা মালভূমিতে স্থির হয়। Allocator টা চূড়ার চাহিদা ধরে
+    রাখছে, পরের বার কাজে লাগানোর জন্য। Chapter 11 এ দেখব
+    কখন এটা সত্যিই OS কে ফেরত যায় (আর
+    <code>MADV_FREE</code> কেন RSS এর হিসাব আরও ঘোলা করে)।
+  </p>
+</div>
+
+<h2 id="c8-allocator">Allocator এর ভিতরে</h2>
+
+<p>
+  Allocator এর মূল সমস্যা: হাতে কিছু free জায়গা আছে, বিভিন্ন
+  আকারের অনুরোধ আসছে। কোনটা কোথায় বসাব?
+</p>
+
+<p>
+  দুটো মৌলিক কাজ:
+</p>
+
+<pre class="ascii"><code>  Splitting — বড় free খণ্ড কেটে ছোট অনুরোধ মেটানো
+
+   আগে:  [ free 30 bytes                    ]
+   10 byte চাওয়া হলো
+   পরে:  [used 10][ free 20                 ]
+
+
+  Coalescing — পাশাপাশি free খণ্ড জোড়া লাগানো
+
+   আগে:  [ free 10 ][ free 10 ][ free 10 ]
+         ← এখানে 25 byte চাইলে ব্যর্থ হতো!
+   জোড়ার পর:  [ free 30                    ]
+         ← এখন 25 byte দেওয়া যায়</code></pre>
+
+<p>
+  Coalescing না করলে একটা বিশেষ সমস্যা হয়: মোট free জায়গা
+  প্রচুর, কিন্তু কোনো একটা টুকরোই যথেষ্ট বড় নয়। এর নাম
+  <strong>external fragmentation</strong>।
+</p>
+
+<p>
+  পাঠ্যবইয়ের placement নীতিগুলো — first fit, best fit,
+  next fit — একটা free list ঘেঁটে জায়গা খোঁজে। ধারণাগতভাবে
+  এগুলো জানা দরকার, কারণ trade-off টা চিরন্তন: দ্রুত খোঁজা
+  বনাম কম অপচয়।
+</p>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP এই অংশে বেশ সময় দেয় first/best/worst/next fit এর
+    তুলনায়। কিন্তু <strong>২০২৬ এ কোনো production allocator
+    একটা list ঘেঁটে জায়গা খোঁজে না</strong>। "একটা list
+    hunt করা" মানসিক ছবিটা আপনার performance intuition কে
+    ভুল পথে নেয়।
+  </p>
+  <p>
+    আসল allocator (glibc malloc, jemalloc, tcmalloc, mimalloc)
+    যা করে:
+  </p>
+  <ul>
+    <li>
+      <strong>Size class</strong> — অনুরোধকে নির্দিষ্ট আকারের
+      খোপে গোল করা (৮, ১৬, ৩২, ৪৮, ৬৪…)। প্রতিটা খোপের
+      নিজের free list, তাই খোঁজার দরকার নেই — শুধু pop।
+    </li>
+    <li>
+      <strong>Per-thread cache</strong> — প্রতিটা thread এর
+      নিজের ছোট ভাণ্ডার, তাই সাধারণ allocation এ
+      <em>কোনো lock লাগে না</em>। এই কারণেই allocation
+      ন্যানোসেকেন্ডে হয়।
+    </li>
+    <li>
+      বড় allocation সরাসরি <code>mmap()</code> — allocator
+      মাঝখানে থাকে না।
+    </li>
+  </ul>
+  <p>
+    আর একটা কথা: <strong>worst fit</strong> নিয়ে সময় নষ্ট করার
+    দরকার নেই। কেউ এটা ship করে না; এটা একটা প্রতিতুলনামূলক
+    উদাহরণ মাত্র।
+  </p>
+</div>
+
+<p>
+  একই ধারণা kernel এর ভিতরেও আছে, আর আপনি দেখতে পারেন:
+</p>
+
+<pre><code># buddy allocator — physical page এর জন্য
+# প্রতিটা কলাম একটা আকার: 4K, 8K, 16K, ... (2^n)
+$ cat /proc/buddyinfo
+Node 0, zone   Normal  1024  512  256  128  64  32  16  8  4  2  1
+
+# slab allocator — kernel এর নিজের object এর জন্য
+$ sudo slabtop -o | head -8
+# dentry, inode_cache ইত্যাদি — প্রতিটা একটা size class</code></pre>
+
+<p>
+  <code>buddyinfo</code> এর সংখ্যাগুলো ডান দিকে গিয়ে শূন্য হলে
+  সেটা <strong>fragmentation</strong> এর চিহ্ন: ছোট page আছে,
+  কিন্তু বড় নিরবচ্ছিন্ন খণ্ড নেই। Huge page allocate করতে গিয়ে
+  ব্যর্থ হওয়ার কারণ প্রায়ই এটাই — chapter 10 এ ফিরব।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>jemalloc</strong> কেন ব্যবহার করা হয় — Redis আর
+    অনেক Rust/Go service এ — তার কারণ fragmentation এর
+    আচরণ। glibc malloc এর arena গুলো thread সংখ্যার সাথে
+    বাড়ে (default এ ৮ × core সংখ্যা), আর প্রতিটা arena
+    আলাদাভাবে জায়গা ধরে রাখে। ৬৪ core এর মেশিনে এটা
+    উল্লেখযোগ্য RSS। <code>MALLOC_ARENA_MAX=2</code> দিয়ে
+    সীমিত করা যায় — container এ এটা একটা সাধারণ tuning।
+  </p>
+  <p>
+    <strong>Postgres</strong> এর <code>shared_buffers</code>
+    আসলে একটা নিজের allocator — সে OS কে বিশ্বাস না করে
+    নিজেই একটা বড় shared memory অঞ্চল নিয়ে তার ভিতরে page
+    ব্যবস্থাপনা করে। কারণ database জানে কোন page আবার লাগবে,
+    OS জানে না।
+  </p>
+  <p>
+    <strong>V8</strong> (Node) heap টা GC-চালিত, কিন্তু নিচে
+    সেই একই <code>mmap()</code>। তাই
+    <code>--max-old-space-size</code> V8 এর সীমা, আর cgroup
+    এর <code>memory.max</code> kernel এর সীমা — দুটো আলাদা,
+    আর প্রথমটা দ্বিতীয়টার চেয়ে বড় হলে OOM kill অনিবার্য।
+  </p>
+</div>
+
+<h2 id="c8-mmap">সরাসরি kernel থেকে — <code>mmap</code> আর <code>brk</code></h2>
+
+<p>
+  Allocator নিজে kernel থেকে memory নেয় কীভাবে? দুটো উপায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* brk/sbrk — heap এর সীমানা সরানো (পুরনো পদ্ধতি) */
+void *old_top = sbrk(0);          /* বর্তমান সীমা জানো */
+sbrk(4096);                       /* 4KB বাড়াও */
+
+/* mmap — একটা নতুন অঞ্চল চাওয়া (আধুনিক পদ্ধতি) */
+void *p = mmap(NULL, 1 &lt;&lt; 20,     /* 1 MB */
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS,
+               -1, 0);
+if (p == MAP_FAILED) { /* handle */ }
+munmap(p, 1 &lt;&lt; 20);
+
+/* file কে সরাসরি memory তে map করা — chapter 24 এ ফিরব */
+int fd = open("data.bin", O_RDONLY);
+void *data = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+/* এখন data[i] পড়া মানে file এর i-তম byte পড়া,
+   কোনো read() syscall ছাড়াই */</code></pre></div>
+
+<p>
+  আপনি <code>malloc()</code> এর ভিতরে কোনটা হচ্ছে তা দেখতে পারেন:
+</p>
+
+<pre><code>$ strace -e trace=mmap,munmap,brk ./your-program 2&gt;&amp;1 | head
+# ছোট malloc → কোনো syscall নেই (cache থেকে)
+# বড় malloc  → mmap দেখা যাবে
+# glibc এ সীমাটা M_MMAP_THRESHOLD, default 128KB</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong><code>mmap()</code> সফল হয়েছে মানে memory টা
+    আমার হয়ে গেছে।"</strong>
+  </p>
+  <p>
+    না। <code>mmap()</code> শুধু <em>address space সংরক্ষণ</em>
+    করে — page table এ একটা এলাকা চিহ্নিত হয়, কিন্তু কোনো
+    physical page বরাদ্দ হয় না। Physical page আসে যখন আপনি
+    সত্যিই ওই address ছোঁন, একটা <strong>page fault</strong>
+    এর মাধ্যমে। এর নাম <strong>demand paging</strong>, আর
+    এটাই chapter 9 আর 11 এর বিষয়।
+  </p>
+  <p>
+    এই কারণেই একটা program ১TB <code>mmap()</code> করতে পারে
+    ১৬GB মেশিনে, আর <code>top</code> এ VIRT ১TB দেখাবে কিন্তু
+    RSS প্রায় শূন্য। Chapter 2 এ VmSize বনাম VmRSS এর পার্থক্য
+    দেখেছিলাম — কারণটা এটাই।
+  </p>
+  <p>
+    আর তাই <code>malloc()</code> সফল হওয়া মানে আপনার memory
+    আছে, এমন নয়। Linux ডিফল্টে <strong>overcommit</strong>
+    করে — যত চাওয়া হয় তত প্রতিশ্রুতি দেয়, ধরে নিয়ে সবাই
+    সবটা ব্যবহার করবে না। প্রতিশ্রুতি রাখতে না পারলে যা হয়,
+    সেটা OOM killer — chapter 11।
+  </p>
+</div>
+
+<h2 id="c8-segmentation">Segmentation — যে পথটা হারিয়ে গেছে</h2>
+
+<p>
+  Address space কে physical memory তে বসানোর একটা পুরনো পদ্ধতি
+  ছিল <strong>segmentation</strong>: প্রতিটা logical অংশ
+  (code, heap, stack) কে আলাদাভাবে একটা base + size দিয়ে বসানো।
+</p>
+
+<p>
+  এটা fixed base-and-bounds এর চেয়ে ভালো ছিল, কারণ মাঝের
+  বিশাল ফাঁকা জায়গাটা physical memory নিত না। কিন্তু এর একটা
+  মারাত্মক সমস্যা: segment গুলোর আকার আলাদা, তাই physical
+  memory তে <strong>external fragmentation</strong> তৈরি হতো —
+  উপরে allocator এ যে সমস্যাটা দেখলাম, কিন্তু এবার পুরো
+  physical RAM এর মাপে।
+</p>
+
+<p>
+  এই একটা কারণেই fixed-size <strong>page</strong> জিতেছে:
+  সব টুকরো একই আকার হলে external fragmentation তত্ত্বগতভাবেই
+  অসম্ভব। যেকোনো free page যেকোনো চাহিদা মেটাতে পারে।
+</p>
+
+<div class="box old">
+  <div class="box-t">Segmentation এর অবস্থা — ২০২৬</div>
+  <p>
+    Translation mechanism হিসেবে <strong>segmentation মৃত</strong>।
+    x86-64 long mode এ <code>CS</code>, <code>DS</code>,
+    <code>ES</code>, <code>SS</code> এর base জোর করে শূন্য করা —
+    hardware সেগুলো উপেক্ষা করে। শুধু <code>FS</code> আর
+    <code>GS</code> এর base টিকে আছে, আর সেটাও translation এর
+    জন্য নয়: <code>FS</code> ব্যবহৃত হয় thread-local storage এ,
+    <code>GS</code> kernel এর per-CPU data তে। ARM64 আর RISC-V
+    এ segmentation নেই।
+  </p>
+  <p>
+    তাহলে এটা কেন জানা দরকার? দুটো কারণে:
+  </p>
+  <ul>
+    <li>
+      <strong><code>SIGSEGV</code> নামটা এখান থেকে</strong> —
+      "segmentation violation"। প্রতিদিন যে error টা দেখেন,
+      তার নাম একটা মৃত mechanism এর স্মৃতি।
+    </li>
+    <li>
+      <strong>External fragmentation এর যুক্তিটা</strong> — এটাই
+      paging এর অস্তিত্বের কারণ। Chapter 9 এ fixed-size page
+      দেখে "এত অপচয় কেন" মনে হলে, উত্তরটা এই অনুচ্ছেদে।
+    </li>
+  </ul>
+  <p>
+    এর বেশি সময় দেওয়ার দরকার নেই — OSTEP এ এই বিষয়ে ৯ পাতা
+    আছে, আমরা দুই অনুচ্ছেদে সারলাম, আর বাঁচানো জায়গাটা
+    Part 2 এর memory model এ খরচ করব।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c8-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Address space এ প্রথম page টা ইচ্ছে করে unmapped রাখা হয়।
+      যদি mapped রাখা হতো, তাহলে <code>*(int*)NULL = 5</code>
+      লেখা একটা bug কীভাবে প্রকাশ পেত? কেন "সাথে সাথে crash"
+      "নীরবে কাজ করে যাওয়া" এর চেয়ে ভালো?
+    </li>
+    <li>
+      আপনার service এ <code>free()</code> ঠিকভাবে ডাকা হচ্ছে,
+      কোনো leak নেই (Valgrind পরিষ্কার), তবু RSS বেড়ে ২GB
+      হয়ে স্থির হয়ে আছে। কেন memory OS কে ফেরত যাচ্ছে না?
+      এটা কি সমস্যা — আর কোন পরিস্থিতিতে এটা সমস্যা হয়ে ওঠে?
+    </li>
+    <li>
+      Coalescing না থাকলে মোট free memory প্রচুর থাকতেও
+      allocation ব্যর্থ হতে পারে। একটা concrete ক্রম লিখুন
+      (কয়েকটা malloc আর free) যার পরে ৩০ byte free আছে
+      কিন্তু ২৫ byte এর অনুরোধ ব্যর্থ হবে।
+    </li>
+    <li>
+      Production allocator size class আর per-thread cache
+      ব্যবহার করে, list hunt করে না। এই পার্থক্যটা আপনার
+      performance intuition এ কী বদলায়? বিশেষত: একটা
+      multi-threaded program এ allocation কে "lock নেওয়ার
+      মতো খরচি" ভাবা কেন ভুল, আর কখন সেটা সত্যি হয়ে যায়?
+    </li>
+    <li>
+      একটা program ১TB <code>mmap()</code> করল ১৬GB মেশিনে,
+      আর সফল হলো। তারপর সে ওই এলাকার প্রতি page এ একটা byte
+      লিখতে শুরু করল। ঠিক কোন মুহূর্তে সমস্যা হবে, আর
+      কী ঘটবে? আপনার উত্তরে "সংরক্ষণ" আর "বরাদ্দ" আলাদা করুন।
+    </li>
+    <li>
+      Segmentation কে হত্যা করেছে external fragmentation, আর
+      paging সেটা সমাধান করে সব টুকরো একই আকার করে। কিন্তু
+      fixed-size page এর নিজের একটা অপচয় আছে — সেটা কী,
+      আর কেন সেটা external fragmentation এর চেয়ে সহনীয়?
+    </li>
+  </ol>
+</div>

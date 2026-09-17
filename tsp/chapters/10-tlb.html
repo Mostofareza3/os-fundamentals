@@ -1,0 +1,541 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 19, pdf p209–225</span>
+  </div>
+  <h1>TLB — translation ছাড়া কিছুই চলে না</h1>
+  <p class="ch-lede">
+    Chapter 9 এ দেখলাম প্রতিটা memory access এ চারবার page table
+    পড়তে হয় — পাঁচ গুণ ধীর। TLB সেই সমস্যাটা সারায়, আর এত
+    ভালোভাবে সারায় যে আমরা ভুলে যাই এটা আছে। তারপর একদিন
+    একটা loop দশ গুণ ধীর চলে, আর কারণটা TLB।
+  </p>
+</div>
+
+<p>
+  <strong>TLB (Translation Lookaside Buffer — সাম্প্রতিক
+  virtual-থেকে-physical অনুবাদগুলো রাখার hardware cache)</strong>।
+  নামটা দুর্ভাগ্যজনক — এটা আসলে একটা translation cache, আর
+  নাম হওয়া উচিত ছিল সেটাই।
+</p>
+
+<p>
+  এটা MMU এর ভিতরে থাকে, আর কাজটা সরল: VPN → PFN এর একটা
+  ছোট, অত্যন্ত দ্রুত লুকআপ table।
+</p>
+
+<pre class="ascii"><code>  virtual address
+       │
+       ▼
+  ┌─────────────────┐
+  │      TLB        │  hit? ──▶ PFN পেয়ে গেলাম, শেষ  (~1 cycle)
+  │  (64–2048 entry)│
+  └────────┬────────┘
+           │ miss
+           ▼
+  ┌─────────────────┐
+  │ page table walk │  4 স্তর, 4টা memory access  (~100+ cycle)
+  │ (hardware করে)  │
+  └────────┬────────┘
+           │
+           ▼
+      TLB এ ঢুকিয়ে রাখো, তারপর আবার চেষ্টা</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"TLB হলো L1/L2/L3 এর মতো আরেকটা cache স্তর, তাই
+    TLB miss মানে DRAM থেকে data আনতে হবে।"</strong>
+  </p>
+  <p>
+    TLB <em>data</em> রাখে না, শুধু <em>অনুবাদ</em> রাখে। দুটো
+    সম্পূর্ণ আলাদা জিনিস, আর একটা access এ দুটোই দরকার হতে পারে:
+  </p>
+  <pre><code>TLB hit  + cache hit   → দ্রুততম     (~1-4 cycle)
+TLB hit  + cache miss  → DRAM থেকে data  (~200 cycle)
+TLB miss + cache hit   → page walk, তারপর data cache এ পাওয়া গেল
+TLB miss + cache miss  → সবচেয়ে ধীর: walk + DRAM</code></pre>
+  <p>
+    আরও একটা পার্থক্য: <strong>TLB miss আর page fault এক নয়।</strong>
+    TLB miss মানে অনুবাদটা cache এ নেই, কিন্তু page table এ
+    আছে — hardware নিজেই walk করে এনে নেয়, OS জানেও না।
+    Page fault মানে page টাই RAM এ নেই — তখন kernel এ trap হয়।
+    TLB miss ~১০০ cycle, page fault ~১µs থেকে ~১০ms।
+    <strong>হাজার গুণ ব্যবধান।</strong>
+  </p>
+  <p>
+    OSTEP এর একটা অংশ software-managed TLB নিয়ে আলোচনা করে,
+    যেখানে TLB miss ও OS এ trap করে। ওটা MIPS আর SPARC এর
+    নকশা ছিল — x86 কখনো এভাবে কাজ করেনি, আর ARM64 ও করে না।
+    আধুনিক hardware নিজেই walk করে, তাই এই দুটো গুলিয়ে ফেলার
+    সুযোগ কম, কিন্তু OSTEP পড়ে বিভ্রান্ত হওয়া সহজ।
+  </p>
+</div>
+
+<h2 id="c10-locality">কেন এটা কাজ করে — locality</h2>
+
+<p>
+  TLB তে মাত্র কয়েকশো entry। ৬৪-bit address space এ এত ছোট
+  একটা cache কীভাবে কাজ করে?
+</p>
+
+<p>
+  উত্তর locality, আর সেটা একটা উদাহরণে পরিষ্কার হয়। ১০টা
+  int এর একটা array, প্রতি page এ ৪টা int:
+</p>
+
+<pre class="ascii"><code>  page সীমানা:  │        │        │        │
+  array:        a[0] a[1] a[2] a[3] a[4] a[5] a[6] a[7] a[8] a[9]
+                 │              │              │
+  access:       miss hit  hit  hit miss hit  hit  hit miss hit
+
+  10টা access: 3টা miss, 7টা hit
+  hit rate = 70%
+
+  কেন? প্রতি page এর প্রথম access টা miss,
+       বাকিগুলো hit — spatial locality</code></pre>
+
+<p>
+  ৭০% তেমন ভালো নয়, কিন্তু নীতিটা স্পষ্ট। আর এখানে দুটো
+  locality কাজ করছে:
+</p>
+
+<ul>
+  <li>
+    <strong>Spatial</strong> — একই page এর পরের byte গুলো
+    একই অনুবাদ ব্যবহার করে। বড় page হলে hit rate আরও ভালো।
+  </li>
+  <li>
+    <strong>Temporal</strong> — loop টা যদি আবার চলে, সব
+    অনুবাদ TLB তেই থাকবে, তাই দ্বিতীয়বার প্রায় ১০০% hit।
+  </li>
+</ul>
+
+<p>
+  গুরুত্বপূর্ণ: <strong>এই দুটো locality আপনার program এর
+  বৈশিষ্ট্য, hardware এর নয়</strong>। TLB শুধু সেটার সুযোগ
+  নেয়। তাই আপনার data layout সরাসরি TLB আচরণ নিয়ন্ত্রণ করে —
+  আর সেটাই পরের অংশের বিষয়।
+</p>
+
+<h2 id="c10-measure">নিজে মেপে দেখা</h2>
+
+<p>
+  TLB এর প্রভাব মাপা যায়, আর একবার দেখলে ভোলা যায় না। একই
+  পরিমাণ কাজ, শুধু access pattern আলাদা:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* tlb_stride.c — walk an array with increasing stride.
+   Same number of accesses; only the spacing changes.
+   Build: gcc -O2 -o tlb_stride tlb_stride.c */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;time.h&gt;
+
+#define PAGE 4096
+#define PAGES 8192              /* 32 MB — far bigger than any TLB */
+#define TOUCHES 2000000
+
+int main(void) {
+    char *mem = aligned_alloc(PAGE, (size_t) PAGES * PAGE);
+    if (!mem) return 1;
+
+    /* Pre-fault every page so we measure TLB, not page faults. */
+    for (size_t i = 0; i &lt; (size_t) PAGES * PAGE; i += PAGE) mem[i] = 1;
+
+    for (int stride_pages = 1; stride_pages &lt;= 512; stride_pages *= 2) {
+        size_t stride = (size_t) stride_pages * PAGE;
+        size_t span   = (size_t) PAGES * PAGE;
+        volatile char sink = 0;
+
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &amp;t0);
+        size_t off = 0;
+        for (int i = 0; i &lt; TOUCHES; i++) {
+            sink += mem[off];
+            off += stride;
+            if (off &gt;= span) off = (off % stride) + PAGE;  /* wrap */
+        }
+        clock_gettime(CLOCK_MONOTONIC, &amp;t1);
+
+        double ns = ((t1.tv_sec - t0.tv_sec) * 1e9
+                     + (t1.tv_nsec - t0.tv_nsec)) / TOUCHES;
+        printf("stride %4d pages (%7zu KB): %6.2f ns/access\n",
+               stride_pages, stride / 1024, ns);
+    }
+    free(mem);
+    return 0;
+}</code></pre></div>
+
+<p>
+  একটা সাধারণ x86-64 মেশিনে ফল মোটামুটি এরকম দাঁড়ায়:
+</p>
+
+<pre class="ascii"><code>  stride    1 page  (   4 KB):   1.2 ns/access   ← TLB + cache hit
+  stride    2 pages (   8 KB):   1.4 ns
+  stride    4 pages (  16 KB):   2.1 ns
+  stride   16 pages (  64 KB):   4.8 ns          ← cache থেকে বেরিয়ে যাচ্ছে
+  stride   64 pages ( 256 KB):  12.3 ns          ← TLB reach ছাড়িয়ে গেল
+  stride  256 pages (1024 KB):  24.7 ns          ← প্রতিবার page walk
+  stride  512 pages (2048 KB):  26.1 ns
+
+  ২০ গুণ ব্যবধান — একই সংখ্যক access, একই মোট data।
+  শুধু ক্রমটা বদলেছে।</code></pre>
+
+<p>
+  Hardware counter দিয়ে কারণটা নিশ্চিত করা যায়:
+</p>
+
+<pre><code>$ perf stat -e dTLB-loads,dTLB-load-misses,\
+             cycles,instructions ./tlb_stride
+
+# TLB miss rate সরাসরি দেখতে
+$ perf stat -e dtlb_load_misses.walk_completed ./your-program
+
+# আপনার CPU এর TLB আকার
+$ cpuid -1 2>/dev/null | grep -A2 -i tlb | head -20
+# বা সরাসরি:
+$ grep -i tlb /proc/cpuinfo | head</code></pre>
+
+<p>
+  একটা ধারণা এখানে কাজে লাগে: <strong>TLB reach</strong> —
+  TLB এ যত entry, তার প্রতিটা এক page ঢাকে, তাই মোট কত memory
+  TLB দিয়ে ঢাকা যায়:
+</p>
+
+<pre class="ascii"><code>  TLB reach = entry সংখ্যা × page size
+
+  1536 entry × 4 KB  =    6 MB    ← সাধারণ 4KB page এ
+  1536 entry × 2 MB  = 3072 MB    ← huge page এ, 512 গুণ বেশি!
+
+  আপনার working set যদি TLB reach ছাড়িয়ে যায়,
+  প্রতিটা access এ page walk — উপরের table এর শেষ সারি।</code></pre>
+
+<h2 id="c10-huge">Huge page — TLB reach বাড়ানো</h2>
+
+<p>
+  যদি page বড় হয়, একই সংখ্যক TLB entry দিয়ে অনেক বেশি memory
+  ঢাকা যায়। x86-64 এ 2MB আর 1GB page সমর্থিত।
+</p>
+
+<pre class="ascii"><code>  সাধারণ 4KB page — চার স্তর:
+  PML4 → PDPT → PD → PT → 4KB page
+
+  2MB huge page — তিন স্তর (PT স্তরটা বাদ):
+  PML4 → PDPT → PD → 2MB page
+                 └── PD entry নিজেই একটা 2MB page কে point করে
+
+  1GB huge page — দুই স্তর:
+  PML4 → PDPT → 1GB page
+
+  লাভ: কম স্তর (দ্রুত walk) + অনেক বেশি TLB reach</code></pre>
+
+<p>
+  Linux এ দুটো পথ আছে: স্বচ্ছ (automatic) আর স্পষ্ট (manual)।
+</p>
+
+<pre><code># THP (Transparent Huge Pages) — kernel নিজে সিদ্ধান্ত নেয়
+$ cat /sys/kernel/mm/transparent_hugepage/enabled
+[always] madvise never
+#  always  → kernel যেখানে পারে huge page দেয়
+#  madvise → শুধু যেখানে program madvise(MADV_HUGEPAGE) বলেছে
+#  never   → বন্ধ
+
+# কতটা THP ব্যবহৃত হচ্ছে
+$ grep -i -E 'AnonHugePages|ShmemHugePages' /proc/meminfo
+AnonHugePages:   2097152 kB
+
+# একটা process এর জন্য
+$ grep -i anonhuge /proc/self/smaps_rollup</code></pre>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Explicitly ask for huge pages for a hot region */
+#include &lt;sys/mman.h&gt;
+
+size_t len = 64UL &lt;&lt; 20;          /* 64 MB */
+void *p = mmap(NULL, len, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+/* Hint: this region benefits from huge pages */
+madvise(p, len, MADV_HUGEPAGE);
+
+/* Or reserve real hugetlb pages (needs sysadmin setup) */
+void *h = mmap(NULL, len, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);</code></pre></div>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Huge page TLB miss কমায়, তাই <code>THP=always</code>
+    সবসময় ভালো — এটা বিনামূল্যের performance।"</strong>
+  </p>
+  <p>
+    এটা সম্ভবত এই chapter এর সবচেয়ে ব্যয়বহুল ভুল ধারণা,
+    কারণ এর কারণে বাস্তবে outage হয়েছে। Huge page এর দাম আছে:
+  </p>
+  <ul>
+    <li>
+      <strong>Internal fragmentation</strong> — একটা 2MB page
+      এর মাত্র ৪KB ব্যবহার করলেও পুরো 2MB আটকে থাকে। Memory
+      ব্যবহার নাটকীয়ভাবে বাড়তে পারে।
+    </li>
+    <li>
+      <strong>Allocation stall</strong> — 2MB নিরবচ্ছিন্ন
+      physical memory লাগে। Memory fragmented হলে kernel কে
+      compaction চালাতে হয়, আর সেটা <em>synchronous</em> হতে
+      পারে — আপনার thread ওখানে আটকে থাকে। Chapter 8 এর
+      <code>/proc/buddyinfo</code> মনে করুন: ডান দিকের কলাম
+      শূন্য মানে বড় খণ্ড নেই।
+    </li>
+    <li>
+      <strong>COW এর খরচ ৫১২ গুণ</strong> — chapter 3 এ দেখেছি
+      fork এর পর লিখতে গেলে page copy হয়। Huge page এ সেই
+      copy টা 4KB এর বদলে 2MB। Redis এর <code>BGSAVE</code>
+      এ এটা সরাসরি latency spike।
+    </li>
+  </ul>
+  <p>
+    এই কারণেই <strong>Redis, MongoDB আর Oracle সবাই THP বন্ধ
+    করতে বলে</strong> — Redis চালু হওয়ার সময় warning ও দেয়।
+    অথচ একটা বড় in-memory analytics workload এ THP বিশাল
+    লাভ দেয়। পার্থক্য: allocation pattern। অনেক ছোট, স্বল্পায়ু
+    allocation → THP ক্ষতিকর। কম, বড়, দীর্ঘায়ু allocation →
+    THP লাভজনক।
+  </p>
+  <p>
+    নিরাপদ default হলো <code>madvise</code> — তাহলে যে
+    program জানে তার কী দরকার, সে চাইতে পারে, আর বাকিরা
+    অপ্রত্যাশিত খরচ থেকে বাঁচে।
+  </p>
+</div>
+
+<h2 id="c10-ctxsw">Context switch — TLB এর সবচেয়ে বড় শত্রু</h2>
+
+<p>
+  একটা সমস্যা: TLB তে VPN → PFN থাকে, কিন্তু process A এর
+  VPN 1 আর process B এর VPN 1 সম্পূর্ণ আলাদা physical page।
+  Context switch এর পর পুরনো entry গুলো <em>ভুল</em>।
+</p>
+
+<p>
+  সরল সমাধান: switch এ পুরো TLB মুছে দাও (flush)। কিন্তু তখন
+  নতুন process সম্পূর্ণ ঠান্ডা TLB নিয়ে শুরু করে — প্রথম
+  কয়েকশো access সব miss।
+</p>
+
+<p>
+  আধুনিক hardware এর সমাধান: প্রতিটা entry তে একটা
+  <strong>address space identifier</strong> যোগ করা।
+</p>
+
+<pre class="ascii"><code>  flush ছাড়া TLB (ASID/PCID সহ):
+
+  ┌──────┬─────┬─────┬───────┐
+  │ ASID │ VPN │ PFN │ valid │
+  ├──────┼─────┼─────┼───────┤
+  │  1   │  1  │ 12  │   1   │  ← process 1 এর
+  │  1   │  9  │ 44  │   1   │
+  │  2   │  1  │ 87  │   1   │  ← process 2 এর, একই VPN!
+  │  2   │  5  │ 23  │   1   │
+  └──────┴─────┴─────┴───────┘
+
+  lookup এ ASID ও মেলানো হয়, তাই দুটো process এর entry
+  একসাথে থাকতে পারে — flush লাগে না।
+
+  x86-64 এ এর নাম PCID (Process Context ID), 12 bit
+  ARM64 এ ASID, 8 বা 16 bit</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"প্রতিটা context switch এ TLB পুরো মুছে যায়" —</strong>
+    OSTEP এর প্রথম সমাধানটা পড়ে এই ধারণা হওয়া স্বাভাবিক।
+  </p>
+  <p>
+    আধুনিক x86-64 এ PCID থাকায় flush লাগে না — Linux এটা
+    ব্যবহার করে। কিন্তু একটা মোচড় আছে:
+    <strong>KPTI এই সুবিধাটা আংশিক ফিরিয়ে নিয়েছে</strong>।
+    Chapter 4 এ দেখেছি Meltdown এর পর kernel আর user এর
+    আলাদা page table রাখতে হয়। ফলে প্রতিটা syscall এ CR3
+    বদলায়, আর PCID না থাকলে সেটা TLB flush। PCID থাকলে
+    খরচটা অনেক কম, তাই আধুনিক CPU তে KPTI এর দাম কম।
+  </p>
+  <pre><code># আপনার CPU তে PCID আছে কি
+$ grep -o 'pcid\|invpcid' /proc/cpuinfo | sort -u
+invpcid
+pcid                     ← থাকলে KPTI এর খরচ কম</code></pre>
+</div>
+
+<h2 id="c10-shootdown">TLB shootdown — যেটা OSTEP এ নেই</h2>
+
+<p>
+  এখন একটা বিষয় যা OSTEP সম্পূর্ণ এড়িয়ে গেছে, কিন্তু
+  multicore এ এটা একটা বাস্তব performance সমস্যা।
+</p>
+
+<p>
+  <strong>TLB প্রতি-core, আর coherent নয়।</strong> Chapter 7 এ
+  দেখেছি cache গুলো hardware coherence protocol দিয়ে সমন্বিত
+  থাকে। <strong>TLB এর জন্য এমন কিছু নেই।</strong>
+</p>
+
+<p>
+  তাই আপনি যখন একটা mapping সরান বা বদলান —
+  <code>munmap()</code>, <code>mprotect()</code>,
+  <code>madvise(MADV_DONTNEED)</code> — অন্য core এর TLB তে
+  এখনো পুরনো অনুবাদ থাকতে পারে। সেটা একটা correctness সমস্যা,
+  আর kernel কে জোর করে সবাইকে জানাতে হয়:
+</p>
+
+<pre class="ascii"><code>  thread A (core 0): munmap(p, 4096)
+       │
+       ├─ নিজের TLB entry মুছল (INVLPG)
+       │
+       ├─ mm_cpumask দেখল: এই address space
+       │  core 1, 3, 7 এও সক্রিয়
+       │
+       ├─ IPI (Inter-Processor Interrupt) পাঠাল ────┐
+       │                                            │
+       │  ┌─────────────────────────────────────────┤
+       │  ▼              ▼              ▼           │
+       │ core 1        core 3        core 7         │
+       │ যা করছিল      যা করছিল      যা করছিল       │
+       │ থামল          থামল          থামল           │
+       │ TLB মুছল      TLB মুছল      TLB মুছল       │
+       │ সাড়া দিল      সাড়া দিল      সাড়া দিল       │
+       │  └─────────────────────────────────────────┘
+       │
+       └─ সবার সাড়া পাওয়া পর্যন্ত spin করে অপেক্ষা
+
+  খরচটা page সংখ্যার সাথে বাড়ে না — CORE সংখ্যার সাথে বাড়ে।</code></pre>
+
+<p>
+  শেষ লাইনটা গুরুত্বপূর্ণ আর প্রতিস্বজ্ঞাত: একটা page unmap
+  করা আর হাজার page unmap করা প্রায় একই খরচ, কিন্তু ৮ core
+  বনাম ১২৮ core এ ব্যাপক পার্থক্য।
+</p>
+
+<p>
+  এর দুটো বাস্তব পরিণতি:
+</p>
+
+<ul>
+  <li>
+    <strong>Allocator রা <code>munmap()</code> এড়ায়।</strong>
+    jemalloc আর tcmalloc দুটোই <code>MADV_FREE</code> পছন্দ
+    করে <code>munmap()</code> এর চেয়ে — কারণ
+    <code>MADV_FREE</code> mapping রেখে দেয়, শুধু page টা
+    পুনর্ব্যবহারযোগ্য চিহ্নিত করে, তাই shootdown এড়ানো যায়।
+    এটা chapter 8 এর "free করলে RSS কমে না" এর আরেকটা কারণ।
+  </li>
+  <li>
+    <strong>Hot loop এ mmap/munmap বিপর্যয়।</strong> একটা
+    server যদি প্রতি request এ mmap আর munmap করে, ১২৮ core
+    এ সেটা IPI ঝড় তৈরি করবে, আর scaling সম্পূর্ণ ভেঙে পড়বে।
+  </li>
+</ul>
+
+<p>
+  ARM64 এ ব্যবস্থাটা আলাদা — <code>TLBI</code> instruction
+  hardware-স্তরে broadcast করে (inner-shareable domain এ),
+  তাই IPI লাগে না। কিন্তু খরচ শূন্য নয়, আর একটা
+  <code>DSB ISH</code> barrier দিয়ে অপেক্ষা করতে হয়।
+</p>
+
+<pre><code># TLB shootdown গুনে দেখা
+$ grep -i 'TLB' /proc/interrupts
+TLB:  4823  5011  4779  4902   TLB shootdowns
+
+# চাপে থাকা system এ এই সংখ্যা দ্রুত বাড়ে</code></pre>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    <strong>Postgres</strong> এ <code>huge_pages = try</code>
+    সুপারিশ করা হয় বড় <code>shared_buffers</code> এর জন্য —
+    কারণ ৬৪GB buffer pool ৪KB page এ TLB reach সম্পূর্ণ
+    ছাপিয়ে যায়। কিন্তু এটা explicit hugetlb, THP নয় —
+    পার্থক্যটা গুরুত্বপূর্ণ।
+  </p>
+  <p>
+    <strong>JVM</strong> এ <code>-XX:+UseLargePages</code>
+    একই কারণে, আর বড় heap এ এটা ৫–১৫% throughput দিতে পারে।
+  </p>
+  <p>
+    <strong>Redis</strong> উল্টো দিকে — THP বন্ধ করতে বলে,
+    কারণ COW এর খরচ। একই hardware feature, বিপরীত সুপারিশ,
+    আর কারণটা সম্পূর্ণভাবে workload এর আকৃতিতে। এটাই
+    "performance advice কখনো সর্বজনীন নয়" এর সেরা উদাহরণ।
+  </p>
+</div>
+
+<h2 id="c10-summary">মাপকাঠিগুলো এক জায়গায়</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>ঘটনা</th><th>খরচ</th><th>কে সামলায়</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>TLB hit</td><td class="num">~১ cycle</td><td>Hardware</td></tr>
+    <tr><td>TLB miss → page walk</td><td class="num">~১০০ cycle</td><td>Hardware (x86, ARM64)</td></tr>
+    <tr><td>Minor page fault</td><td class="num">~১ µs</td><td>Kernel</td></tr>
+    <tr><td>Major page fault (NVMe)</td><td class="num">~২০–১০০ µs</td><td>Kernel + device</td></tr>
+    <tr><td>Major page fault (HDD)</td><td class="num">~১০ ms</td><td>Kernel + device</td></tr>
+    <tr><td>TLB shootdown (IPI)</td><td class="num">~১–১০ µs, core সংখ্যার সাথে বাড়ে</td><td>Kernel</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  এই সংখ্যাগুলোর অনুপাত মনে রাখা কাজের। TLB miss আর page fault
+  এর মধ্যে হাজার গুণ, আর page fault আর HDD এর মধ্যে আরও হাজার
+  গুণ। তাই "memory ধীর" বলার আগে কোন স্তরে সমস্যা তা ঠিক করা
+  দরকার — আর প্রতিটা স্তরের জন্য আলাদা tool আছে।
+</p>
+
+<div class="qs">
+  <h2 id="c10-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      TLB miss আর page fault এর মধ্যে হাজার গুণ খরচের ব্যবধান।
+      দুটোরই লক্ষণ "memory access ধীর"। <code>perf</code> আর
+      <code>/proc</code> ব্যবহার করে আপনি কীভাবে আলাদা করবেন
+      কোনটা ঘটছে?
+    </li>
+    <li>
+      উপরের stride benchmark এ ২০ গুণ ব্যবধান এসেছে একই সংখ্যক
+      access এ। এখন ভাবুন একটা hash table বনাম একটা sorted
+      array — দুটোতেই N টা element, দুটোতেই lookup। TLB এর
+      দৃষ্টিতে কোনটা ভালো, আর কেন algorithmic complexity
+      (O(1) বনাম O(log n)) এই প্রশ্নের উত্তর দেয় না?
+    </li>
+    <li>
+      Redis THP বন্ধ করতে বলে, Postgres huge page চালু করতে
+      বলে। দুটোই memory-ভারী database। কোন নির্দিষ্ট পার্থক্যটা
+      এই বিপরীত সুপারিশের কারণ? আপনার উত্তরে chapter 3 এর
+      COW ব্যবহার করুন।
+    </li>
+    <li>
+      TLB shootdown এর খরচ page সংখ্যার সাথে বাড়ে না, core
+      সংখ্যার সাথে বাড়ে। এই তথ্যটা থেকে বলুন: একটা allocator
+      কেন ১০০টা আলাদা <code>munmap()</code> এর বদলে একটা বড়
+      <code>munmap()</code> পছন্দ করবে, আর কেন
+      <code>MADV_FREE</code> আরও ভালো?
+    </li>
+    <li>
+      PCID ছাড়া একটা পুরনো CPU তে KPTI চালু আছে। প্রতিটা
+      syscall এ কী অতিরিক্ত ঘটছে, আর একটা syscall-ভারী
+      program (যেমন প্রতি ৪KB এ একটা <code>read()</code>) এ
+      এর প্রভাব কত হবে? Buffer size বাড়ালে কী বদলাবে?
+    </li>
+    <li>
+      TLB coherent নয়, কিন্তু cache coherent। যদি hardware
+      TLB coherence দিত, তাহলে shootdown এর দরকার হতো না।
+      কেন hardware নকশাকাররা এটা দেননি বলে মনে হয়? (সূত্র:
+      TLB entry কখন বদলায় বনাম cache line কখন বদলায় —
+      কোনটা বেশি ঘন ঘন, আর কোনটার জন্য protocol টা সস্তা?)
+    </li>
+  </ol>
+</div>

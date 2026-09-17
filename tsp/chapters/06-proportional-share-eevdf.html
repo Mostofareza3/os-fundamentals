@@ -1,0 +1,550 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 9, pdf p107–116 · + Linux 6.6 EEVDF</span>
+  </div>
+  <h1>Proportional share — lottery থেকে EEVDF</h1>
+  <p class="ch-lede">
+    MLFQ অনুমান করে কে গুরুত্বপূর্ণ। Proportional share জিজ্ঞেস করে না —
+    সে শুধু ভাগ কার্যকর করে। এই chapter এর অঙ্কটা অচেনা লাগতে পারে,
+    কিন্তু এটাই আপনার Linux box এ এই মুহূর্তে চলছে, আর এটাই আপনার
+    Kubernetes <code>cpu.weight</code>।
+  </p>
+</div>
+
+<p>
+  Chapter 5 এর scheduler গুলো একটা প্রশ্নের উত্তর খুঁজছিল: কোন কাজটা
+  <em>সবচেয়ে গুরুত্বপূর্ণ</em>? MLFQ সেটা আচরণ দেখে অনুমান করত।
+</p>
+
+<p>
+  Proportional share সম্পূর্ণ ভিন্ন প্রশ্ন করে:
+  <strong>প্রত্যেকে তার প্রাপ্য ভাগ পাচ্ছে কি?</strong> এখানে
+  কোনো অনুমান নেই, কোনো priority নেই — শুধু একটা চুক্তি: A পাবে
+  ৫০%, B পাবে ৩০%, C পাবে ২০%। Scheduler এর কাজ সেটা নিশ্চিত করা।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    Turnaround বা response time অপ্টিমাইজ করার বদলে scheduler
+    কীভাবে নিশ্চিত করবে যে প্রতিটা কাজ CPU এর একটা নির্দিষ্ট
+    <em>অনুপাত</em> পাচ্ছে?
+  </p>
+</div>
+
+<h2 id="c6-lottery">Lottery — এলোমেলোতা দিয়ে ন্যায্যতা</h2>
+
+<p>
+  সবচেয়ে সরল ধারণা: প্রত্যেককে কিছু <strong>ticket</strong> দাও।
+  Ticket সংখ্যা তার প্রাপ্য ভাগ বোঝায়। তারপর প্রতি time slice এ
+  একটা lottery করো — যার ticket জিতল, সে চলবে।
+</p>
+
+<p>
+  A এর ৭৫টা ticket, B এর ২৫টা। মোট ১০০। প্রতি slice এ ০–৯৯ এর
+  মধ্যে একটা সংখ্যা তোলা হয়:
+</p>
+
+<pre class="ascii"><code>  ticket 0 ─────────────────── 74 │ 75 ────── 99
+           ◀──────── A ────────▶  │ ◀─── B ───▶
+                 (75 ticket)          (25 ticket)
+
+  winning ticket গুলো:
+   63 → A    85 → B    70 → A    39 → A    76 → B
+   17 → A    29 → A    41 → A    36 → A    49 → A
+
+  এই ১০টায়: A চলল ৮ বার, B চলল ২ বার
+  চাওয়া ছিল 75/25, পাওয়া গেল 80/20 — কাছাকাছি, ঠিক নয়</code></pre>
+
+<p>Implementation টা অস্বাভাবিকভাবে ছোট:</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Lottery scheduling: pick a winner, walk the list until we pass it */
+int counter = 0;
+
+/* winner is somewhere in [0, totaltickets) */
+int winner = getrandom(0, totaltickets);
+
+node_t *current = head;
+while (current) {
+    counter = counter + current-&gt;tickets;
+    if (counter &gt; winner)
+        break;                  /* found the winning process */
+    current = current-&gt;next;
+}
+/* 'current' is the winner — schedule it */</code></pre></div>
+
+<p>
+  কোনো global state নেই, কোনো হিসাব রাখতে হয় না। একটা random
+  number generator, একটা list, আর একটা counter — ব্যাস।
+</p>
+
+<p>
+  Ticket ধারণাটা নমনীয়ও। কয়েকটা কৌশল আছে:
+</p>
+
+<ul>
+  <li>
+    <strong>Ticket currency</strong> — একজন user তার নিজের
+    ticket গুলো নিজের কাজগুলোর মধ্যে নিজের হিসাবে ভাগ করতে পারে,
+    আর system সেটা global currency তে রূপান্তর করে নেয়।
+  </li>
+  <li>
+    <strong>Ticket transfer</strong> — একটা process তার ticket
+    সাময়িকভাবে অন্যকে দিতে পারে। Client যদি server এর কাজের
+    অপেক্ষায় থাকে, সে নিজের ticket server কে দিয়ে দিতে পারে —
+    তাতে কাজটা দ্রুত হয়, তারপর ticket ফেরত আসে।
+  </li>
+  <li>
+    <strong>Ticket inflation</strong> — পরস্পরকে বিশ্বাস করা
+    process গুলোর মধ্যে একটা process নিজের প্রয়োজন বাড়লে নিজের
+    ticket বাড়িয়ে নিতে পারে, কারো সাথে আলোচনা ছাড়াই।
+  </li>
+</ul>
+
+<p>
+  কিন্তু lottery এর মূল দুর্বলতা উপরের trace এ দেখা গেছে:
+  <strong>ন্যায্যতা শুধু দীর্ঘমেয়াদে আসে</strong>। অল্প কয়েকটা
+  slice এ অনুপাত বেশ ভুল হতে পারে। একটা interactive কাজের জন্য
+  এটা সমস্যা — সে হয়তো পরপর তিনবার হেরে গেল।
+</p>
+
+<h2 id="c6-stride">Stride — একই কাজ, নির্ভুলভাবে</h2>
+
+<p>
+  <strong>Stride scheduling</strong> একই লক্ষ্য অর্জন করে, কিন্তু
+  এলোমেলোতা ছাড়া। এখানে দুটো সংখ্যা:
+</p>
+
+<ul>
+  <li>
+    <strong>stride</strong> — ticket সংখ্যার বিপরীত অনুপাতে।
+    একটা বড় সংখ্যাকে ticket দিয়ে ভাগ করে পাওয়া যায়।
+  </li>
+  <li>
+    <strong>pass</strong> — একটা counter; process চললে তার
+    stride যোগ হয়।
+  </li>
+</ul>
+
+<p>
+  নিয়ম একটাই: <strong>যার pass সবচেয়ে কম, সে চলবে।</strong>
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Stride scheduling — the whole algorithm */
+current = remove_min(queue);        /* lowest pass value wins */
+schedule(current);                  /* run it for one quantum  */
+current-&gt;pass += current-&gt;stride;   /* charge it for the time  */
+insert(queue, current);</code></pre></div>
+
+<p>
+  A, B, C এর ticket যথাক্রমে ১০০, ৫০, ২৫০। ১০,০০০ কে ভাগ করে
+  stride পাই: <strong>১০০, ২০০, ৪০</strong>। সবার pass শুরুতে ০:
+</p>
+
+<pre class="ascii"><code>  Pass(A)      Pass(B)      Pass(C)      কে চলবে?
+  stride=100   stride=200   stride=40
+  ──────────   ──────────   ──────────   ─────────
+      0            0            0        A
+    100            0            0        B
+    100          200            0        C
+    100          200           40        C
+    100          200           80        C
+    100          200          120        A
+    200          200          120        C
+    200          200          160        C
+    200          200          200        (চক্র শেষ, আবার শুরু)
+
+  একটা চক্রে: C চলল ৫ বার, A চলল ২ বার, B চলল ১ বার
+  অনুপাত 5 : 2 : 1  =  250 : 100 : 50  ✓ ঠিক ticket অনুপাত</code></pre>
+<p class="figcap">
+  Stride: প্রতি চক্রের শেষে অনুপাত ঠিক মেলে, সম্ভাব্যতা নয়।
+</p>
+
+<p>
+  Lottery দীর্ঘমেয়াদে অনুপাত মেলায়; stride প্রতিটা চক্রের শেষে
+  <em>নির্ভুলভাবে</em> মেলায়। তাহলে lottery এর দরকার কী?
+</p>
+
+<p>
+  একটা কারণে: <strong>stride এর global state আছে, lottery এর নেই</strong>।
+  মাঝপথে একটা নতুন কাজ এলে তার pass কত হবে? ০ দিলে সে দীর্ঘক্ষণ
+  CPU দখল করবে (কারণ তার pass সবার চেয়ে কম থাকবে)। বাকিদের
+  সমান দিলে? তাহলে হিসাব রাখতে হবে। Lottery তে এই সমস্যা নেই —
+  নতুন কাজের ticket যোগ করে দিলেই হলো।
+</p>
+
+<p>
+  এই "নতুন কাজের pass কত" প্রশ্নটা মনে রাখুন। আধুনিক scheduler
+  এটার সমাধান করেছে, আর সেটাই এই chapter এর আসল গন্তব্য।
+</p>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো — আর এটাই সবচেয়ে বড় সংশোধন</div>
+  <p>
+    OSTEP এই chapter শেষ করে এই বাক্যে: lottery আর stride
+    "<em>have not achieved wide-spread adoption as CPU
+    schedulers</em>" — কারণ হিসেবে বলে এরা I/O এর সাথে ভালো
+    মেশে না, আর ticket assignment এর সমস্যা অমীমাংসিত। তারপর
+    MLFQ-ধরনের scheduler কে "more widely deployed" বলে।
+  </p>
+  <p>
+    <strong>এই বাক্যটা ২০২৬ এ সম্পূর্ণ উল্টো।</strong> নরম করে
+    বলার কিছু নেই — proportional share পুরোপুরি জিতেছে:
+  </p>
+  <ul>
+    <li>
+      Linux এর <strong>CFS</strong> (২০০৭–২০২৩) ছিল
+      proportional-share, আর তার <code>vruntime</code>
+      <em>আক্ষরিক অর্থেই</em> stride এর pass value। প্রতিটা task
+      তার weight এর বিপরীত অনুপাতে vruntime জমা করত, আর
+      scheduler সবচেয়ে কম vruntime এর task চালাত। এটা stride,
+      শুধু নাম আলাদা।
+    </li>
+    <li>
+      <strong>Linux 6.6 (২০২৩)</strong> থেকে CFS কে সরিয়ে
+      <strong>EEVDF</strong> আনা হয়েছে — নিচে দেখব।
+    </li>
+    <li>
+      আপনার Kubernetes এর <code>cpu.weight</code> (cgroup v2)
+      <strong>ঠিক ticket assignment</strong>। যে সমস্যাটাকে
+      OSTEP "hard problem" বলে বাতিল করেছিল, সেটাই এখন
+      container orchestration এর মূল API।
+    </li>
+  </ul>
+  <p>
+    আর মজার দিক: OSTEP নিজেই পরের chapter এ EEVDF এর নাম উল্লেখ
+    করে — কিন্তু "BFS" নামের একটা প্রান্তিক scheduler এর ভিত্তি
+    হিসেবে, Linux এর scheduler-যুদ্ধের একটা পরাজিত প্রতিদ্বন্দ্বী।
+    আজ EEVDF-ই Linux এর scheduler।
+  </p>
+</div>
+
+<h2 id="c6-cfs">CFS — stride, উৎপাদনের মাপে</h2>
+
+<p>
+  CFS (Completely Fair Scheduler) stride এর ধারণাটা নিয়ে কয়েকটা
+  বাস্তব সমস্যার সমাধান যোগ করেছিল।
+</p>
+
+<p>
+  মূল হিসাব — <code>vruntime</code> (virtual runtime):
+</p>
+
+<pre class="ascii"><code>  vruntime += প্রকৃত চলার সময় × (NICE_0_WEIGHT / task এর weight)
+
+  nice 0   → weight 1024  → vruntime বাড়ে স্বাভাবিক হারে
+  nice -5  → weight 3121  → vruntime বাড়ে ধীরে  → বেশি CPU পায়
+  nice +5  → weight  335  → vruntime বাড়ে দ্রুত → কম CPU পায়
+
+  scheduler সবসময় সবচেয়ে কম vruntime এর task চালায়
+  (একটা red-black tree তে রাখা, তাই min খোঁজা O(log n))</code></pre>
+
+<p>
+  লক্ষ করুন weight গুলো রৈখিক নয় — chapter 5 এ
+  <code>nice</code> নিয়ে যে ভুল ধারণার কথা বলেছিলাম, এই table-ই
+  তার কারণ। প্রতি nice ধাপে প্রায় ১.২৫ গুণ, তাই ১০ ধাপ মানে
+  প্রায় ১০ গুণ পার্থক্য।
+</p>
+
+<p>
+  আর সেই "নতুন কাজের pass কত" সমস্যা? CFS এর উত্তর:
+  নতুন task এর vruntime কে <strong>runqueue এর সর্বনিম্ন
+  vruntime এর কাছাকাছি</strong> বসিয়ে দাও (<code>min_vruntime</code>)।
+  তাহলে সে অন্যায্য সুবিধা পায় না, আবার শাস্তিও পায় না।
+</p>
+
+<h2 id="c6-eevdf">EEVDF — latency কে প্রথম শ্রেণীর নাগরিক করা</h2>
+
+<p>
+  CFS এর একটা মৌলিক সীমাবদ্ধতা ছিল: সে শুধু
+  <strong>কতটুকু</strong> CPU নিয়ে কথা বলত, <strong>কখন</strong>
+  নিয়ে নয়।
+</p>
+
+<p>
+  ভাবুন দুটো task, দুজনেরই সমান weight। একটা audio process যার
+  প্রতি ১০ms এ ১ms CPU দরকার — নইলে শব্দ কেটে যাবে। আরেকটা
+  compiler যার শুধু মোট CPU দরকার, কখন পেল তাতে কিছু যায় আসে না।
+</p>
+
+<p>
+  CFS দুজনকে সমান <em>পরিমাণ</em> দেবে, কিন্তু audio process টা
+  ঠিক সময়ে পাবে কি না তার কোনো নিশ্চয়তা নেই। মানুষ এটা সামলাত
+  <code>nice</code> দিয়ে জোড়াতালি দিয়ে — যা আসলে ভুল হাতিয়ার,
+  কারণ <code>nice</code> পরিমাণের কথা বলে, সময়ের নয়।
+</p>
+
+<p>
+  <strong>EEVDF (Earliest Eligible Virtual Deadline First —
+  প্রতিটা task এর জন্য একটা virtual deadline হিসাব করে, আর যার
+  deadline সবচেয়ে আগে তাকে চালানো)</strong> এই ফাঁকটা বন্ধ করে।
+  দুটো নতুন ধারণা:
+</p>
+
+<pre class="ascii"><code>  ১. lag — task টা তার প্রাপ্যের তুলনায় কত এগিয়ে/পিছিয়ে আছে
+
+     lag &gt; 0  →  প্রাপ্যের চেয়ে কম পেয়েছে  →  eligible (চলতে পারে)
+     lag &lt; 0  →  প্রাপ্যের চেয়ে বেশি পেয়েছে →  আপাতত অযোগ্য
+
+  ২. virtual deadline — এই task তার slice কত দ্রুত শেষ করা উচিত
+
+     deadline = eligible_time + (slice / weight অনুপাত)
+
+  নিয়ম: eligible task গুলোর মধ্যে যার deadline সবচেয়ে আগে,
+        সে চলবে।
+
+  ফল: ছোট slice চাওয়া task এর deadline আগে পড়ে
+      → সে দ্রুত CPU পায়
+      → latency-সংবেদনশীল কাজ ঠিক সময়ে চলে,
+        অথচ মোট ভাগ (fairness) অটুট থাকে</code></pre>
+
+<p>
+  এখানেই আসল উন্নতি: একটা task এখন বলতে পারে "আমার অল্প CPU
+  দরকার, কিন্তু ঘন ঘন" — আর scheduler সেটা সম্মান করতে পারে
+  fairness না ভেঙে। CFS এ এই দুটো চাওয়া আলাদা করে বলার
+  কোনো উপায়ই ছিল না।
+</p>
+
+<p>
+  Linux এ এটা এখন একটা syscall দিয়ে চাওয়া যায়:
+</p>
+
+<div class="codewrap"><span class="lang">c</span>
+<pre><code>/* Ask for a shorter slice: "wake me often, I don't need long" */
+#define _GNU_SOURCE
+#include &lt;sched.h&gt;
+#include &lt;string.h&gt;
+
+struct sched_attr attr;
+memset(&amp;attr, 0, sizeof(attr));
+attr.size            = sizeof(attr);
+attr.sched_policy    = SCHED_OTHER;
+attr.sched_runtime   = 1000000;   /* 1 ms slice request (nanoseconds) */
+
+/* sched_setattr has no glibc wrapper; call it directly */
+syscall(SCHED_SETATTR, 0, &amp;attr, 0);</code></pre></div>
+
+<pre><code># আপনার kernel কোনটা চালাচ্ছে
+$ uname -r
+6.8.0-51-generic          ← 6.6+ মানে EEVDF
+
+# EEVDF এর base slice
+$ sysctl kernel.sched_base_slice_ns
+kernel.sched_base_slice_ns = 3000000      ← 3 ms
+
+# পুরনো kernel এ এই নামগুলো ছিল (CFS)
+$ sysctl kernel.sched_latency_ns 2>/dev/null || echo "EEVDF — এই knob নেই"</code></pre>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Scheduler বদলানো একটা internal detail — আমার
+    application তো একই code, তাই behaviour একই থাকবে।"</strong>
+  </p>
+  <p>
+    Chapter 1 এর mechanism/policy পার্থক্যটা এখানে কাজে লাগে।
+    Scheduler <em>policy</em>, আর policy বদলালে আপনার
+    latency profile বদলায় — একটা line code না বদলিয়েও।
+  </p>
+  <p>
+    CFS → EEVDF সরার পর বাস্তবে যা দেখা গেছে: অনেক
+    latency-সংবেদনশীল workload এ p99 ভালো হয়েছে, কিন্তু কিছু
+    throughput-ভিত্তিক workload এ (বিশেষত যেগুলো CFS এর
+    নির্দিষ্ট আচরণ ধরে tuned ছিল) regression এসেছে। কিছু
+    database এর benchmark এ এটা নথিবদ্ধ।
+  </p>
+  <p>
+    শিক্ষাটা হলো: kernel upgrade একটা performance পরিবর্তন,
+    শুধু security patch নয়। আর যদি আপনার tuning
+    <code>sched_latency_ns</code> এর উপর দাঁড়িয়ে থাকে, তাহলে
+    6.6+ এ সেই knob টাই আর নেই।
+  </p>
+</div>
+
+<h2 id="c6-cgroup">Ticket assignment — যে সমস্যাটা এখন আপনার YAML এ</h2>
+
+<p>
+  OSTEP ticket assignment কে অমীমাংসিত সমস্যা বলে সরিয়ে রেখেছিল:
+  "আপনার browser এর কত ticket পাওয়া উচিত তা আপনি কীভাবে জানবেন?"
+</p>
+
+<p>
+  প্রশ্নটা ন্যায্য — একটা desktop এ। কিন্তু datacenter এ উত্তরটা
+  স্পষ্ট: <strong>যে service এর বেশি দরকার, সে বেশি পাবে, আর
+  সেটা আপনি ঘোষণা করে দেবেন</strong>। এটাই cgroup।
+</p>
+
+<pre class="ascii"><code>  cgroup v2 এর CPU ভাগ:
+
+  /sys/fs/cgroup/
+    ├── api-service/
+    │     cpu.weight = 400        ← ticket! (default 100)
+    │     cpu.max    = "max 100000"  ← সীমা নেই
+    │
+    └── batch-worker/
+          cpu.weight = 50         ← কম ticket
+          cpu.max    = "50000 100000"  ← 0.5 core এর কঠিন সীমা
+
+  weight → আপেক্ষিক ভাগ, শুধু প্রতিযোগিতার সময় কাজ করে
+  max    → কঠিন সীমা, CPU খালি থাকলেও ছাড়ায় না</code></pre>
+
+<p>
+  <code>cpu.weight</code> আর <code>cpu.max</code> এর পার্থক্যটা
+  অত্যন্ত গুরুত্বপূর্ণ, আর এই দুটো গুলিয়ে ফেলাই production এ
+  সবচেয়ে সাধারণ ভুল:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr>
+      <th>&nbsp;</th>
+      <th><code>cpu.weight</code></th>
+      <th><code>cpu.max</code></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>কী</strong></td>
+      <td>আপেক্ষিক ভাগ (ticket)</td>
+      <td>কঠিন সীমা (quota)</td>
+    </tr>
+    <tr>
+      <td><strong>CPU খালি থাকলে</strong></td>
+      <td>যত দরকার তত নিতে পারে</td>
+      <td>সীমা ছাড়ায় না, CPU বসে থাকে</td>
+    </tr>
+    <tr>
+      <td><strong>Kubernetes</strong></td>
+      <td><code>requests.cpu</code></td>
+      <td><code>limits.cpu</code></td>
+    </tr>
+    <tr>
+      <td><strong>ছাড়ালে</strong></td>
+      <td>কিছু হয় না (আপেক্ষিক)</td>
+      <td><strong>throttled</strong> — জোর করে থামানো</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  ওই শেষ সারিটা পরের chapter এর পুরো বিষয়। <code>cpu.max</code>
+  দিয়ে সীমা দিলে kernel প্রতি ১০০ms period এ আপনার quota শেষ
+  হলে সব thread থামিয়ে দেয় — period শেষ হওয়া পর্যন্ত।
+  Multi-threaded application এ এর ফল বিধ্বংসী, আর সেটাই
+  chapter 7 এ দেখব।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    এই chapter এর অঙ্কটা আপনি রোজ ব্যবহার করেন, নামটা না জেনেই:
+  </p>
+  <ul>
+    <li>
+      Kubernetes এ <code>resources.requests.cpu: "500m"</code>
+      লিখলে সেটা <code>cpu.weight</code> এ রূপান্তরিত হয় —
+      অর্থাৎ আপনি ticket বিতরণ করছেন।
+    </li>
+    <li>
+      Docker এর <code>--cpu-shares</code> সরাসরি এই weight।
+      আর <code>--cpus=1.5</code> হলো <code>cpu.max</code>।
+    </li>
+    <li>
+      <strong>Go</strong> এর runtime scheduler নিজেও একটা
+      proportional-share ব্যবস্থা চালায় goroutine দের মধ্যে,
+      আর <strong>Postgres</strong> এর I/O scheduler এও একই
+      ধারণার প্রতিফলন আছে।
+    </li>
+  </ul>
+  <p>
+    আর <strong>একটা weight ব্যবস্থা কখনো একটা সীমা নয়</strong> —
+    এই বাক্যটা মনে রাখলে অনেক capacity planning এর ভুল বাঁচে।
+    <code>requests</code> দিয়ে আপনি বলছেন "প্রতিযোগিতায় আমার
+    এই ভাগ", <code>limits</code> দিয়ে বলছেন "এর বেশি কখনো নয়"।
+  </p>
+</div>
+
+<h2 id="c6-when">কখন কোনটা</h2>
+
+<p>
+  Proportional share সব সমস্যার উত্তর নয়। কোথায় খাটে না:
+</p>
+
+<ul>
+  <li>
+    <strong>Hard real-time</strong> — যদি একটা কাজ
+    <em>অবশ্যই</em> ৫ms এর মধ্যে শেষ হতে হয় (motor controller,
+    pacemaker), তাহলে "৩০% ভাগ" যথেষ্ট নয়। ওখানে
+    <code>SCHED_FIFO</code> বা <code>SCHED_DEADLINE</code> লাগে,
+    যেখানে আপনি সময়ের নিশ্চয়তা চান, অনুপাত নয়।
+  </li>
+  <li>
+    <strong>যখন আপনি জানেন না কে গুরুত্বপূর্ণ</strong> — একটা
+    সাধারণ desktop এ কে কত ticket পাবে তা আগে থেকে বলা কঠিন।
+    এখানেই MLFQ-ধরনের অনুমান এখনো কাজে লাগে, আর এই কারণেই
+    macOS এ QoS class আছে।
+  </li>
+</ul>
+
+<p>
+  Linux এ এই শ্রেণীগুলো একসাথে থাকে, আর একটা কঠোর ক্রমে:
+</p>
+
+<pre class="ascii"><code>  SCHED_DEADLINE  ─┐  সবার আগে (নির্দিষ্ট deadline সহ)
+  SCHED_FIFO/RR   ─┤  real-time priority 1–99
+  SCHED_OTHER     ─┤  EEVDF — সাধারণ সব কাজ এখানে
+  SCHED_IDLE      ─┘  শুধু CPU একেবারে খালি থাকলে
+
+  উপরের শ্রেণীতে কিছু runnable থাকলে নিচের কিছুই চলে না।
+  তাই একটা bug-ওয়ালা SCHED_FIFO process পুরো মেশিন আটকে
+  দিতে পারে — chapter 4 এর প্রশ্ন ২ এর উত্তর এটাই।</code></pre>
+
+<div class="qs">
+  <h2 id="c6-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      Stride scheduling এ মাঝপথে একটা নতুন task এল। তার pass
+      value ০ দিলে কী হবে, আর বাকিদের সর্বোচ্চ pass দিলে কী হবে?
+      CFS এর <code>min_vruntime</code> পদ্ধতিটা এই দুটোর মাঝখানে
+      কীভাবে দাঁড়ায়?
+    </li>
+    <li>
+      Lottery আর stride একই অনুপাত অর্জন করে। একটা পরিস্থিতি
+      বানান যেখানে lottery স্পষ্টভাবে <em>ভালো</em>, আর একটা
+      যেখানে stride স্পষ্টভাবে ভালো। প্রতিটায় আপনি কোন
+      মাপকাঠি ব্যবহার করছেন তা বলুন।
+    </li>
+    <li>
+      CFS শুধু "কতটুকু" নিয়ন্ত্রণ করত, EEVDF "কখন" ও করে।
+      একটা audio process যার প্রতি ১০ms এ ১ms দরকার — CFS এ
+      এই চাহিদাটা <code>nice</code> দিয়ে প্রকাশ করার চেষ্টা
+      করলে কী সমস্যা হয়? কেন <code>nice</code> ভুল হাতিয়ার?
+    </li>
+    <li>
+      আপনার pod এ <code>requests.cpu: 100m</code> আর
+      <code>limits.cpu: 100m</code>। Node টা প্রায় খালি।
+      আপনার application কি node এর পুরো CPU ব্যবহার করতে পারবে?
+      এখন <code>limits</code> সরিয়ে দিলে উত্তর বদলাবে কি?
+      প্রতিটা ক্ষেত্রে কোন cgroup file টা দায়ী?
+    </li>
+    <li>
+      OSTEP ticket assignment কে "hard problem" বলে
+      proportional share বাতিল করেছিল। কিন্তু Kubernetes এ
+      আপনি রোজ ticket বিতরণ করেন। কী বদলেছে — সমস্যাটা সমাধান
+      হয়েছে, নাকি প্রশ্নটাই আলাদা হয়ে গেছে? আপনার উত্তরে
+      desktop আর datacenter এর পার্থক্যটা ব্যবহার করুন।
+    </li>
+    <li>
+      একটা <code>SCHED_FIFO</code> process এ একটা infinite loop
+      আছে। Chapter 4 এ শিখেছি timer interrupt OS কে নিয়ন্ত্রণ
+      ফেরত দেয়। তাহলে এই process টা কীভাবে মেশিন আটকে দিতে
+      পারে, যদিও preemption চালু আছে? (সূত্র: interrupt আসার
+      পর scheduler কী সিদ্ধান্ত নেয়।)
+    </li>
+  </ol>
+</div>

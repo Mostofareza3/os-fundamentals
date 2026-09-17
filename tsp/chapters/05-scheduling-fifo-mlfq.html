@@ -1,0 +1,556 @@
+<div class="ch-head">
+  <div class="ch-eyebrow p1">
+    Part 1 · Virtualization
+    <span class="src">· OSTEP ch 7–8, pdf p83–106</span>
+  </div>
+  <h1>Scheduling — FIFO থেকে MLFQ</h1>
+  <p class="ch-lede">
+    Mechanism আছে — timer interrupt আর context switch। এখন policy:
+    কাকে পরে চালাবেন? প্রশ্নটা সরল শোনায়, কিন্তু উত্তরটা নির্ভর করে
+    আপনি কী মাপছেন — আর দুটো স্বাভাবিক মাপকাঠি পরস্পরবিরোধী।
+  </p>
+</div>
+
+<p>
+  Chapter 4 এ mechanism শেষ হয়েছে। OS এখন যেকোনো সময় process থামাতে
+  পারে, আর অন্যটা চালাতে পারে। বাকি রইল <strong>policy</strong> —
+  কোনটা চালাবে।
+</p>
+
+<p>
+  এই chapter এ আমরা কয়েকটা scheduler ধাপে ধাপে দেখব, প্রতিটার
+  সমস্যা থেকে পরেরটার জন্ম। শুরুতে কিছু অবাস্তব অনুমান ধরে নেব,
+  তারপর একটা একটা করে সরাব — এটাই বিষয়টা বোঝার সবচেয়ে পরিষ্কার পথ।
+</p>
+
+<h2 id="c5-metrics">আগে ঠিক করুন কী মাপছেন</h2>
+
+<p>
+  Scheduler "ভালো" কি না বলার আগে মাপকাঠি দরকার। দুটো প্রধান:
+</p>
+
+<pre class="ascii"><code>  T_turnaround = T_completion − T_arrival
+                 (কাজটা এল থেকে শেষ হওয়া পর্যন্ত মোট সময়)
+
+  T_response   = T_firstrun − T_arrival
+                 (এল থেকে প্রথমবার CPU পাওয়া পর্যন্ত সময়)</code></pre>
+
+<p>
+  <strong>Turnaround</strong> হলো throughput এর মাপ — batch কাজের
+  জন্য গুরুত্বপূর্ণ। আপনার nightly ETL job কত দ্রুত শেষ হলো।
+</p>
+
+<p>
+  <strong>Response</strong> হলো interactivity এর মাপ — আপনি key
+  চাপার কত পরে অক্ষরটা পর্দায় এল, বা HTTP request এর প্রথম byte
+  কত দ্রুত এল।
+</p>
+
+<p>
+  এই দুটো <strong>পরস্পরবিরোধী</strong>, আর সেটাই এই chapter এর
+  কেন্দ্রীয় টানাপোড়েন। Turnaround ভালো করতে চাইলে একটা কাজ শুরু
+  করে শেষ পর্যন্ত চালিয়ে যাওয়া উচিত (switch এর খরচ নেই)। Response
+  ভালো করতে চাইলে ঘন ঘন switch করা উচিত, যাতে সবাই দ্রুত একবার
+  CPU পায়। আপনি একটা বাড়ালে অন্যটা কমবে।
+</p>
+
+<h2 id="c5-fifo">FIFO — সবচেয়ে সরল, আর কেন যথেষ্ট নয়</h2>
+
+<p>
+  শুরুতে ধরে নিই: (১) সব কাজ একই সময়ে আসে, (২) প্রতিটা একই সময়
+  নেয়, (৩) শুরু হলে শেষ পর্যন্ত চলে, (৪) কেউ I/O করে না,
+  (৫) প্রতিটা কাজ কত সময় নেবে তা আমরা জানি।
+</p>
+
+<p>
+  এই অনুমানগুলোর অধিকাংশই অবাস্তব — আমরা একটা একটা করে সরাব।
+</p>
+
+<p>
+  <strong>FIFO (First In, First Out)</strong>: যে আগে এল, সে আগে
+  চলবে। A, B, C — প্রত্যেকে ১০ সেকেন্ডের কাজ, সবাই সময় ০ তে এল:
+</p>
+
+<pre class="ascii"><code>   0        10        20        30
+   ├─────────┼─────────┼─────────┤
+   │    A    │    B    │    C    │
+   └─────────┴─────────┴─────────┘
+
+   A শেষ 10, B শেষ 20, C শেষ 30
+   average turnaround = (10 + 20 + 30) / 3 = 20</code></pre>
+
+<p>
+  চমৎকার। এখন দ্বিতীয় অনুমানটা সরাই — কাজগুলোর দৈর্ঘ্য আলাদা হতে
+  পারে। A ১০০ সেকেন্ডের, B আর C ১০ সেকেন্ডের:
+</p>
+
+<pre class="ascii"><code>   0                              100   110   120
+   ├───────────────────────────────┼─────┼─────┤
+   │              A                │  B  │  C  │
+   └───────────────────────────────┴─────┴─────┘
+
+   average turnaround = (100 + 110 + 120) / 3 = 110</code></pre>
+
+<p>
+  ভয়ংকর। B আর C প্রত্যেকে মাত্র ১০ সেকেন্ডের কাজ, কিন্তু ১০০+
+  সেকেন্ড অপেক্ষা করল। এর নাম <strong>convoy effect</strong> —
+  একটা ভারী কাজের পিছনে হালকা কাজগুলো আটকে যাওয়া।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Convoy effect scheduler এর বাইরেও সর্বত্র। একটা
+    <strong>Node.js event loop</strong> এ একটা synchronous
+    <code>JSON.parse()</code> যদি ৮০০ms নেয়, তার পিছনে জমা সব
+    request আটকে থাকে — ঠিক এই একই আকৃতি, শুধু OS scheduler এর
+    বদলে event loop। এই কারণেই Node এ CPU-ভারী কাজ
+    <code>worker_threads</code> এ সরাতে বলা হয়।
+  </p>
+  <p>
+    <strong>Postgres</strong> এ একটা দীর্ঘ transaction যদি lock
+    ধরে রাখে, পিছনের সব query আটকে যায়। আর একটা single-lane
+    HTTP/1.1 connection এ head-of-line blocking একই জিনিস —
+    HTTP/2 এর multiplexing ঠিক এই সমস্যার সমাধান।
+  </p>
+</div>
+
+<h2 id="c5-sjf">SJF — ছোট কাজ আগে</h2>
+
+<p>
+  সমাধান স্পষ্ট: ছোট কাজ আগে চালাও।
+  <strong>SJF (Shortest Job First)</strong>।
+</p>
+
+<pre class="ascii"><code>   0    10    20                              120
+   ├─────┼─────┼───────────────────────────────┤
+   │  B  │  C  │              A                │
+   └─────┴─────┴───────────────────────────────┘
+
+   average turnaround = (10 + 20 + 120) / 3 = 50
+   FIFO ছিল 110 → অর্ধেকের বেশি কমল</code></pre>
+
+<p>
+  আমাদের অনুমানগুলো ধরে রাখলে SJF <strong>প্রমাণিতভাবে optimal</strong>
+  — turnaround time এর জন্য এর চেয়ে ভালো করা সম্ভব নয়।
+</p>
+
+<p>
+  এটা শুধু তত্ত্ব নয়। দোকানে "১০টার কম জিনিস" লাইন ঠিক এই নীতিতে
+  চলে: ছোট কাজ আগে সারলে সবার গড় অপেক্ষা কমে।
+</p>
+
+<p>
+  এখন তৃতীয় অনুমানটা সরাই — সব কাজ একসাথে আসে না। A সময় ০ তে
+  এল (১০০ সেকেন্ড), B আর C এল সময় ১০ এ (প্রত্যেকে ১০ সেকেন্ড):
+</p>
+
+<pre class="ascii"><code>   0                              100   110   120
+   ├───────────────────────────────┼─────┼─────┤
+   │              A                │  B  │  C  │
+   └───────────────────────────────┴─────┴─────┘
+        ↑ B, C এখানে এল কিন্তু A চলছে,
+          আর SJF preempt করে না
+
+   average turnaround = (100 + (110−10) + (120−10)) / 3 = 103.3</code></pre>
+
+<p>
+  আবার খারাপ। কারণ SJF <strong>non-preemptive</strong> — একবার শুরু
+  হলে শেষ পর্যন্ত চলে। কিন্তু chapter 4 এ আমরা timer interrupt
+  পেয়েছি; preempt করার ক্ষমতা আমাদের হাতে আছে। ব্যবহার করা যাক।
+</p>
+
+<h2 id="c5-stcf">STCF — যেকোনো সময় হিসাব করে নেওয়া</h2>
+
+<p>
+  <strong>STCF (Shortest Time-to-Completion First)</strong>, ওরফে
+  preemptive SJF: নতুন কাজ এলেই scheduler হিসাব করে কার
+  <em>বাকি</em> সময় কম, আর তাকে চালায়।
+</p>
+
+<pre class="ascii"><code>   0    10    20    30                        120
+   ├─────┼─────┼─────┼─────────────────────────┤
+   │  A  │  B  │  C  │           A             │
+   └─────┴─────┴─────┴─────────────────────────┘
+         ↑ B, C এল — A কে preempt করা হলো
+
+   average turnaround = (120 + (20−10) + (30−10)) / 3 = 50</code></pre>
+
+<p>
+  আবার ৫০। Turnaround এর দিক থেকে আমরা প্রায় আদর্শ জায়গায়।
+</p>
+
+<p>
+  কিন্তু এখন মাপকাঠি বদলান। আপনি terminal এ বসে আছেন, আপনার কাজটা
+  C — সে সময় ১০ এ এসে সময় ২০ এ প্রথম CPU পেল। Response time ১০
+  সেকেন্ড। আপনার key চাপার ১০ সেকেন্ড পর অক্ষর দেখা গেল।
+</p>
+
+<p>
+  Turnaround ভালো, কিন্তু interactive ব্যবহারের জন্য অচল।
+</p>
+
+<h2 id="c5-rr">Round Robin — response time এর জন্য</h2>
+
+<p>
+  <strong>RR (Round Robin)</strong>: প্রত্যেককে একটা ছোট
+  <strong>time slice</strong> দাও, তারপর পরেরজনের পালা। Queue
+  ঘুরতে থাকে।
+</p>
+
+<pre class="ascii"><code>  তিনটে কাজ A, B, C — প্রত্যেকে 5 সেকেন্ডের
+
+  SJF/STCF:
+   0     5     10    15
+   ├─────┼─────┼─────┤
+   │  A  │  B  │  C  │      avg response = (0+5+10)/3 = 5
+   └─────┴─────┴─────┘
+
+  RR, time slice = 1s:
+   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+   ├──┼──┼──┼──┼──┼──┼──┼──┼──┼──┼──┼──┼──┼──┼──┤
+   │A │B │C │A │B │C │A │B │C │A │B │C │A │B │C │
+   └──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┴──┘
+                              avg response = (0+1+2)/3 = 1</code></pre>
+
+<p>
+  Response time পাঁচ গুণ ভালো। কিন্তু turnaround দেখুন: RR এ
+  তিনটে কাজই শেষ হয় ১৩, ১৪, ১৫ তে — গড় ১৪। SJF এ ছিল ১০।
+  <strong>আমরা turnaround বিক্রি করে response কিনেছি।</strong>
+</p>
+
+<p>
+  Time slice এর আকার এই দুটোর মধ্যে সরাসরি কাঁটা। ছোট slice মানে
+  ভালো response, কিন্তু বেশি context switch — আর chapter 4 এ দেখেছি
+  প্রতিটা switch এর দাম আছে, বিশেষত পরোক্ষ খরচ (cache ঠান্ডা হওয়া)।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"Time slice যত ছোট, scheduler তত ভালো — সবাই দ্রুত
+    সাড়া পাবে।"</strong>
+  </p>
+  <p>
+    Slice টা context switch এর খরচের তুলনায় যথেষ্ট বড় হতে হবে,
+    নইলে CPU এর একটা উল্লেখযোগ্য অংশ শুধু switch করতেই যাবে।
+    যদি switch এ ১µs লাগে আর slice ১০µs হয়, তাহলে ~১০% CPU
+    নষ্ট হচ্ছে overhead এ।
+  </p>
+  <p>
+    এই কারণেই বাস্তব scheduler এ slice স্থির নয়। Linux এ
+    <code>sched_latency</code> কে runnable task সংখ্যা দিয়ে ভাগ
+    করে slice বের করা হয়, কিন্তু একটা মেঝে থাকে
+    (<code>sched_min_granularity</code>) — যাতে হাজার task থাকলেও
+    slice অতি ক্ষুদ্র না হয়। সংখ্যাগুলো দেখা যায়:
+  </p>
+  <pre><code># Linux 6.6+ (EEVDF) — নাম বদলেছে
+$ sysctl kernel.sched_base_slice_ns
+# পুরনো kernel (CFS)
+$ sysctl kernel.sched_latency_ns kernel.sched_min_granularity_ns</code></pre>
+</div>
+
+<h2 id="c5-io">I/O — যে অনুমানটা সরালে সব বদলায়</h2>
+
+<p>
+  চতুর্থ অনুমান সরাই: কাজগুলো I/O করে। আর I/O করলে process
+  <strong>BLOCKED</strong> হয় — chapter 2 এর state machine।
+</p>
+
+<p>
+  ধরুন A হলো ৫০ms এর কাজ কিন্তু প্রতি ১০ms পর ১০ms এর I/O করে।
+  B হলো ৫০ms এর নিরবচ্ছিন্ন CPU কাজ।
+</p>
+
+<pre class="ascii"><code>  বোকা scheduler — A কে একটা একক কাজ ধরা:
+
+   A ▓▓▓▓░░░░▓▓▓▓░░░░▓▓▓▓░░░░ ...  (░ = I/O, CPU খালি!)
+   B                          ▓▓▓▓▓▓▓▓▓▓
+
+   A এর I/O চলার সময় CPU বসে আছে — অপচয়
+
+  ভালো scheduler — overlap করা:
+
+   A ▓▓▓▓░░░░    ▓▓▓▓░░░░    ▓▓▓▓
+   B     ▓▓▓▓▓▓▓▓    ▓▓▓▓▓▓▓▓
+     └── A এর I/O এর সময় B চলছে ──┘
+
+   CPU সবসময় ব্যস্ত, disk ও ব্যস্ত</code></pre>
+
+<p>
+  কৌশলটা হলো A এর প্রতিটা ১০ms CPU অংশকে একটা <em>আলাদা ছোট কাজ</em>
+  হিসেবে দেখা। তাহলে STCF স্বাভাবিকভাবেই A এর ছোট অংশগুলো আগে
+  চালাবে, আর A যখন I/O তে যাবে তখন B চলবে।
+</p>
+
+<p>
+  এটা একটা সাধারণ নীতি: <strong>I/O-bound কাজকে অগ্রাধিকার দিলে
+  overall utilization বাড়ে</strong>, কারণ সে দ্রুত CPU ছেড়ে দেয়
+  আর তখন অন্যরা চলতে পারে।
+</p>
+
+<h2 id="c5-mlfq">MLFQ — অতীত দেখে ভবিষ্যৎ অনুমান</h2>
+
+<p>
+  এখন শেষ আর সবচেয়ে অবাস্তব অনুমানটা সরাই: <strong>আমরা জানি
+  প্রতিটা কাজ কত সময় নেবে</strong>। বাস্তবে OS এটা জানে না।
+  জানলে SJF চালিয়ে দিলেই হতো।
+</p>
+
+<div class="box note">
+  <div class="box-t">Crux</div>
+  <p>
+    কাজগুলো কত সময় নেবে তা না জেনে scheduler কীভাবে একই সাথে
+    turnaround ভালো রাখবে (SJF এর মতো) আর response ভালো রাখবে
+    (RR এর মতো)?
+  </p>
+</div>
+
+<p>
+  <strong>MLFQ (Multi-Level Feedback Queue — একাধিক priority
+  queue, যেখানে একটা কাজের আচরণ দেখে তার priority বদলানো
+  হয়)</strong> এর উত্তর: <em>শিখে নাও</em>। কাজটা অতীতে কীভাবে
+  ব্যবহার করেছে তা দেখে অনুমান করো ভবিষ্যতে কী করবে।
+</p>
+
+<pre class="ascii"><code>  Q3 (সর্বোচ্চ)  ──▶ [ A ] [ B ]        ছোট slice, interactive
+       │
+       │ পুরো slice ব্যবহার করলে নামো
+       ▼
+  Q2            ──▶ [ C ]
+       │
+       ▼
+  Q1            ──▶ [ D ]
+       │
+       ▼
+  Q0 (সর্বনিম্ন) ──▶ [ E ] [ F ]        বড় slice, CPU-bound
+
+  নিয়ম: উঁচু queue খালি না হলে নিচের queue চলে না।
+        একই queue তে একাধিক থাকলে তারা RR এ চলে।</code></pre>
+
+<p>MLFQ এর নিয়মগুলো:</p>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>নিয়ম</th><th>কী বলে</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>১</strong></td><td>Priority(A) &gt; Priority(B) হলে A চলবে, B নয়।</td></tr>
+    <tr><td><strong>২</strong></td><td>Priority সমান হলে A আর B RR এ চলবে।</td></tr>
+    <tr><td><strong>৩</strong></td><td>নতুন কাজ সবচেয়ে উঁচু priority তে বসে।</td></tr>
+    <tr><td><strong>৪</strong></td><td>একটা queue তে নির্দিষ্ট সময় (allotment) শেষ করলে priority নামে।</td></tr>
+    <tr><td><strong>৫</strong></td><td>নির্দিষ্ট সময় S পর সব কাজকে আবার সর্বোচ্চ priority তে তোলা হয়।</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  নিয়ম ৩ আর ৪ মিলে যে কাজটা করে তা চমৎকার: <strong>প্রতিটা নতুন
+  কাজকে ধরে নেওয়া হয় সে ছোট</strong>। সত্যিই ছোট হলে সে উঁচু
+  queue তে থেকেই শেষ হয়ে যায় — SJF এর মতো ব্যবহার। আর যদি সে
+  CPU খেয়ে যেতে থাকে, তার priority নামতে থাকে — অর্থাৎ সে
+  নিজেই প্রমাণ করে দেয় যে সে দীর্ঘ কাজ।
+</p>
+
+<p>
+  Interactive কাজ স্বাভাবিকভাবেই উঁচুতে থাকে, কারণ সে slice শেষ
+  করার আগেই I/O তে যায় — তাই তার priority নামে না।
+</p>
+
+<h3 id="c5-starvation">নিয়ম ৫ কেন দরকার — starvation</h3>
+
+<p>
+  নিয়ম ১–৪ এ একটা মারাত্মক ফাঁক আছে। সিস্টেমে যদি অনেকগুলো
+  interactive কাজ থাকে, তারা সবসময় উঁচু queue দখল করে রাখবে,
+  আর নিচের queue এর দীর্ঘ কাজটা <strong>কখনো CPU পাবে না</strong>।
+  এর নাম <strong>starvation</strong>।
+</p>
+
+<p>
+  নিয়ম ৫ (<strong>priority boost</strong>) এটা সারায়: প্রতি S
+  সময় পর সবাইকে উঁচুতে তুলে দাও। এতে দুটো লাভ — দীর্ঘ কাজ অন্তত
+  কিছু CPU পায়, আর যে কাজ আগে CPU-bound ছিল কিন্তু এখন
+  interactive হয়েছে (যেমন একটা batch job শেষে user input চাইছে)
+  সে নতুন সুযোগ পায়।
+</p>
+
+<h3 id="c5-gaming">নিয়ম ৪ কেন এভাবে লেখা — gaming the scheduler</h3>
+
+<p>
+  আগের একটা সংস্করণে নিয়ম ৪ দুই ভাগে ছিল: slice পুরো ব্যবহার
+  করলে নামো (৪a), কিন্তু slice শেষের আগে CPU ছেড়ে দিলে একই
+  priority তে থাকো (৪b)।
+</p>
+
+<p>
+  এটা শোষণ করা যায়। একটা দুষ্ট process slice এর ৯৯% ব্যবহার করে
+  তারপর একটা অর্থহীন I/O করে ফেলতে পারে — যেমন ১ byte লেখা।
+  তাহলে সে চিরকাল উঁচু priority তে থেকে প্রায় পুরো CPU দখল করে
+  রাখবে।
+</p>
+
+<pre class="ascii"><code>  Gaming (পুরনো নিয়ম 4b দিয়ে):
+
+  slice = 10ms
+  ▓▓▓▓▓▓▓▓▓·  ▓▓▓▓▓▓▓▓▓·  ▓▓▓▓▓▓▓▓▓·
+   9.9ms   ↑    9.9ms   ↑    9.9ms   ↑
+      অর্থহীন I/O → priority অটুট → আবার উঁচুতে
+
+  ঠিক করা নিয়ম 4 (allotment হিসাব):
+
+  queue তে মোট কত সময় খরচ হলো তা গোনা হয়,
+  slice এ কতবার ভাগ হলো তা অপ্রাসঙ্গিক।
+  → 10ms allotment শেষ হলেই নামো, যতবার I/O করুন না কেন</code></pre>
+
+<p>
+  সংশোধিত নিয়ম ৪ প্রতিটা queue তে একটা <strong>allotment</strong>
+  রাখে — ওই priority তে সর্বমোট কত CPU সময় পাওয়া যাবে। কতবার
+  ভেঙে ভেঙে নিল তা অপ্রাসঙ্গিক। এতে gaming বন্ধ।
+</p>
+
+<div class="box wrong">
+  <div class="box-t">ভুল ধারণা</div>
+  <p>
+    <strong>"<code>nice</code> দিয়ে priority কমালে process টা
+    আনুপাতিকভাবে কম CPU পাবে — <code>nice 10</code> মানে অর্ধেক।"</strong>
+  </p>
+  <p>
+    <code>nice</code> মান একটা <em>weight</em> এ রূপান্তরিত হয়,
+    আর সম্পর্কটা রৈখিক নয় — exponential। Linux এ প্রতি nice ধাপে
+    প্রায় ১.২৫ গুণ weight বদলায়, তাই ১০ ধাপ মানে প্রায় ১০ গুণ
+    কম CPU, অর্ধেক নয়।
+  </p>
+  <p>
+    আরও গুরুত্বপূর্ণ: <code>nice</code> শুধু <em>প্রতিযোগিতার
+    সময়</em> কাজ করে। CPU খালি থাকলে <code>nice 19</code> process
+    ও পুরো CPU পাবে। এটা একটা আপেক্ষিক ভাগের নির্দেশ, কোনো
+    সীমা (cap) নয়। সীমা চাইলে cgroup এর
+    <code>cpu.max</code> লাগবে — chapter 7 এ।
+  </p>
+</div>
+
+<div class="box old">
+  <div class="box-t">যেখানে source টা পুরনো</div>
+  <p>
+    OSTEP MLFQ কে "আধুনিক scheduler" হিসেবে উপস্থাপন করে, আর
+    বলে অনেক system এই ধরনের পদ্ধতি ব্যবহার করে। ২০২৬ এ ছবিটা
+    আলাদা:
+  </p>
+  <ul>
+    <li>
+      <strong>Linux</strong> MLFQ ব্যবহার করে না। CFS
+      (Completely Fair Scheduler) ছিল proportional-share,
+      আর <strong>Linux 6.6 (২০২৩) থেকে সেটাও বদলে
+      EEVDF</strong> হয়েছে। পরের chapter এ পুরোটা।
+    </li>
+    <li>
+      <strong>Windows</strong> আর <strong>macOS</strong> এ
+      MLFQ-ধরনের priority আছে, কিন্তু সেটা মূলত
+      background/foreground শ্রেণীবিভাগের জন্য (macOS এ QoS
+      class)।
+    </li>
+  </ul>
+  <p>
+    তাহলে MLFQ পড়ার দরকার কী? কারণ <strong>ধারণাটা</strong> এখনো
+    সর্বত্র: "আচরণ দেখে অনুমান করো, আর অগ্রাধিকার বদলাও"।
+    আপনার database এর query planner, আপনার CDN এর cache
+    eviction, এমনকি Kubernetes এর pod eviction — সবই একই
+    গঠন ব্যবহার করে। আর starvation ও gaming এর সমস্যা দুটো
+    যেকোনো priority-ভিত্তিক ব্যবস্থায় ফিরে আসে।
+  </p>
+</div>
+
+<h2 id="c5-practice">বাস্তবে দেখা</h2>
+
+<p>
+  Linux এ scheduling class গুলো দেখা যায়:
+</p>
+
+<pre><code># একটা process এর scheduling নীতি আর priority
+$ chrt -p $$
+pid 12345's current scheduling policy: SCHED_OTHER
+pid 12345's current scheduling priority: 0
+
+# SCHED_OTHER  → সাধারণ (EEVDF/CFS), nice দিয়ে weight
+# SCHED_FIFO   → real-time, preempt করা যায় না same priority তে
+# SCHED_RR     → real-time, time slice সহ
+# SCHED_IDLE   → শুধু CPU একেবারে খালি থাকলে
+
+# nice দিয়ে চালানো
+$ nice -n 10 ./batch-job
+
+# চলমান process এর nice বদলানো
+$ renice -n 5 -p 12345
+
+# কে কত CPU পাচ্ছে, আর কত অপেক্ষা করছে
+$ cat /proc/12345/schedstat
+# তিনটা সংখ্যা: CPU তে কাটানো ns, runqueue তে অপেক্ষার ns,
+#               কতবার চলেছে</code></pre>
+
+<p>
+  ওই মাঝের সংখ্যাটা — runqueue তে অপেক্ষার সময় — সরাসরি এই
+  chapter এর response time। আপনার service ধীর হলে আর এই সংখ্যা
+  বড় হলে সমস্যা আপনার code এ নয়, CPU প্রতিযোগিতায়।
+</p>
+
+<div class="box dev">
+  <div class="box-t">আপনার কাজের সাথে যোগ</div>
+  <p>
+    Turnaround বনাম response এর সেই টানাপোড়েনটা আপনার
+    architecture সিদ্ধান্তে সরাসরি আসে। একটা <strong>batch
+    worker</strong> (queue consumer, ETL) এর জন্য throughput
+    গুরুত্বপূর্ণ — বড় slice, কম switch, <code>nice</code> দিয়ে
+    নামিয়ে রাখা যায়। একটা <strong>API server</strong> এর জন্য
+    p99 latency গুরুত্বপূর্ণ — সেটা response time, আর সেখানে
+    একটা দীর্ঘ synchronous কাজ পুরো tail নষ্ট করে দেয়।
+  </p>
+  <p>
+    একই মেশিনে দুটো চালালে batch টা API এর latency খেয়ে ফেলবে।
+    সমাধান scheduler এর হাতে নয় — cgroup দিয়ে আলাদা করা,
+    chapter 7 এ।
+  </p>
+</div>
+
+<div class="qs">
+  <h2 id="c5-q">প্রশ্ন</h2>
+  <ol>
+    <li>
+      SJF প্রমাণিতভাবে optimal turnaround দেয়, তবু কোনো আধুনিক
+      OS এটা ব্যবহার করে না। দুটো কারণ বলুন — একটা তথ্যের
+      অভাব সম্পর্কিত, আরেকটা fairness সম্পর্কিত।
+    </li>
+    <li>
+      RR এ time slice ১ms থেকে ১০০ms করলে turnaround আর response
+      কোন দিকে যাবে? এখন ধরুন context switch এ ৫µs লাগে — ১ms
+      slice এ CPU এর কত শতাংশ overhead এ যাচ্ছে, আর ১০০ms এ?
+    </li>
+    <li>
+      MLFQ এর নিয়ম ৫ (priority boost) না থাকলে ঠিক কী ঘটে?
+      একটা concrete পরিস্থিতি বানান যেখানে একটা দীর্ঘ কাজ
+      কয়েক ঘণ্টা CPU পায় না, যদিও সিস্টেম idle এর কাছাকাছি নয়।
+    </li>
+    <li>
+      পুরনো নিয়ম ৪b শোষণ করা যেত ৯.৯ms কাজ + অর্থহীন I/O দিয়ে।
+      সংশোধিত নিয়ম ৪ (allotment) এটা বন্ধ করে। কিন্তু একটা
+      সত্যিকারের interactive process — যে প্রতি ২ms পর সত্যিই
+      user input এর জন্য অপেক্ষা করে — সে কি নতুন নিয়মে ক্ষতিগ্রস্ত
+      হয়? কেন, বা কেন নয়?
+    </li>
+    <li>
+      আপনার API server এর p50 latency ৫ms, কিন্তু p99 ৮০০ms।
+      <code>/proc/&lt;pid&gt;/schedstat</code> এ runqueue wait time
+      অনেক বেশি। এটা কোন ধরনের সমস্যা — convoy effect, starvation,
+      নাকি time slice? আর কোন মাপকাঠি (turnaround বা response)
+      আপনি আসলে অপ্টিমাইজ করতে চান?
+    </li>
+    <li>
+      I/O-bound কাজকে অগ্রাধিকার দিলে utilization বাড়ে। কিন্তু
+      একটা কাজ যদি I/O করে <em>শুধু priority ধরে রাখার জন্য</em>,
+      তাহলে সেটা gaming। Scheduler বাইরে থেকে দেখে এই দুটোর
+      পার্থক্য করতে পারে কি? আপনার উত্তর থেকে বলুন কেন
+      scheduler design এ "উদ্দেশ্য" এর চেয়ে "পরিমাপযোগ্য আচরণ"
+      এর উপর নির্ভর করা হয়।
+    </li>
+  </ol>
+</div>
