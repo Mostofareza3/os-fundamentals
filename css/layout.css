@@ -34,6 +34,11 @@ header.topbar{
 .iconbtn:active{transform:translateY(1px);}
 #menuBtn{display:none;}
 @media(max-width:1040px){ #menuBtn{display:inline-flex;} }
+/* link to the companion book; label collapses to the icon on narrow screens */
+#newBookBtn{border-color:var(--kernel); color:var(--kernel); font-weight:600;}
+#newBookBtn:hover{background:var(--kernel-dim); border-color:var(--kernel); color:var(--heading);}
+@media(max-width:720px){ #newBookBtn .hint-label{display:none;} }
+
 #searchBtn{padding-right:8px;}
 #searchBtn .hint{color:var(--muted); font-size:11px; border:1px solid var(--border);
   border-radius:5px; padding:1px 6px; font-family:var(--font-mono);}
