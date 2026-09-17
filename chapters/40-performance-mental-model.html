@@ -1,0 +1,26 @@
+  <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
+  <h2>Chapter 40 — Performance-এর Mental Model</h2>
+  <p class="chap-sub">শেষ chapter — hierarchy-টা মাথায় নিয়ে, কিন্তু তার ফাঁদগুলো জেনে।</p>
+
+  <h3>Hierarchy — প্রথম approximation</h3>
+  <pre class="diagram">CPU registers      <span class="dim">তাৎক্ষণিক</span>
+CPU cache          <span class="dim">ns-স্কেল</span>
+RAM                <span class="dim">~শত ns</span>
+NVMe SSD           <span class="dim">~µs–শত µs</span>
+HDD                <span class="dim">~ms</span>
+Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
+<span class="dim">(সংখ্যা নয়, মাত্রার লাফগুলো মনে রাখো — প্রতি ধাপে ~১০–১০০×)</span></pre>
+  <p>প্রথম-স্তরের intuition: <strong>data যত নিচের স্তরে, ছোঁয়া তত দামি — design এমন করো যেন গরম data উপরের স্তরে থাকে।</strong> এটুকুই অনেক দূর নিয়ে যায়। কিন্তু "closer = always faster" বলে থেমে গেলে এই ফাঁদগুলোয় পড়বে:</p>
+
+  <ul>
+    <li><strong>Latency ≠ throughput:</strong> Network-এর latency জঘন্য হতে পারে, কিন্তু throughput disk-কে হারাতে পারে। "কোনটা দরকার" আগে ঠিক করো — একটা payment confirm (latency-র খেলা) আর একটা backup (throughput-এর খেলা) সম্পূর্ণ আলাদা design চায়।</li>
+    <li><strong>Contention সব হিসাব উল্টে দেয়:</strong> কাগজে-কলমে দ্রুত জিনিসও লাইনে দাঁড়ালে ধীর। এক মিউটেক্সে দশ থ্রেড, এক DB row-এ শত transaction, এক NVMe-তে হাজার random write — resource-এর গতি না, <strong>queue-র দৈর্ঘ্য</strong> তখন তোমার latency। Load বাড়লে response time ধীরে না, hockey-stick-এ বাড়ে — queuing-এর স্বভাবই এই।</li>
+    <li><strong>Cache মানেই দুই জগৎ:</strong> প্রতিটা স্তরে hit আর miss-এর পার্থক্য এত বড় যে "গড় সময়" প্রায়ই মিথ্যা বলে। Benchmark-এ warm/cold আলাদা মাপো; production-এ P99 দেখো, গড় না।</li>
+    <li><strong>Parallelism মাত্রা বদলায়, জাত না:</strong> দশগুণ core দশগুণ throughput দিতে পারে — যদি কাজ ভাগ হয় আর shared state না আটকায়। Serial অংশটুকুই শেষমেশ সিলিং।</li>
+    <li><strong>Bandwidth-ও ফুরায়:</strong> RAM-এরও bandwidth সীমা আছে — সব core মিলে বিশাল data চিবাতে গেলে দ্রুততম CPU-ও ভাতঘুমে যায়।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">শেষ কথা — চারটা প্রশ্নের অভ্যাস</div>
+    <p>যেকোনো system/feature/bug-এর সামনে দাঁড়িয়ে জিজ্ঞেস করো: <strong>(১)</strong> Data কোন স্তরে বসে আছে, আর প্রতি request-এ কোন স্তর পর্যন্ত নামতে হচ্ছে? <strong>(২)</strong> কোথায় boundary পার হচ্ছি (syscall, network, process) — আর কতবার? <strong>(৩)</strong> কোথায় queue জমছে — কে কার জন্য অপেক্ষায়? <strong>(৪)</strong> কী shared — আর সেটাই কি লাইনের কারণ? এই চার প্রশ্ন সঙ্গে থাকলে এই বইয়ের প্রতিটা chapter তোমার হাতিয়ার।</p>
+  </div>

@@ -1,0 +1,37 @@
+  <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
+  <h2>Chapter 34 — Executable Load হওয়া</h2>
+  <p class="chap-sub">ELF file থেকে Chapter 5-এর সেই memory layout — বৃত্তটা পূর্ণ হলো।</p>
+
+  <h3>exec()-এর মুহূর্তে ধাপে ধাপে</h3>
+  <ol>
+    <li>Kernel ELF header পড়ে — বৈধ executable তো?</li>
+    <li>Process-এর virtual address space সাজায় — কিন্তু চালাকিটা দেখো: <code>.text</code> আর <code>.data</code> RAM-এ <em>copy করে না</em> — file-টাকে address space-এ <strong>mmap</strong> করে দেয় (Chapter 10-এর সেই কৌশল!)। মানে "load" আসলে lazy: যে page ছোঁয়া হবে, page fault-এ সেটাই disk থেকে আসবে। এজন্যই বিশাল executable-ও প্রায় সাথে সাথে start হয়।</li>
+    <li>BSS-এর জন্য zero-filled জায়গা, stack-এর জন্য জায়গা তৈরি; stack-এর গোড়ায় বসিয়ে দেয় <code>argv</code> আর environment variables — তোমার <code>process.argv</code>-র জন্ম এখানে।</li>
+    <li>Dynamically linked হলে আগে চালু হয় <strong>dynamic linker</strong> (ld.so) — সে দরকারি .so গুলো address space-এ map করে, ঠিকানার জোড়াতালি (relocation) সারে।</li>
+    <li>Program counter → entry point। <span class="u">User mode</span>-এ যাত্রা শুরু।</li>
+  </ol>
+  <pre class="diagram"><span class="dim">ELF file (disk)</span>              <span class="u">Process address space</span>
+┌──────────────┐             +------------------+
+│ header       │             |   Stack ← argv   |
+│ .text  ──────┼── mmap ───→ |   ...            |
+│ .data  ──────┼── mmap ───→ |   Heap (নতুন)     |
+│ .bss (size)  │── zero ───→ |   BSS            |
+│ dynamic:     │             |   Data           |
+│  needs libc ─┼── ld.so ──→ |   Code / Text    |
+└──────────────┘             |   [libc.so map]  |
+                             +------------------+</pre>
+  <p class="diagram-caption">Chapter 5-এ layout-টা "দেওয়া ছিল" — এখন জানো কে, কখন, কোথা থেকে বানায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">সুতোগুলো জোড়া লাগলো</div>
+    <p>Executable loading = <strong>virtual memory-র feature-দের একটা orchestra</strong>: mmap (file→memory), demand paging (lazy load), page fault (loading mechanism), shared pages (libc সবার সাথে ভাগ), copy-on-write (fork-এর পরে)। Part 3 না বুঝে এই chapter পড়লে এগুলো জাদু লাগতো; এখন এগুলো স্রেফ চেনা যন্ত্রের নতুন ব্যবহার।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Load" আসলে copy না — তাহলে কী?</li>
+      <li>বিশাল binary-ও দ্রুত start হয় কীভাবে?</li>
+      <li>Dynamic linker কখন চলে, কী করে?</li>
+    </ul>
+  </div>

@@ -1,0 +1,39 @@
+  <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
+  <h2>Chapter 33 — Source Code থেকে Executable</h2>
+  <p class="chap-sub">Chapter 4-এ ছবিটা এঁকেছিলাম দূর থেকে — এবার একটু কাছে গিয়ে।</p>
+
+  <h3>পুরো pipeline</h3>
+  <pre class="diagram">hello.c
+  ↓ <span class="dim">Preprocessing  — #include/#define বসানো: শুধুই text-এর কাজ</span>
+expanded source
+  ↓ <span class="dim">Compilation    — C → assembly (এখানেই optimization-এর জাদু)</span>
+hello.s
+  ↓ <span class="dim">Assembly       — assembly → machine code</span>
+hello.o  <span class="dim">(object file — code আছে, কিন্তু বাইরের ঠিকানাগুলো ফাঁকা)</span>
+  ↓ <span class="dim">Linking        — সব object + library জোড়া, ঠিকানা বসানো</span>
+hello  <span class="dim">(ELF executable)</span></pre>
+  <p>Object file-এর সেই "ফাঁকা ঠিকানা"-গুলোর তালিকার নাম symbol table — "আমার <code>printf</code> লাগবে, কে দেবে?" Linker-এর কাজ এই চাওয়া-পাওয়ার ঘটকালি। কোথাও জোড়া না মিললেই পাও সেই বিখ্যাত <code>undefined reference</code> error — এখন জানো ওটা কার অভিযোগ।</p>
+
+  <h3>Static vs dynamic linking — আসল সিদ্ধান্তটা</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Static</th><th>Dynamic</th></tr>
+    <tr><td>কী হয়</td><td>Library-র code executable-এর <em>ভিতরে</em> copy হয়ে যায়</td><td>Executable-এ শুধু নাম লেখা থাকে — "চলার সময় libc.so লাগবে"</td></tr>
+    <tr><td>ফল</td><td>একটাই বড় file, কোনো dependency নেই — যেখানে ফেলো চলে (Go-র binary-র জনপ্রিয়তার কারণ)</td><td>ছোট executable; আর সবচেয়ে বড় জয় — <strong>এক libc-র code memory-তে একবার</strong>, শত process page table দিয়ে share করে (Chapter 9-এর shared memory এখানেই!)</td></tr>
+    <tr><td>দাম</td><td>Library-র bug fix মানে সব executable আবার build</td><td>"Dependency hell" — ঠিক version-এর .so না পেলে চলে না</td></tr>
+  </table></div>
+  <p>Node-এর জগতে এর আত্মীয় চেনো: <code>node_modules</code> bundle করে এক file বানানো (esbuild) ≈ static; runtime-এ require ≈ dynamic-এর আবহ।</p>
+  <p>ELF file-এর গঠনটাও এখন অর্থবহ: header (কী এই file, entry point), <code>.text</code> (code), <code>.data</code>/<code>.bss</code> (Chapter 5-এর সেই segments-এর জন্মস্থান!), symbol tables, আর dynamic section-এ দরকারি .so-দের তালিকা।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>ldd /bin/ls</code> — ls কোন কোন shared library চায় দেখো। <code>file /bin/ls</code> — "ELF 64-bit... dynamically linked" নিজের চোখে। আর <code>readelf -h /bin/ls</code> দিলে ELF header — entry point address সহ।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Compiler-এর পরেও linker লাগে কেন?</li>
+      <li>Dynamic linking-এর memory-সুবিধাটা virtual memory-র কোন feature-এর উপর দাঁড়িয়ে?</li>
+      <li>"undefined reference" error-টা pipeline-এর কোন ধাপের, কীসের অভিযোগ?</li>
+    </ul>
+  </div>

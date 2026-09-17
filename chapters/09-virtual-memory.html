@@ -1,0 +1,70 @@
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 9 — Virtual Memory</h2>
+  <p class="chap-sub">এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ chapter-গুলোর একটা। ধীরে পড়ো — এটা clear হলে OS-এর অর্ধেক রহস্য খুলে যায়।</p>
+
+  <h3>Problem: সবাই একই RAM চায়</h3>
+  <p>ধরো process-রা সরাসরি physical address ব্যবহার করতো। তাহলে তিনটা মারাত্মক সমস্যা:</p>
+    <ol>
+    <li><strong>Isolation নেই:</strong> Chrome ভুল করে (বা malware ইচ্ছা করে) তোমার password manager-এর memory পড়ে ফেলতে পারতো — শুধু address জানলেই হলো।</li>
+    <li><strong>Coordination নightmare:</strong> Compiler code বানানোর সময় জানেই না program-টা RAM-এর কোথায় বসবে, আর কোন address অন্য কেউ ব্যবহার করছে।</li>
+    <li><strong>RAM-এর সীমা = hard limit:</strong> 8GB RAM-এ সব process মিলে 8GB-র বেশি কিছুতেই না।</li>
+  </ol>
+
+  <h3>Idea: প্রত্যেককে নিজের একটা "নকল" memory জগৎ দাও</h3>
+  <p>OS + hardware মিলে প্রতিটা process-কে একটা illusion দেয়: <strong>"পুরো memory তোমার একার।"</strong> প্রতিটা process পায় নিজস্ব <strong>virtual address space</strong> — address 0 থেকে শুরু করে বিশাল একটা range, যেখানে Chapter 5-এর সেই layout (code, data, heap, stack) সাজানো থাকে। Process-এর সব pointer, সব address — এগুলো <strong>virtual address</strong>। Physical RAM-এর সাথে এদের direct মিল নেই।</p>
+  <p>তাহলে আসল RAM-এ পৌঁছায় কীভাবে? <strong>Translation</strong>-এর মাধ্যমে। প্রতিটা memory access-এ virtual address → physical address-এ convert হয়।</p>
+
+  <h3>Page, page frame, page table</h3>
+  <p>Byte-by-byte translation রাখা অসম্ভব (mapping table-ই RAM খেয়ে ফেলতো)। তাই memory-কে ভাগ করা হয় fixed-size টুকরায়:</p>
+  <ul>
+    <li><strong>Page:</strong> Virtual address space-এর টুকরা — সাধারণত 4KB।</li>
+    <li><strong>Page frame:</strong> Physical RAM-এর একই size-এর টুকরা।</li>
+    <li><strong>Page table:</strong> প্রতিটা process-এর নিজস্ব "dictionary" — কোন virtual page কোন physical frame-এ বসেছে। Kernel এটা maintain করে।</li>
+  </ul>
+  <pre class="diagram"><span class="u">Process A</span>                                <span class="u">Process B</span>
+virtual addr 0x1000                       virtual addr 0x1000  <span class="dim">← একই address!</span>
+      ↓                                         ↓
+<span class="k">A-এর Page Table</span>                           <span class="k">B-এর Page Table</span>
+      ↓                                         ↓
+Physical frame #87                        Physical frame #412  <span class="dim">← আলাদা RAM!</span>
+
+              Physical RAM
+   [ frame 87: A-র data ] ... [ frame 412: B-র data ]</pre>
+  <p class="diagram-caption">দুই process-এর virtual address এক হলেও page table আলাদা — তাই physical memory আলাদা। এটাই isolation-এর মূলমন্ত্র।</p>
+  <p>Translation-টা করে CPU-র ভিতরের একটা hardware unit — <strong>MMU</strong> (Memory Management Unit)। প্রতিটা memory access-এ MMU page table দেখে address translate করে। আর যেহেতু প্রতিবার page table (যেটা নিজেই RAM-এ থাকে) পড়া দামি, MMU-র ভিতরে থাকে <strong>TLB</strong> (Translation Lookaside Buffer) — সাম্প্রতিক translation-গুলোর একটা ছোট cache। বেশিরভাগ access TLB-তেই মিটে যায়।</p>
+
+  <h3>Page fault: illusion-এর সবচেয়ে চালাক অংশ</h3>
+  <p>Page table-এ একটা entry-র "এই page-এর পিছনে এখন কোনো physical frame নেই" অবস্থাও থাকতে পারে। Process সেই address ছুঁলেই MMU হাত তুলে দেয় — CPU একটা <strong>page fault</strong> তোলে, control চলে যায় kernel-এর কাছে। তখন kernel সিদ্ধান্ত নেয়:</p>
+  <ul>
+    <li>Address টা বৈধ, কিন্তু data এখনো আনা হয়নি (যেমন executable-এর যে অংশ এখনো পড়া হয়নি, বা swap-এ পাঠানো page)? → RAM-এ frame জোগাড় করো, data আনো, page table update করো, process-কে আবার চালাও। <strong>Process টেরও পায় না।</strong></li>
+    <li>Address টা আসলেই অবৈধ? → process-কে <strong>segmentation fault</strong> দিয়ে মেরে ফেলো। C-তে ভুল pointer-এর সেই বিখ্যাত <code>segfault</code>, এই ঘটনা।</li>
+  </ul>
+
+  <h3>এই design থেকে ফাউ পাওয়া superpower গুলো</h3>
+  <ul>
+    <li><strong>Lazy loading:</strong> পুরো executable আগে load করার দরকার নেই — page fault হলে যে অংশ লাগবে সেটাই আসবে। বড় program-ও দ্রুত start হয়।</li>
+    <li><strong>Shared memory:</strong> দুই process-এর page table-এ একই physical frame map করে দাও — ব্যস, memory shared। Shared library (libc) এভাবেই শত process-এ এক কপি থাকে।</li>
+    <li><strong>Copy-on-write (CoW):</strong> Process copy করার সময় (fork, Chapter 15) memory সত্যি সত্যি copy না করে দুজনের page table-ই একই frame-এ point করাও, শুধু read-only mark করো। কেউ <em>লিখতে</em> গেলে তখনই সেই page-টা copy হবে। ফলে fork প্রায় instant।</li>
+    <li><strong>Swap:</strong> RAM ভরে গেলে কম-ব্যবহৃত page disk-এ সরিয়ে frame খালি করা যায়। পরে দরকার হলে page fault-এর মাধ্যমে ফেরত আসবে।</li>
+  </ul>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Virtual memory মানে disk-কে RAM হিসেবে ব্যবহার করা।" না — swap শুধু একটা side feature। Virtual memory-র আসল purpose হলো <strong>isolation আর address abstraction</strong>: প্রতিটা process-এর নিজস্ব, সুরক্ষিত, ধারাবাহিক address জগৎ। Swap বন্ধ থাকলেও (অনেক server-এ থাকে) virtual memory পুরোদমে চলে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>cat /proc/&lt;PID&gt;/status | grep -i vm</code> চালাও। <code>VmSize</code> (virtual address space-এর মোট size) প্রায়ই <code>VmRSS</code> (আসলে physical RAM-এ বসে থাকা অংশ)-এর চেয়ে অনেক বড় হবে। এটাই lazy allocation-এর evidence — process অনেক address "reserve" করেছে, কিন্তু kernel frame দিয়েছে শুধু যেটুকু ছোঁয়া হয়েছে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>প্রতিটা process নিজস্ব virtual address space পায় কেন?</li>
+      <li>Page, page frame, page table — তিনটার সম্পর্ক কী?</li>
+      <li>TLB কী এবং কেন লাগে?</li>
+      <li>Page fault-এর দুই রকম পরিণতি কী কী?</li>
+      <li>Copy-on-write-এ fork এত সস্তা হয় কীভাবে?</li>
+    </ul>
+  </div>

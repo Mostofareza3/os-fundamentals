@@ -1,0 +1,38 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 26 — TCP Connection-এর ভিতরে</h2>
+  <p class="chap-sub">Connection "establish" হওয়া মানে আসলে কী তৈরি হয় — এবং কোথায়।</p>
+
+  <h3>Three-way handshake</h3>
+  <pre class="diagram">Client                          Server
+  │── SYN ──────────────────────→│   <span class="dim">"connection চাই" (+ আমার শুরুর sequence number)</span>
+  │←───────────────── SYN-ACK ───│   <span class="dim">"রাজি, এই নাও আমারটাও"</span>
+  │── ACK ──────────────────────→│   <span class="dim">"পাকা কথা"</span>
+  │                              │
+  │═══════ connection ready ═════│</pre>
+  <p>তিন ধাপ কেন? কারণ দুই পক্ষকেই নিশ্চিত হতে হবে — "আমার পাঠানো ওর কাছে পৌঁছায়, ওর পাঠানো আমার কাছে পৌঁছায়", আর দুজনের সেই শুরুর sequence number বিনিময় হতে হবে (এই নাম্বার দিয়েই TCP পরে হিসাব রাখে কোন byte পৌঁছেছে, কোনটা হারিয়েছে)।</p>
+  <p>সবচেয়ে জরুরি উপলব্ধি: <strong>"connection" জিনিসটা তারে-তারে কোথাও নেই।</strong> এটা দুই পাশের kernel-এর memory-তে রাখা state মাত্র — sequence number, window size, timers। মাঝের network শুধু স্বাধীন packet চেনে। TCP হলো দুই kernel-এর সম্মিলিত অভিনয়ে তৈরি "reliable stream"-এর illusion।</p>
+
+  <h3>Buffers: প্রতিটা socket-এর দুই গুদাম</h3>
+  <p>প্রতিটা established connection-এর জন্য kernel দুটো buffer রাখে:</p>
+  <ul>
+    <li><strong>Send buffer:</strong> তোমার <code>write()</code> data আগে এখানে জমা হয় → kernel নিজের গতিতে packet বানিয়ে পাঠায়। Buffer ভরা থাকলে (receiver ধীর!) write block করে — এটাই <strong>backpressure</strong>-এর জন্মস্থান।</li>
+    <li><strong>Receive buffer:</strong> Network থেকে আসা data এখানে জমে → তুমি <code>read()</code> করলে এখান থেকেই পাও। তুমি না পড়লে জমতে থাকে; ভরে গেলে TCP অপর পক্ষকে বলে দেয় "আস্তে!" (flow control)।</li>
+  </ul>
+  <p>দেখেছ pattern-টা? আবার সেই গল্প — দুই ভিন্ন গতির জগতের (তোমার app আর network) মাঝে buffer।</p>
+
+  <h3>Server-এর দুই queue</h3>
+  <p>Server-এর listening socket-এর পিছনে kernel দুটো লাইন রাখে:</p>
+  <pre class="diagram">SYN এলো → <span class="k">[SYN queue]</span>          <span class="dim">— handshake চলছে, আধা-পাকা connection</span>
+handshake শেষ → <span class="k">[accept queue]</span>  <span class="dim">— পুরো ready, app-এর accept()-এর অপেক্ষায়</span>
+app accept() করলো → connection app-এর হাতে</pre>
+  <p>এই ভাগাভাগির মানে গভীর: <strong>handshake পুরোটাই kernel সামলায় — তোমার Node process ঘুমিয়ে থাকলেও connection establish হয়ে accept queue-তে জমা হতে থাকে।</strong> আর app যদি accept করতে ধীর হয় (event loop আটকে আছে?), accept queue ভরে যায় — নতুন connection তখন refuse/drop হয়। <code>listen()</code>-এর backlog parameter এই queue-র সাইজই ঠিক করে। Production-এ "connection refused under load"-এর একটা classic কারণ এই queue overflow।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Handshake-এ তিনটা ধাপই লাগে কেন — দুইটায় হয় না কেন?</li>
+      <li>"Connection দুই kernel-এর memory-র state" — এর মানে কী?</li>
+      <li>Send/receive buffer কী কী সমস্যা solve করে?</li>
+      <li>SYN queue আর accept queue-র পার্থক্য, আর accept queue ভরলে কী হয়?</li>
+    </ul>
+  </div>

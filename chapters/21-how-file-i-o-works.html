@@ -1,0 +1,48 @@
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 21 — File I/O ভিতরে কীভাবে কাজ করে</h2>
+  <p class="chap-sub">fs.readFile() লেখা থেকে disk-এর data হাতে পাওয়া পর্যন্ত — পুরো stack-টা এবার সিরিয়াসলি।</p>
+
+  <h3>Stack-টা</h3>
+  <pre class="diagram"><span class="u">Application        — read(fd, buf, 4096)</span>
+      ↓ <span class="dim">system call</span>
+<span class="k">VFS                — "file" ধারণাটা সামলায়, fd → আসল file</span>
+<span class="k">File System (ext4) — file-এর byte → disk-এর কোন block, হিসাব রাখে</span>
+<span class="k">Page Cache         — data RAM-এ আছে? থাকলে এখানেই শেষ ✓</span>
+<span class="k">Block Layer        — disk request-দের queue, merge, schedule</span>
+<span class="k">Driver             — device-এর ভাষায় command</span>
+      ↓
+Storage Device     — data পড়ে DMA-তে RAM-এ দেয়</pre>
+
+  <h3>একটা read-এর গল্প, step by step</h3>
+  <ol>
+    <li><strong>open("config.json")</strong> — kernel file-টা খুঁজে বের করে, process-এর file descriptor table-এ একটা entry বসায়, তোমাকে দেয় একটা ছোট number — <strong>fd</strong> (ধরো 3)। এরপরের সব কথাবার্তা এই fd দিয়েই।</li>
+    <li><strong>read(3, buf, 4096)</strong> — system call। Kernel-এ ঢুকলো।</li>
+    <li>Filesystem হিসাব করে: এই file-এর প্রথম 4096 bytes মানে disk-এর অমুক block গুলো।</li>
+    <li><strong>Page cache check</strong> — block গুলোর data কি আগে থেকেই RAM-এ? <em>থাকলে সরাসরি copy করে দাও — disk ছোঁয়াই লাগলো না।</em> বাস্তবের বেশিরভাগ read এখানেই মিটে যায়।</li>
+    <li>Cache miss হলে: block layer-এ request → driver → device। ততক্ষণ তোমার process <strong>Waiting</strong> state-এ; CPU অন্য কাউকে চালায় (Chapter 15, 17 জোড়া লাগছে দেখো)।</li>
+    <li>Device DMA-তে data page cache-এ দেয়, interrupt দেয় (Chapter 11)। Kernel process-কে জাগায়, data user buffer-এ copy করে, read() return করে।</li>
+  </ol>
+
+  <h3>Write-এর গল্প: একটা মোচড় আছে</h3>
+  <p><code>write(fd, data, len)</code> return করলো মানে data disk-এ পৌঁছে গেছে? <strong>না।</strong> Default behavior: kernel data-টা page cache-এ লিখে page-টাকে <em>dirty</em> mark করে <em>সাথে সাথেই return করে দেয়</em>। Disk-এ আসল লেখা হয় পরে, background-এ (writeback)। ফলে write অবিশ্বাস্য fast লাগে — কারণ তুমি আসলে RAM-এ লিখেছ।</p>
+  <p>Trade-off পরিষ্কার: মাঝখানে power গেলে সেই dirty data হারিয়ে যায়। এজন্যই "সত্যি সত্যি disk-এ নামাও" বলার আলাদা system call আছে — <code>fsync(fd)</code>। Database-রা transaction commit-এ এটাই করে; এজন্যই durable write ধীর, আর এজন্যই Postgres-এর WAL config-এ fsync নিয়ে এত কথা।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"write() সফল return করেছে মানে data নিরাপদ।" না — মানে data <em>kernel-এর হাতে</em> পৌঁছেছে। Durability চাইলে fsync (এবং তার দাম) লাগবে। এই এক ভুল বোঝাবুঝি থেকে বহু "power গেল, data গেল" ঘটনা জন্মেছে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>strace -e trace=openat,read,write,close cat /etc/hostname</code> চালাও। নিজের চোখে দেখো <code>cat</code>-এর মতো সামান্য command-ও ঠিক এই system call গুলোই করে: open → fd পেলো → read → write (stdout-এ) → close। এই x-ray মেশিনটা (strace) মনে রেখো — Chapter 32-এ আবার আসবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>File descriptor কী, কোথায় থাকে?</li>
+      <li>Read path-এ page cache কোথায় বসে, কী বাঁচায়?</li>
+      <li>write() fast কেন, আর সেই speed-এর দাম কী?</li>
+      <li>fsync কখন লাগে?</li>
+    </ul>
+  </div>

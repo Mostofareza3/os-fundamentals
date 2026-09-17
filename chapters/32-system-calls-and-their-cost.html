@@ -1,0 +1,35 @@
+  <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
+  <h2>Chapter 32 — System Call আর তার দাম</h2>
+  <p class="chap-sub">Boundary পার হওয়ার হিসাব-নিকাশ — এবং সেটা ঘিরে গড়ে ওঠা engineering।</p>
+
+  <h3>দামটা আসে কোথা থেকে</h3>
+  <p>একটা syscall মানে সাধারণ function call না — মানে: mode switch (CPU state বদল), kernel-এ ঢুকে register বাঁচানো, syscall dispatch, argument validation, কাজ, তারপর পুরোটা উল্টো করে ফেরা। তার উপর আছে পরোক্ষ খরচ — kernel-এর code/data cache-এ ঢোকায় তোমার code-এর cache-এর কিছুটা দখল হয়ে যায় (Chapter 17-এর সেই cache দূষণের ছোট ভাই)।</p>
+  <p>কিন্তু ভারসাম্যটাও বলি: একটা syscall-এর নিজস্ব overhead nanoseconds-এর জগতে — আর তার ভিতরের <em>কাজটা</em> (disk read!) হতে পারে milliseconds-এর জগতে। অর্থাৎ <strong>overhead টা matter করে তখনই, যখন syscall গুলো ছোট এবং অনেক।</strong></p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"System calls are slow — যত পারো এড়াও।" ভুল frame। সঠিক frame: syscall-এর একটা <em>fixed per-call overhead</em> আছে। ১টা syscall-এ 4MB পড়া = overhead তুচ্ছ। ১০ লাখ syscall-এ ৪ byte করে পড়া = overhead-ই মূল খরচ। শত্রু syscall না — শত্রু <strong>ছোট কাজে ঘনঘন boundary পারাপার</strong>।</p>
+  </div>
+
+  <h3>এই হিসাব থেকে জন্ম নেওয়া কৌশলগুলো</h3>
+  <ul>
+    <li><strong>Batching/buffering:</strong> ছোট ছোট write জমিয়ে এক syscall-এ পাঠানো। তোমার <code>console.log</code>-এর পিছনে stdout buffering, HTTP client-এর request pipelining — সব এই এক idea।</li>
+    <li><strong>বড় buffer-এ পড়া:</strong> 64KB চেয়ে এক read, 1KB-র ৬৪ read না।</li>
+    <li><strong>epoll-ই একটা জবাব:</strong> হাজার fd-র খোঁজ এক <code>epoll_wait</code>-এ (Chapter 29)।</li>
+    <li><strong>io_uring — চূড়ান্ত রূপ:</strong> App আর kernel-এর মাঝে shared memory-র দুই ring (submission + completion)। App ring-এ request লিখে রাখে, kernel পড়ে কাজ করে result ring-এ রাখে — <em>অনেক operation, প্রায় শূন্য boundary-পারাপার।</em> পুরো design-টাই "syscall overhead"-এর বিরুদ্ধে যুদ্ধ।</li>
+    <li><strong>vDSO (মজার fact):</strong> কিছু নিরীহ syscall (যেমন সময় জানা — <code>gettimeofday</code>) এত ঘনঘন ডাকা হয় যে kernel সেগুলোর জবাব user space-এই map করে দেয় — boundary পারই হতে হয় না।</li>
+  </ul>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>দুটো তুলনা করো:<br><code>strace -c dd if=/dev/zero of=/dev/null bs=1 count=100000</code> (১ byte করে!)<br><code>strace -c dd if=/dev/zero of=/dev/null bs=100000 count=1</code> (এক চালানে)<br><code>-c</code> flag syscall-এর গণনা আর সময়ের summary দেখায় — একই কাজ, syscall সংখ্যায় লক্ষগুণ পার্থক্য, সময়েও চোখে পড়ার মতো। এটাই এই chapter-এর পুরো থিসিস এক পরীক্ষায়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Syscall-এর overhead-এর উপাদানগুলো কী কী?</li>
+      <li>কখন overhead টা তুচ্ছ, কখন সেটাই মূল খরচ?</li>
+      <li>Batching আর io_uring — দুটোই কোন এক সমস্যার দুই সমাধান?</li>
+    </ul>
+  </div>

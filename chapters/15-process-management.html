@@ -1,0 +1,50 @@
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 15 — Process Management</h2>
+  <p class="chap-sub">Process-এর জীবনচক্র, state, আর জন্ম-রহস্য: fork।</p>
+
+  <h3>Process-এর state</h3>
+  <p>Kernel-এর খাতায় প্রতিটা process যেকোনো মুহূর্তে একটা state-এ থাকে:</p>
+  <pre class="diagram">          <span class="dim">জন্ম</span>
+           ↓
+        [Ready] ←──────────────┐
+           ↓ <span class="dim">scheduler CPU দিলো</span>  │ <span class="dim">সময় শেষ / বড় কেউ এলো</span>
+        [Running] ─────────────┘
+           ↓ <span class="dim">I/O চাইলো (disk, network, sleep...)</span>
+        [Waiting / Blocked]
+           ↓ <span class="dim">I/O শেষ → আবার Ready</span>
+           
+        [Terminated] <span class="dim">← exit করলে</span></pre>
+  <ul>
+    <li><strong>Running:</strong> এই মুহূর্তে কোনো core-এ চলছে। একটা core-এ একসাথে একটাই।</li>
+    <li><strong>Ready:</strong> চলতে প্রস্তুত, কিন্তু CPU খালি নেই — লাইনে দাঁড়িয়ে।</li>
+    <li><strong>Waiting/Blocked:</strong> কিছুর জন্য অপেক্ষা করছে (disk data, network packet, timer)। <strong>CPU চাইছেই না।</strong> তোমার server-এর বেশিরভাগ process দিনের বেশিরভাগ সময় এখানেই কাটায়।</li>
+    <li><strong>Terminated:</strong> শেষ। Kernel exit code ইত্যাদি রেখে দেয় parent-এর জন্য।</li>
+  </ul>
+  <p>এই state machine চালায় kernel-এর <strong>scheduler</strong> — কে Ready থেকে Running-এ যাবে সেই সিদ্ধান্ত তার। (Scheduling algorithm-এর academic জঙ্গলে আমরা ঢুকবো না; "fairness আর priority মিলিয়ে kernel সিদ্ধান্ত নেয়" — এই model-ই যথেষ্ট।)</p>
+
+  <h3>fork(): process-এর জন্ম</h3>
+  <p>Unix-এ নতুন process বানানোর মৌলিক উপায়টা মজার — "নতুন বানাও" না, বরং <strong>"নিজের কপি বানাও"</strong>:</p>
+  <div class="codewrap"><pre><code>pid_t pid = fork();
+
+if (pid == 0) {
+    // এখানে child process চলছে
+} else {
+    // এখানে parent — pid-এ child-এর PID
+}</code></pre></div>
+  <p><code>fork()</code> call করলে kernel চলমান process-এর একটা প্রায়-হুবহু copy বানায়: একই code, memory-র copy (আসলে copy-on-write — Chapter 9 মনে আছে? তাই প্রায় instant), একই open file-গুলো। মজাটা হলো — <strong>একই fork() call দুই process-এ দুইবার return করে</strong>: parent পায় child-এর PID, child পায় 0। ওই if/else দিয়েই দুজনের রাস্তা আলাদা হয়।</p>
+  <p>তারপর child সাধারণত <code>exec()</code> family-র একটা call দিয়ে নিজের ভিতরে নতুন executable load করে — পুরনো memory ছবি মুছে নতুন program বসে। Shell ঠিক এটাই করে: তুমি <code>ls</code> লিখলে shell fork করে, child-এ exec("ls") হয়, parent (shell) child শেষ হওয়ার wait করে। এই fork+exec ভাগাভাগির সুবিধা: fork আর exec-এর মাঝখানে child নিজের setup বদলাতে পারে (যেমন output redirect — <code>ls &gt; file.txt</code> এভাবেই কাজ করে)।</p>
+  <p>এভাবেই পুরো system-এ process-দের একটা <strong>parent-child tree</strong> তৈরি হয় — সবার আদি পূর্বপুরুষ PID 1 (init/systemd)।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p><code>ps -ef | head</code> চালিয়ে PPID (parent PID) column দেখো। Linux-এ <code>pstree | head -30</code> চালালে পুরো family tree দেখা যায় — systemd থেকে নেমে তোমার terminal, তার child shell, তার child তোমার command।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Ready আর Waiting state-এর পার্থক্য কী — কে CPU চায়, কে চায় না?</li>
+      <li>fork() "দুইবার return করে" — মানে কী?</li>
+      <li>fork+exec আলাদা দুই ধাপ রাখার সুবিধা কী?</li>
+    </ul>
+  </div>

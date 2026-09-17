@@ -1,0 +1,20 @@
+/* base.css
+   Element defaults, reset, scrollbars, selection, focus ring.
+*/
+
+*{box-sizing:border-box; margin:0; padding:0;}
+html{scroll-behavior:smooth; scroll-padding-top:80px;}
+body{
+  font-family:var(--font-bn);
+  background:var(--bg); color:var(--text);
+  font-size:17px; line-height:1.85;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+::selection{background:var(--user-glow); color:var(--heading);}
+:focus-visible{outline:2px solid var(--user); outline-offset:2px; border-radius:4px;}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:9px; height:9px;}
+*::-webkit-scrollbar-track{background:transparent;}
+*::-webkit-scrollbar-thumb{background:var(--border); border-radius:5px; border:2px solid transparent; background-clip:padding-box;}
+*::-webkit-scrollbar-thumb:hover{background:var(--muted); background-clip:padding-box;}

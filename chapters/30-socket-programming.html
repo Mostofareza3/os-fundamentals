@@ -1,0 +1,51 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 30 — Socket Programming: হাতেকলমে</h2>
+  <p class="chap-sub">একটা ন্যূনতম TCP server, C-তে — প্রতিটা লাইন এতক্ষণের theory-র প্রমাণ।</p>
+
+  <div class="codewrap"><pre><code>// ন্যূনতম echo server — error handling ইচ্ছা করে বাদ
+int server_fd = socket(AF_INET, SOCK_STREAM, 0);   // ১
+
+struct sockaddr_in addr = {0};
+addr.sin_family = AF_INET;
+addr.sin_port   = htons(8080);
+bind(server_fd, (struct sockaddr*)&amp;addr, sizeof(addr)); // ২
+
+listen(server_fd, 128);                            // ৩
+
+while (1) {
+    int client_fd = accept(server_fd, NULL, NULL); // ৪
+    char buf[1024];
+    int n = read(client_fd, buf, sizeof(buf));     // ৫
+    write(client_fd, buf, n);                      // ৬
+    close(client_fd);                              // ৭
+}</code></pre></div>
+
+  <p>লাইন ধরে ধরে — OS-এর চোখে কী ঘটলো:</p>
+  <ol>
+    <li><strong>socket():</strong> System call → kernel একটা socket object বানালো, fd দিলো। <code>SOCK_STREAM</code> মানে TCP।</li>
+    <li><strong>bind():</strong> "Port 8080 আমার" — kernel-এর port table-এ দাবি নথিভুক্ত। অন্য কেউ আগেই নিলে এখানেই <code>EADDRINUSE</code> — তোমার চেনা সেই "port already in use"।</li>
+    <li><strong>listen(fd, 128):</strong> Socket টা listening mode-এ; 128 হলো accept queue-র backlog (Chapter 26!)। এই মুহূর্ত থেকে kernel নিজে নিজে handshake করে connection জমাতে থাকবে।</li>
+    <li><strong>accept():</strong> Accept queue খালি থাকলে process এখানে block — Waiting state। Connection এলে জাগে, হাতে পায় <em>নতুন</em> fd।</li>
+    <li><strong>read():</strong> Receive buffer-এ data না থাকলে block; থাকলে copy। (এই যে ৪ আর ৫-এ blocking — এটাই এই server-এর সীমা: এক সময়ে এক client। Chapter 28-29 এর সমাধান তো এখন জানোই।)</li>
+    <li><strong>write():</strong> Send buffer-এ copy → kernel পাঠাবে।</li>
+    <li><strong>close():</strong> fd ছাড়ো → kernel TCP-র বিদায়-নৃত্য (FIN/ACK) চালায়।</li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">আসল শিক্ষা</div>
+    <p>মাত্র ৭টা system call-এ একটা network server — কারণ ভারী কাজের সবটাই kernel-এ: handshake, reliability, buffering, retransmission। Application-এর ভূমিকা আসলে <strong>orchestration</strong> — kernel-এর তৈরি জিনিসগুলো চাওয়া, আর bytes-এর অর্থ বোঝা (HTTP parse করা ইত্যাদি)। Express দিয়ে যে server লেখো, সেটা এই ৭ call-এর উপরে সাজানো অনেকগুলো সুবিধার স্তর মাত্র।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>কোনো C লাগবে না — দুই terminal-এ: <code>nc -l 8080</code> (server) আর <code>nc localhost 8080</code> (client), টাইপ করো — chat! তারপর তৃতীয় terminal-এ <code>ss -t | grep 8080</code> (macOS: <code>netstat -an | grep 8080</code>) — নিজের বানানো connection-টার state দেখো। Linux-এ <code>strace nc -l 8081</code> চালালে উপরের socket→bind→listen→accept ধারাটা লাইভ দেখবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>৭টা call-এর প্রতিটায় kernel-এ কী তৈরি/পরিবর্তন হয়?</li>
+      <li>এই server এক সময়ে এক client কেন — কোন দুই লাইনে আটকায়?</li>
+      <li>"Application orchestrates, kernel does the heavy lifting" — নিজের ভাষায়?</li>
+    </ul>
+  </div>

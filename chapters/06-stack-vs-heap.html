@@ -1,0 +1,44 @@
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 6 — Stack vs Heap</h2>
+  <p class="chap-sub">দুইটা আলাদা allocation strategy — কেন দুটোই লাগে, আর কার কী cost।</p>
+
+  <h3>Stack কেন দরকার</h3>
+  <p>Function-এর local variable-দের একটা সুন্দর property আছে — এদের lifetime একদম predictable। Function ঢুকলে জন্ম, function বের হলে মৃত্যু। এমন predictable lifetime-এর জন্য stack perfect: allocation মানে শুধু stack pointer-টা একটু সরানো, deallocation মানে ফেরত সরানো। কোনো bookkeeping লাগে না, কোনো খোঁজাখুঁজি লাগে না।</p>
+
+  <h3>Heap কেন দরকার</h3>
+  <p>কিন্তু সব data-র lifetime function-এর সাথে বাঁধা না। ধরো একটা function user object বানিয়ে return করলো — function শেষ, কিন্তু object টা বেঁচে থাকতে হবে। অথবা runtime-এ ঠিক হবে কত বড় array লাগবে। এই "যতদিন দরকার ততদিন বাঁচবে, size আগে থেকে জানা নেই" ধরনের data-র জন্য <strong>heap</strong> — <code>malloc(size)</code> দিয়ে চাও, <code>free(ptr)</code> দিয়ে ফেরত দাও।</p>
+
+  <div class="box concept">
+    <div class="box-title">SCOPE vs LIFETIME</div>
+    <p><strong>Scope</strong> = code-এর কোথা থেকে variable-টা দেখা যায়। <strong>Lifetime</strong> = memory-টা কতক্ষণ বৈধ থাকে। Stack data-র বেলায় দুটো মিলে যায়। Heap data-র বেলায় না — pointer/reference টা scope-এর বাইরে চলে গেলেও heap-এর memory বেঁচে থাকতে পারে। C-তে এই ফাঁক থেকেই আসে dangling pointer আর memory leak; GC language-এ garbage collector এই lifetime tracking-টাই তোমার হয়ে করে।</p>
+  </div>
+
+  <h3>Cost-এর আসল হিসাব</h3>
+  <p>"Stack fast, heap slow" — এই oversimplification-টা এড়িয়ে যাই। আসল ছবিটা:</p>
+  <ul>
+    <li><strong>Stack allocation trivially simple</strong> — একটা pointer বাড়ানো/কমানো। প্রায় free।</li>
+    <li><strong>Heap allocation-এ কাজ বেশি</strong> — allocator-কে free space খুঁজতে হয়, bookkeeping করতে হয়, মাঝে মাঝে kernel-এর কাছে আরো memory চাইতে হয় (system call!)। কতটা costly সেটা allocator, allocation pattern আর size-এর উপর নির্ভর করে।</li>
+    <li><strong>Access speed-এ পার্থক্য allocation-এর না, locality-র</strong> — stack-এর data সাধারণত ছোট জায়গায় ঘেঁষাঘেঁষি করে থাকে বলে CPU cache-এ ভালো behave করে (Chapter 13)। Heap-এর data ছড়ানো-ছিটানো হলে cache miss বাড়ে। মানে পার্থক্যটা জায়গার "জাত"-এ না, access pattern-এ।</li>
+  </ul>
+
+  <h3>Heap-এর নিজস্ব রোগ</h3>
+  <ul>
+    <li><strong>Fragmentation:</strong> বারবার ছোট-বড় allocate/free করতে করতে free memory টুকরা টুকরা হয়ে যায় — মোট জায়গা থাকলেও বড় এক টুকরা পাওয়া যায় না।</li>
+    <li><strong>Memory leak:</strong> নেওয়া memory ফেরত না দেওয়া। GC language-এও হয় — যেমন global array-তে reference জমিয়ে রাখলে GC কিছুই করতে পারে না। Node.js app-এর memory ধীরে ধীরে বেড়ে যাওয়ার classic কারণ।</li>
+    <li><strong>Stack overflow:</strong> Heap-এর রোগ না, stack-এর — infinite/গভীর recursion-এ frame জমে stack-এর সীমা পার হয়ে যাওয়া।</li>
+  </ul>
+
+  <div class="box kern">
+    <div class="box-title">JS DEVELOPER-এর জন্য</div>
+    <p>V8-এ তোমার object/array/closure সব heap-এ থাকে, আর garbage collector সেই heap পরিষ্কার করে। "GC pause" মানে: collector heap ঘুরে ঘুরে মরা object খুঁজছে। Heap যত এলোমেলো আর বড়, GC-র কাজ তত বেশি। Chrome DevTools-এর Memory tab-এ যে heap snapshot নাও — সেটা আক্ষরিক অর্থেই এই chapter-এর heap region-এর ছবি।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>কোন data stack-এ আর কোন data heap-এ যায় — নিয়মটা কী?</li>
+      <li>Scope আর lifetime-এর পার্থক্য একটা উদাহরণ দিয়ে?</li>
+      <li>"Stack faster than heap" কথাটার মধ্যে কতটুকু সত্যি আর কোথায় ভুল?</li>
+      <li>Fragmentation কীভাবে তৈরি হয়?</li>
+    </ul>
+  </div>

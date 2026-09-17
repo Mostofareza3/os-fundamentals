@@ -1,0 +1,39 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 25 — Socket কী?</h2>
+  <p class="chap-sub">Network-কে OS যেভাবে file বানিয়ে দেয়।</p>
+
+  <h3>Abstraction-টা</h3>
+  <p>Network hardware-এর জগৎ raw packet-এর জগৎ। কিন্তু তুমি চাও "ওই server-এর সাথে একটা connection, যেখানে আমি bytes লিখবো আর পড়বো।" এই চাওয়াটার OS-দেওয়া রূপ হলো <strong>socket</strong> — network communication-এর একটা endpoint, kernel-এর তৈরি ও রক্ষণাবেক্ষণ করা একটা object।</p>
+  <p>সবচেয়ে সুন্দর অংশ: socket-ও পাও একটা <strong>file descriptor</strong> হিসেবে — file-এর মতোই (Chapter 21)! একই <code>read()</code>/<code>write()</code> চালে, একই fd table-এ বসে। Unix-এর সেই বিখ্যাত দর্শন — "everything is a file (descriptor)" — এখানে পুরো জৌলুসে।</p>
+
+  <h3>ঠিকানা: IP + port</h3>
+  <p>একটা TCP connection-কে uniquely চেনা যায় চারটা জিনিসে: <code>(client IP, client port, server IP, server port)</code>। <strong>IP</strong> machine চেনায়, <strong>port</strong> সেই machine-এর ভিতরে কোন application চেনায়। Server একটা well-known port-এ বসে থাকে (443, 5432...); client-এর port টা OS নিজেই একটা খালি নাম্বার থেকে দিয়ে দেয় (ephemeral port)। এই চার-টুপল আলাদা হলেই connection আলাদা — এজন্যই এক server port-এ হাজারো client একসাথে ঝুলতে পারে।</p>
+
+  <pre class="diagram"><span class="u">Client app</span>                              <span class="u">Server app</span>
+   │ write("GET /")                          ↑ read() → "GET /"
+   ↓                                         │
+<span class="u">socket fd</span>                               <span class="u">socket fd</span>
+   ↓                                         ↑
+<span class="k">Client kernel (TCP/IP stack)</span>            <span class="k">Server kernel (TCP/IP stack)</span>
+   ↓                                         ↑
+   └───────── network (packets) ─────────────┘</pre>
+  <p class="diagram-caption">দুই পাশের application শুধু নিজ নিজ socket দেখে; packet-এর ঝামেলা পুরোটা দুই kernel-এর।</p>
+
+  <h3>Server side-এর জীবনচক্র</h3>
+  <p>Server-এ socket-এর ব্যবহারটা একটু আলাদা ছন্দে চলে — নামগুলো চিনে রাখো, সামনে লাগবে:</p>
+  <ol>
+    <li><code>socket()</code> — একটা socket বানাও</li>
+    <li><code>bind()</code> — "আমি port 8080-এর মালিক"</li>
+    <li><code>listen()</code> — "connection নিতে প্রস্তুত" (এটা <em>listening socket</em>)</li>
+    <li><code>accept()</code> — একেকটা আগত connection-এর জন্য <em>নতুন একটা socket</em> ফেরত দেয় — data আদান-প্রদান ওটাতেই</li>
+  </ol>
+  <p>খেয়াল করো: listening socket আর connection socket আলাদা জিনিস। <code>app.listen(8080)</code> লেখার সময় Node ভিতরে ঠিক এই চারটা ধাপই চালায়।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Socket-কে file descriptor বানানোর সুবিধা কী?</li>
+      <li>Connection-এর চার-টুপল কী, আর এক port-এ বহু client কীভাবে?</li>
+      <li>Listening socket আর accepted socket-এর পার্থক্য?</li>
+    </ul>
+  </div>

@@ -1,0 +1,35 @@
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 20 — Persistent Storage</h2>
+  <p class="chap-sub">RAM-এর বাইরের জগৎ — যেখানে data power গেলেও বাঁচে, কিন্তু দাম দিতে হয় speed-এ।</p>
+
+  <h3>কেন persistence আলাদা সমস্যা</h3>
+  <p>RAM volatile — তাই database, file, log সবকিছুর একটা "স্থায়ী ঠিকানা" লাগে। সেই ঠিকানাই storage। কিন্তু storage-এর economics সম্পূর্ণ আলাদা: RAM-এর চেয়ে অনেক সস্তা আর বড়, কিন্তু অনেক ধীর। এই gap-টাই file I/O-র পুরো design-কে shape করে।</p>
+
+  <h3>তিন প্রজন্ম</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Device</th><th>কীভাবে কাজ করে</th><th>Character</th></tr>
+    <tr><td><strong>HDD</strong></td><td>ঘূর্ণায়মান চুম্বকীয় disk + নড়াচড়া করা read head</td><td>Mechanical বলে <em>seek</em> (head সরানো) ভীষণ দামি — random access-এ মরে, sequential-এ চলনসই। এখনো সস্তা bulk storage-এ রাজত্ব।</td></tr>
+    <tr><td><strong>SSD (SATA)</strong></td><td>Flash memory — কোনো moving part নেই</td><td>Random access-এ HDD-র চেয়ে কয়েক মাত্রা ভালো। তবে পুরনো SATA interface-এর গলা চিপা।</td></tr>
+    <tr><td><strong>NVMe SSD</strong></td><td>Flash + PCIe দিয়ে সরাসরি CPU-র কাছে</td><td>আজকের standard। বিশাল parallelism — একসাথে বহু request গিলতে পারে। তোমার Mac-এর ভিতরে এটাই।</td></tr>
+  </table></div>
+
+  <h3>Latency vs throughput — আলাদা করে ভাবো</h3>
+  <ul>
+    <li><strong>Latency:</strong> <em>একটা</em> request-এর জবাব আসতে কত সময়। DB-র একটা ছোট read এখানে আটকায়।</li>
+    <li><strong>Throughput:</strong> প্রতি second মোট কত data। বড় file copy/backup এখানে আটকায়।</li>
+  </ul>
+  <p>দুটো আলাদা অক্ষ — একটা device-এর throughput দুর্দান্ত হয়েও latency মাঝারি হতে পারে। আর সব device-এই sequential access random-এর চেয়ে সুবিধাজনক (HDD-তে আকাশ-পাতাল, SSD-তেও লক্ষণীয়)। Database-রা এজন্যই append-only log (WAL) এত ভালোবাসে — লেখাগুলো sequential করে ফেলা।</p>
+
+  <div class="box concept">
+    <div class="box-title">মাত্রাজ্ঞান (মুখস্থ না, অনুপাত)</div>
+    <p>মোটা দাগে: CPU cache → RAM → NVMe → HDD → network storage — প্রতিটা ধাপে latency মোটামুটি এক-দুই <em>মাত্রা</em> (order of magnitude) করে বাড়ে। মানে RAM-এ যা চোখের পলক, disk-এ তা দুপুরের খাবার-বিরতি। এই অনুপাতটাই মনে রাখো — এটাই বোঝায় কেন OS এত মরিয়া হয়ে disk access এড়াতে চায় (Chapter 23-এর page cache)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>HDD random access-এ এত খারাপ কেন?</li>
+      <li>Latency আর throughput-এর পার্থক্য একটা উদাহরণে?</li>
+      <li>Database-রা sequential write পছন্দ করে কেন?</li>
+    </ul>
+  </div>

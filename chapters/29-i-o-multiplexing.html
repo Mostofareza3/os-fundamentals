@@ -1,0 +1,42 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 29 — I/O Multiplexing</h2>
+  <p class="chap-sub">"এই হাজারটা fd-র কোনোটায় কিছু ঘটলে ডেকো" — nginx, Node, Redis সবার হৃদপিণ্ড।</p>
+
+  <h3>Evolution-টা বোঝাই আসল</h3>
+  <ul>
+    <li><strong>select / poll (আদি যুগ):</strong> প্রতিবার call-এ পুরো fd list kernel-কে দাও → kernel <em>সবগুলো</em> scan করে বলে কারা ready। কাজ চলে, কিন্তু connection N হলে প্রতি call-এ O(N) কাজ + পুরো list আনা-নেওয়া। ১০,০০০ fd-তে প্রতিটা event-এর জন্য ১০,০০০-এর scan — বাড়ে না (doesn't scale)।</li>
+    <li><strong>epoll (Linux-এর উত্তর):</strong> Approach উল্টে দাও — kernel-এর ভিতরেই একটা স্থায়ী interest list রাখো:
+      <ol>
+        <li><code>epoll_create()</code> — kernel-এ একটা "watch center" বানাও</li>
+        <li><code>epoll_ctl(ADD, fd)</code> — "এটার উপর নজর রেখো" (একবারই বলতে হয়)</li>
+        <li><code>epoll_wait()</code> — ঘুমাও; kernel জাগাবে <em>শুধু ready fd-দের list</em> হাতে দিয়ে</li>
+      </ol>
+      Data আসামাত্র kernel নিজেই (receive path-এর সেই "জাগাও" মুহূর্তে!) ready list-এ fd টা টুকে রাখে। ফলে কাজের খরচ ready event-এর সংখ্যার সমানুপাতিক — মোট connection যত-ই হোক। <strong>১০,০০০ ঘুমন্ত connection কার্যত free।</strong></li>
+    <li><strong>আত্মীয়স্বজন:</strong> kqueue (macOS/BSD-র epoll-সমতুল্য), IOCP (Windows-এর — দর্শন একটু আলাদা: "ready হলে বলো" না, "কাজ <em>শেষ</em> হলে বলো"), আর <strong>io_uring</strong> (Linux-এর নতুন প্রজন্ম — shared memory-র ring-এ request/completion বিনিময় করে system call-এর সংখ্যাই কমিয়ে দেয়; Chapter 32-এর পরে এর মর্ম আরও বুঝবে)।</li>
+  </ul>
+
+  <h3>একটা event-driven server-এর কঙ্কাল</h3>
+  <div class="codewrap"><pre><code>loop {
+    events = epoll_wait()             // ঘুমাও, ঘটনা এলে জাগো
+    for (e of events) {
+        if (e.fd == listening_fd)     // নতুন connection!
+            accept() → non-blocking করে epoll-এ ADD
+        else                          // পুরনো connection-এ data
+            read() → request process → write(response)
+    }
+}</code></pre></div>
+  <p>এটাই — literally এটাই — Node.js-এর event loop-এর, nginx-এর worker-এর, Redis-এর মূল কাঠামো। তোমার প্রতিটা <code>app.get(...)</code> handler ওই <code>process</code> জায়গাটায় বসে চলে। আর এখন এটাও পরিষ্কার কেন event loop-এ CPU-ভারী synchronous কাজ বিষ — loop-টা <code>epoll_wait</code>-এ ফিরতে না পারলে জমে থাকা কারো সেবাই হয় না।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Node.js single-threaded, তাই এক core-এ এক সাথে একটাই কাজ — slow।" আসল ছবি: I/O-bound জগতে "কাজ"-এর সংজ্ঞাই হলো ছোট ছোট CPU-র ঝলক, মাঝে বিশাল অপেক্ষা। Event loop সেই অপেক্ষাগুলো epoll-এ জমা দিয়ে ঝলকগুলো পরপর চালায় — এক thread-েই হাজারো connection। Single thread দুর্বলতা না, এই model-এর <em>design choice</em> — দুর্বলতা শুধু CPU-bound কাজে (তখন worker/process — Chapter 19)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>select/poll-এর scaling সমস্যাটা ঠিক কোথায়?</li>
+      <li>epoll কোন কাজটা "একবার" করে ফেলে বারবার করা এড়ায়?</li>
+      <li>Event loop block করলে ঠিক কী ঘটে — kernel level-এ ভেবে বলো।</li>
+    </ul>
+  </div>

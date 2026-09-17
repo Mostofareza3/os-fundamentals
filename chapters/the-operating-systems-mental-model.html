@@ -1,0 +1,29 @@
+  <p class="part-label">উপসংহার</p>
+  <h2>The Operating Systems Mental Model</h2>
+  <p class="chap-sub">পুরো বই, এক ছবিতে — তারপর সুতোগুলোর জোড়া।</p>
+
+  <pre class="diagram"><span class="u">        Application (তোমার code)</span>
+<span class="u">        Runtime / Libraries (V8, libc, JVM)</span>
+<span class="u">┌─────────────  USER SPACE  ─────────────┐</span>
+│  process memory: code · data · heap · stack  │
+└──────────────────┬─────────────────────┘
+          <span class="dim">system calls (একমাত্র দরজা)</span>
+<span class="k">┌────────────────  KERNEL  ──────────────┐</span>
+<span class="k">│ Process Mgmt   — scheduler, fork, states │</span>
+<span class="k">│ Memory Mgmt    — page tables, page cache │</span>
+<span class="k">│ File System    — VFS, ext4, inodes       │</span>
+<span class="k">│ Network Stack  — sockets, TCP/IP, queues │</span>
+<span class="k">│ Device Drivers — disk, NIC (DMA, IRQ)    │</span>
+<span class="k">└──────────────────┬─────────────────────┘</span>
+                   ↓
+        Hardware:  CPU (+cache) · RAM · Storage · Network</pre>
+
+  <h3>সুতোগুলো</h3>
+  <ul>
+    <li><strong>সব রাস্তার এক প্যাটার্ন:</strong> চাওয়া (নীল) → syscall → kernel-এর স্তর → hardware → ফেরা। File, network, memory — গল্প একটাই, চরিত্র আলাদা।</li>
+    <li><strong>Illusion স্তরে স্তরে:</strong> Virtual memory প্রতিটা process-কে "memory তোমার একার" বলে; scheduler বলে "CPU তোমার একার"; TCP বলে "নির্ভরযোগ্য stream আছে"; namespace বলে "machine-টা তোমার একার"; hypervisor বলে "hardware তোমার একার"। <strong>OS মানে সুশৃঙ্খল মিথ্যার স্থাপত্য — যে মিথ্যাগুলো আমাদের সরল code লিখতে দেয়।</strong></li>
+    <li><strong>যেখানেই speed-ফারাক, সেখানেই cache/buffer:</strong> CPU cache, TLB, page cache, socket buffers, তোমার Redis — এক pattern-এর পাঁচ তলা।</li>
+    <li><strong>সবকিছুর দাম আছে:</strong> syscall-এর boundary cost, context switch-এর cache-দূষণ, page fault-এর disk-যাত্রা, lock-এর লাইন। Engineering মানে এই দামগুলো জেনে খরচ করা।</li>
+  </ul>
+
+  <p>আর সেই final goal-টা মিলিয়ে দেখো: এখন একটা running application-এর দিকে তাকালে তোমার চোখে ভাসা উচিত — process আর তার address space, stack-এ ওঠানামা করা frames, heap-এ জন্মানো objects, cache-এ hit-miss-এর জুয়া, boundary পেরোনো syscalls, kernel-এর queue আর buffer, disk আর NIC-এর DMA, আর scheduler-এর অদৃশ্য কাঁচি। যদি ভাসে — বইটা কাজ করেছে।</p>

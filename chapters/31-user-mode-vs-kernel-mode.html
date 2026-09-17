@@ -1,0 +1,35 @@
+  <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
+  <h2>Chapter 31 — User Mode vs Kernel Mode</h2>
+  <p class="chap-sub">এই বইয়ের নীল-আর-amber রেখাটা এবার পুরো আলোয়।</p>
+
+  <h3>Privilege: hardware-এ খোদাই করা নিয়ম</h3>
+  <p>এটা কোনো software convention না — <strong>CPU নিজে</strong> দুই (বা ততোধিক) privilege level-এ চলে। Kernel mode-এ সব instruction, সব memory, সব device বৈধ। User mode-এ dangerous instruction (device-এ কথা বলা, page table বদলানো, interrupt বন্ধ করা) দিলে CPU নিজেই আটকে দিয়ে kernel-কে ডেকে দেয়। মানে যত বড় bug-ই লেখো, তোমার process hardware-এর ক্ষতি করতে বা অন্যের memory পড়তে <em>পারবেই না</em> — দারোয়ান silicon-এ বসানো।</p>
+  <p>কেন এত কড়াকড়ি? কারণ machine-টা shared। শত process, ভিন্ন user, আধা-বিশ্বাসী code — এদের মাঝে বিশ্বাসের সীমানা টানতেই হয়। Protection ছাড়া এক process-এর ভুল মানে পুরো machine-এর মৃত্যু (পুরনো DOS-যুগের বাস্তবতা)।</p>
+
+  <h3>দরজাটা: system call-এর যাত্রাপথ</h3>
+  <pre class="diagram"><span class="u">Application: file পড়তে চায়</span>
+<span class="u">  → libc-র read() → বিশেষ instruction (syscall)</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="dim">CPU: mode বদলে kernel — কিন্তু লাফ দেওয়া যাবে শুধু</span>
+<span class="dim">kernel-এর আগে-থেকে-ঠিক-করা entry point-এ, যেখানে খুশি নয়</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="k">Kernel: কোন syscall? (নম্বর দেখে) → argument validate</span>
+<span class="k">        → কাজ করো (fd বৈধ? permission আছে? data আনো)</span>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="u">CPU: user mode-এ ফেরত → application-এর হাতে result</span></pre>
+  <p>দুটো সূক্ষ্মতা লক্ষ করো: (১) ঢোকার জায়গাটা kernel-এর নির্ধারিত — user code "kernel mode-এ গিয়ে নিজের ইচ্ছামতো code" চালাতে পারে না; পারে শুধু kernel-এর menu থেকে order দিতে। (২) Kernel প্রতিটা argument সন্দেহের চোখে দেখে — user-এর দেওয়া pointer, সংখ্যা, সবকিছু validate হয়। এই অবিশ্বাসটাই security।</p>
+  <p>Mode বদলের আরও দুই দরজা আছে, ফাউ হিসেবে জেনে রাখো: <strong>interrupt</strong> (hardware-এর ডাক — NIC-এর "data এসেছে", timer-এর tick) আর <strong>exception/fault</strong> (তোমার code-এর কাণ্ড — page fault, zero-division)। তিন দরজাই এক জায়গায় নামে: kernel-এর নিয়ন্ত্রিত entry point।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Kernel হলো ব্যাংকের vault-এর কর্মকর্তা। তুমি (user process) vault-এ ঢুকতে পারো না — কাউন্টারে (syscall interface) slip জমা দাও, কর্মকর্তা ভিতরে গিয়ে কাজ করে ফলাফল আনে। Slip-এ যা-ই লেখো, কর্মকর্তা যাচাই করেই কাজ করবে। ব্যবস্থাটা একটু আনুষ্ঠানিক, তাই একটু ধীর — কিন্তু এজন্যই ব্যাংক লুট হয় না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Privilege enforcement software না hardware — কেন এটা গুরুত্বপূর্ণ পার্থক্য?</li>
+      <li>User code kernel-এর "যেখানে খুশি" ঢুকতে পারে না — ব্যবস্থাটা কী?</li>
+      <li>Mode switch-এর তিন দরজা কী কী?</li>
+    </ul>
+  </div>

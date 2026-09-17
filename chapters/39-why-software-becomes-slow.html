@@ -1,0 +1,25 @@
+  <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
+  <h2>Chapter 39 — Software ধীর হয় কেন</h2>
+  <p class="chap-sub">"Slow" একটা রোগের নাম না — উপসর্গ। এই chapter হলো রোগ নির্ণয়ের চেকলিস্ট।</p>
+
+  <p>প্রথম নিয়ম, খোদাই করে রাখো: <strong>আগে মাপো, তারপর ভাবো, সবার শেষে optimize করো।</strong> অনুমানের ভিত্তিতে optimization প্রায়ই ভুল জায়গায় শ্রম। এখন, "slow"-এর পিছনে সাধারণত এই সন্দেহভাজনদের কেউ থাকে:</p>
+
+  <div class="table-wrap"><table>
+    <tr><th>সন্দেহভাজন</th><th>চেনার উপায় (লক্ষণ)</th><th>কোন chapter-এর জ্ঞান লাগবে</th></tr>
+    <tr><td><strong>CPU-bound</strong></td><td>Core গুলো 100%-এ, তবু কাজ শেষ হয় না। <code>top</code>-এ user CPU বেশি।</td><td>12-14, 19 — parallelism, cache-friendly algorithm</td></tr>
+    <tr><td><strong>Memory-bound</strong></td><td>CPU "busy" দেখায় কিন্তু আসলে RAM-এর অপেক্ষায়; এলোমেলো বড় data structure, cache miss-এর মিছিল।</td><td>7-8, 13 — locality, data layout</td></tr>
+    <tr><td><strong>Memory pressure / swap</strong></td><td>সবকিছু হঠাৎ কাদায় হাঁটছে; <code>vmstat</code>-এ si/so নড়ছে, major fault বাড়ছে, OOM-এর গন্ধ।</td><td>9-10 — working set vs RAM</td></tr>
+    <tr><td><strong>Disk-bound</strong></td><td>CPU অলস, iowait উঁচু; ছোট random read-এর বন্যা, fsync-ভারী write।</td><td>20-24 — cache, batching, sequential</td></tr>
+    <tr><td><strong>Network-bound</strong></td><td>Latency-র সিংহভাগ বাইরের service-এ; N+1 query, chatty API।</td><td>25-29 — round-trip কমাও</td></tr>
+    <tr><td><strong>Too many threads / context switching</strong></td><td><code>vmstat</code>-এ cs আকাশে, throughput বাড়ে না বা কমে; CPU busy অথচ "কাজ" কম।</td><td>17, 19 — worker সংখ্যা core-এ নামাও</td></tr>
+    <tr><td><strong>Blocking / event loop jam</strong></td><td>P99 কুৎসিত কিন্তু গড় ভালো; Node-এ event loop lag metric বাড়ে।</td><td>28-29 — sync কাজ loop থেকে বের করো</td></tr>
+    <tr><td><strong>Excessive syscalls</strong></td><td><code>strace -c</code>-তে লাখো ক্ষুদ্র read/write; per-call overhead জমে পাহাড়।</td><td>32 — batching, বড় buffer</td></tr>
+    <tr><td><strong>Lock contention</strong></td><td>Core বাড়ালেও speed বাড়ে না; সবাই এক lock/এক DB row-এর লাইনে।</td><td>18 — critical section ছোট করো, ভাগ করো</td></tr>
+  </table></div>
+
+  <p>খেয়াল করো — এই তালিকার একটা রোগও তোমার application-এর code দেখে ধরা যায় না; ধরা যায় OS-এর জানালা দিয়ে দেখলে (top, vmstat, iostat, strace, ss)। এই বইয়ের আসল উপহার এই জানালাগুলো চেনা।</p>
+
+  <div class="box warn">
+    <div class="box-title">সাবধান</div>
+    <p>কোনো magical checklist নেই — "cache যোগ করো / thread বাড়াও / SSD লাগাও" জাতীয় ঢালাও ওষুধ প্রায়ই রোগ না জেনে antibiotics। আগে <em>কোন resource-এ আটকে আছো</em> সেটা প্রমাণসহ বের করো; সমাধান তখন প্রায় নিজেই দেখা দেয়।</p>
+  </div>

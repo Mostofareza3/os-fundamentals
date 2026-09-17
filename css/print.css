@@ -1,0 +1,11 @@
+/* print.css
+   Print stylesheet — hide chrome, expand every chapter.
+*/
+
+/* ---------- print ---------- */
+@media print{
+  header.topbar, nav.sidebar, aside.rail, #progress, #scrim, .chapnav, .copybtn, .resume{display:none !important;}
+  main{margin:0; padding:0;}
+  section.chapter{display:block !important; page-break-after:always;}
+  body{background:#fff; color:#000; font-size:12pt;}
+}

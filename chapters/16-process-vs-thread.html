@@ -1,0 +1,48 @@
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 16 — Process vs Thread</h2>
+  <p class="chap-sub">Concurrency-র সব আলোচনার ভিত্তি — এই ছবিটা মাথায় গাঁথা চাই।</p>
+
+  <h3>Thread কী</h3>
+  <p>এতক্ষণ বলেছি "process চলে"। আরও সঠিকভাবে: process-এর ভিতরের <strong>thread</strong> চলে। Thread হলো execution-এর একক — একটা নিজস্ব instruction stream, নিজস্ব stack, নিজস্ব register state। প্রতিটা process অন্তত একটা thread নিয়ে জন্মায় (main thread), চাইলে আরও বানাতে পারে।</p>
+  <p>মূল কথা: <strong>process হলো resource-এর container, thread হলো execution-এর unit।</strong> Address space, heap, open files — এগুলো process-এর সম্পত্তি; process-এর সব thread এগুলো share করে।</p>
+
+  <pre class="diagram"><span class="u">Process (একটা address space)</span>
+├── Thread 1   ├── Thread 2   ├── Thread 3
+│   নিজস্ব:      │   নিজস্ব:      │   নিজস্ব:
+│   • Stack     │   • Stack     │   • Stack
+│   • Registers │   • Registers │   • Registers
+│   • PC        │   • PC        │   • PC
+│
+└── সবাই মিলে shared:
+    • Code (text)  • Heap  • Global data  • Open files/sockets</pre>
+  <p class="diagram-caption">যার যার execution state আলাদা, সবার data জগৎ এক।</p>
+
+  <h3>Share করা: আশীর্বাদ ও অভিশাপ</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>দুই process</th><th>এক process-এর দুই thread</th></tr>
+    <tr><td><strong>Memory</strong></td><td>সম্পূর্ণ আলাদা (isolation)</td><td>Heap/global shared</td></tr>
+    <tr><td><strong>Communication</strong></td><td>কষ্টের — pipe, socket, shared memory setup লাগে, প্রায়ই kernel-এর মধ্য দিয়ে</td><td>সহজ — একই variable-এ লেখো, অন্যজন দেখে</td></tr>
+    <tr><td><strong>একজনের crash</strong></td><td>অন্যজন বাঁচে</td><td>পুরো process মরে — সবাই একসাথে ডোবে</td></tr>
+    <tr><td><strong>তৈরির খরচ</strong></td><td>বেশি (নতুন address space, page table)</td><td>কম (শুধু stack + thread state)</td></tr>
+    <tr><td><strong>Bug-এর ধরন</strong></td><td>Interface-এ ভুল</td><td>Race condition, data corruption (Chapter 18)</td></tr>
+  </table></div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Thread is a lightweight process" — অসম্পূর্ণ, আর আসল point-টা miss করে। হালকা তো বটেই, কিন্তু defining পার্থক্য ওজনে না — <strong>address space-এ</strong>: process-রা আলাদা জগতে থাকে, thread-রা এক জগৎ share করে। এই sharing-ই thread-এর সব শক্তি আর সব বিপদের উৎস।</p>
+  </div>
+
+  <div class="box kern">
+    <div class="box-title">তোমার দুনিয়ায়</div>
+    <p>Node.js-এর model: এক process, তোমার JS চলে এক main thread-এ, কিন্তু ভিতরে libuv-এর একটা thread pool কিছু কাজ (file I/O, crypto, DNS) চালায়, আর V8-এর GC-ও আলাদা thread ব্যবহার করে। <code>worker_threads</code> খুললে সত্যিকারের আলাদা JS thread পাও। আর PM2 cluster mode? সেটা thread না — আলাদা <em>process</em>, এজন্যই ওদের মধ্যে memory share হয় না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Process is a container of resources, thread is a unit of execution" — নিজের ভাষায়?</li>
+      <li>Thread-দের মধ্যে কোনটা shared, কোনটা নিজস্ব?</li>
+      <li>প্রতিটা thread-এর আলাদা stack লাগে কেন? (Hint: function call)</li>
+      <li>Chrome tab-প্রতি process কেন — thread কেন না?</li>
+    </ul>
+  </div>

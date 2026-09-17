@@ -1,0 +1,67 @@
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 5 — Anatomy of a Process</h2>
+  <p class="chap-sub">Process-এর memory-র ভিতরটা দেখতে কেমন — এই layout-টা বইয়ের সবচেয়ে বেশি ব্যবহৃত ছবিগুলোর একটা।</p>
+
+  <h3>Process memory layout</h3>
+  <pre class="diagram">High Address
++------------------------+
+|   Stack                |  ← function call, local variable
+|      ↓ (নিচের দিকে বাড়ে) |
++------------------------+
+|                        |
+|   Free space           |
+|                        |
++------------------------+
+|      ↑ (উপরের দিকে বাড়ে) |
+|   Heap                 |  ← dynamic allocation (malloc, new, object)
++------------------------+
+|   BSS                  |  ← uninitialized global (শূন্য দিয়ে শুরু)
++------------------------+
+|   Data                 |  ← initialized global/static variable
++------------------------+
+|   Code / Text          |  ← machine instructions (read-only)
++------------------------+
+Low Address</pre>
+
+  <ul>
+    <li><strong>Code/Text:</strong> Executable-এর machine instructions। Read-only রাখা হয় — নিজের code নিজে overwrite করা বন্ধ করতে। বোনাস: read-only বলেই একই program-এর একাধিক process এই অংশটা physical memory-তে share করতে পারে।</li>
+    <li><strong>Data:</strong> যেসব global/static variable-এর initial value দেওয়া আছে (<code>int count = 10;</code>)।</li>
+    <li><strong>BSS:</strong> Initial value ছাড়া global গুলো (<code>int total;</code>) — process শুরুতে zero-filled থাকে। ELF file-এ এদের জন্য জায়গা নষ্ট হয় না, শুধু size লেখা থাকে।</li>
+    <li><strong>Heap:</strong> Runtime-এ চাওয়া memory — <code>malloc</code>, JS-এর object/array, সব এখানে। উপরের দিকে বাড়ে।</li>
+    <li><strong>Stack:</strong> Function call-এর জায়গা। নিচের দিকে বাড়ে।</li>
+  </ul>
+
+  <h3>Stack ঠিক কীভাবে কাজ করে</h3>
+  <p>প্রতিটা function call-এ stack-এ একটা <strong>stack frame</strong> push হয়। Frame-এর ভিতরে থাকে: function-এর <strong>local variables</strong>, <strong>arguments</strong>, আর সবচেয়ে গুরুত্বপূর্ণ — <strong>return address</strong> (function শেষ হলে CPU কোথায় ফিরবে)। Function return করলে frame টা pop হয়ে যায়।</p>
+  <p>এই flow-টা trace করি:</p>
+  <div class="codewrap"><pre><code>void bar() { int z = 3; }
+void foo() { int y = 2; bar(); }
+int main()  { int x = 1; foo(); return 0; }</code></pre></div>
+  <pre class="diagram"><span class="dim">main() চলছে      foo() call        bar() call        bar() return      foo() return</span>
+
+|          |     |          |     | bar frame|     |          |     |          |
+|          |     | foo frame|     | foo frame|     | foo frame|     |          |
+| main     |     | main     |     | main     |     | main     |     | main     |
++----------+     +----------+     +----------+     +----------+     +----------+
+                 <span class="dim">frame push</span>       <span class="dim">আরেকটা push</span>       <span class="dim">pop</span>              <span class="dim">pop</span></pre>
+  <p class="diagram-caption">Stack literally একটা stack — LIFO। এজন্যই recursion বেশি গভীরে গেলে "stack overflow" হয়: frame জমতে জমতে জায়গা শেষ।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Stack হলো "এখন আমি কোথায় আছি আর কীভাবে ফিরবো"-র হিসাব। তোমার debugger-এ যে <strong>call stack / stack trace</strong> দেখো — সেটা আক্ষরিক অর্থেই এই memory region-এর ছবি। Exception-এর stack trace মানে: crash-এর মুহূর্তে stack-এ কোন কোন frame জমা ছিল।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>যেকোনো চলমান process-এর PID নিয়ে চালাও: <code>cat /proc/&lt;PID&gt;/maps</code>। Output-এ খুঁজে দেখো <code>[heap]</code>, <code>[stack]</code>, আর executable-এর path-ওয়ালা লাইনগুলো (ওগুলোই code/data)। এটা এই chapter-এর diagram-এর real-life version। <code>r-xp</code> (read+execute) দেখবে code segment-এ, <code>rw-p</code> দেখবে data/heap-এ — permission গুলোও layout-এর গল্প বলে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Process memory-র পাঁচটা region আর কার কী কাজ?</li>
+      <li>Stack frame-এ কী কী থাকে?</li>
+      <li>Return address জিনিসটা না থাকলে কী সমস্যা হতো?</li>
+      <li>Code segment read-only রাখার দুইটা সুবিধা কী?</li>
+    </ul>
+  </div>

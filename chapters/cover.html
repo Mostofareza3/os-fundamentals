@@ -1,0 +1,41 @@
+  <div class="cover-hero">
+    <p class="part-label">A SOFTWARE ENGINEER'S MENTAL MODEL</p>
+    <h1>Operating Systems —<br>তোমার code-এর <span class="u">নিচে</span> আসলে <span class="k">কী ঘটে</span></h1>
+    <p class="cover-tag">তুমি প্রতিদিন code লেখো, run করো, deploy করো। কিন্তু <code>node server.js</code> চাপার পর CPU, memory, kernel, disk আর network-এর ভিতরে যে গল্পটা চলে — সেটাই এই বই। Definition মুখস্থ নয়, mental model।</p>
+    <div class="legend">
+      <span><span class="dot u"></span> User space — তোমার code যেখানে চলে</span>
+      <span><span class="dot k"></span> Kernel space — OS যেখানে কাজ করে</span>
+    </div>
+    <div class="cover-stats">
+      <div><span class="n">১২</span><span class="l">Part</span></div>
+      <div><span class="n">৪০</span><span class="l">Chapter</span></div>
+      <div><span class="n">Depth</span><span class="l">&gt; Breadth</span></div>
+      <div><span class="n">Model</span><span class="l">&gt; Memorization</span></div>
+    </div>
+  </div>
+  <div id="resumeSlot"></div>
+
+  <h3>এই বই কার জন্য</h3>
+  <p>ধরে নিচ্ছি তুমি একজন working software engineer — JavaScript/TypeScript বা যেকোনো high-level language-এ comfortable, Linux basics জানো, কিন্তু OS internals নিয়ে structured knowledge নেই। Process, thread, virtual memory, socket — term গুলো শুনেছ, কিন্তু এদের relationship মাথায় একটা coherent ছবি হয়ে দাঁড়ায়নি।</p>
+  <p>এই বই academic OS course না। Scheduling algorithm-এর exam question বা deadlock-এর mathematical proof এখানে পাবে না। পাবে একটা জিনিস — <strong>তোমার application-এর নিচে OS আসলে কী করছে, এবং সেটা তোমার code-এর performance আর behavior-এ কীভাবে impact ফেলে।</strong></p>
+
+  <div class="box concept">
+    <div class="box-title">এই বইয়ের BACKBONE — একটাই গল্প</div>
+    <pre class="diagram">তুমি program লিখলে
+  ↓ compiler executable বানালো
+  ↓ OS executable load করলো → <span class="u">process</span> তৈরি হলো
+  ↓ process-এর নিজস্ব <span class="u">virtual address space</span> তৈরি হলো
+  ↓ CPU instruction execute করলো, cache/RAM access হলো
+  ↓ দরকার পড়লে <span class="k">system call</span> হলো → <span class="k">kernel</span> কাজ করলো
+  ↓ disk / network / device access হলো
+  ↓ process আবার <span class="u">user space</span>-এ ফিরে এলো</pre>
+    <p>৪০টা chapter আসলে এই এক গল্পেরই আলাদা আলাদা zoom level। শেষে গিয়ে পুরোটা একসাথে জোড়া লাগবে।</p>
+  </div>
+
+  <h3>কীভাবে পড়বে</h3>
+  <ul>
+    <li><strong>Sequence maintain করো।</strong> Chapter গুলো একটার উপর আরেকটা build করে। Virtual memory না বুঝে page cache বুঝবে না।</li>
+    <li><strong>Experiment গুলো actually চালাও।</strong> প্রতিটা major topic-এর পরে ছোট Linux experiment আছে। Terminal খুলে চালালে concept টা হাতে-কলমে দেখা যাবে।</li>
+    <li><strong>"Can I explain this?" গুলো skip কোরো না।</strong> নিজের ভাষায় explain করতে না পারলে বোঝা হয়নি — শুধু term চেনা হয়েছে।</li>
+  </ul>
+  <p class="chap-sub" style="margin-top:30px">Sidebar থেকে chapter select করো, অথবা নিচের Next button চাপো। <kbd>/</kbd> চেপে search করতে পারবে।</p>

@@ -1,0 +1,38 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 27 — Data পাঠানো আর পাওয়া</h2>
+  <p class="chap-sub">write() থেকে তার/বাতাস পর্যন্ত — এবং উল্টো পথে।</p>
+
+  <h3>Send path</h3>
+  <pre class="diagram"><span class="u">Application — write(fd, "GET / ...", n)</span>
+   ↓ <span class="dim">system call — data send buffer-এ copy, return!</span>
+<span class="k">TCP  — buffer-এর data segment-এ কাটে, seq number দেয়,</span>
+<span class="k">       retransmission timer বসায় (হারালে আবার পাঠাবে)</span>
+<span class="k">IP   — segment-কে packet-এ মোড়ে: source/dest IP, routing</span>
+<span class="k">Driver — packet-কে NIC-এর queue-তে দেয়</span>
+   ↓ <span class="dim">DMA</span>
+NIC (network card) — bits হিসেবে তারে/বাতাসে</pre>
+  <p>লক্ষ করো: <code>write()</code> return মানে data <em>পৌঁছে গেছে</em> না — মানে <em>kernel-এর send buffer-এ ঢুকেছে</em> (file write-এর গল্পটার যমজ ভাই, Chapter 21)। পৌঁছানো নিশ্চিত করা, হারালে আবার পাঠানো, order ঠিক রাখা — সব TCP-র চাকরি, background-এ।</p>
+
+  <h3>Receive path — উল্টো ছবি</h3>
+  <pre class="diagram">NIC — packet এলো → DMA-তে memory-তে → <span class="k">interrupt: "data এসেছে!"</span>
+<span class="k">IP  — packet খুলে দেখে: আমার জন্যই তো?</span>
+<span class="k">TCP — চার-টুপল দেখে কোন connection-এর, seq number মিলিয়ে</span>
+<span class="k">      সঠিক জায়গায় বসায়, ACK পাঠায়, receive buffer-এ রাখে</span>
+<span class="k">      → এই socket-এ অপেক্ষারত process থাকলে জাগাও!</span>
+<span class="u">Application — read() → buffer থেকে data → তোমার হাতে</span></pre>
+  <p>সেই "জাগাও" শব্দটা মন দিয়ে দেখো — <strong>data আসা মানে waiting process-এর Ready হয়ে যাওয়া</strong> (Chapter 15-এর state machine)। তোমার server-এর প্রতিটা request-handling শুরু হয় আসলে একটা NIC interrupt থেকে।</p>
+  <p>আর buffering কেন অনিবার্য, এখন পুরো ছবিটা বলা যায়: network-এর data আসে <em>যখন খুশি</em> (packet-এ, এলোমেলো সময়ে), app পড়ে <em>যখন সুবিধা</em>। দুই অসমান ছন্দের মাঝে kernel-এর buffer-ই একমাত্র শান্তিচুক্তি।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>ss -t</code> চালাও (macOS: <code>netstat -an | grep ESTABLISHED | head</code>)। <code>Recv-Q</code> আর <code>Send-Q</code> column দুটো এই chapter-এর সেই দুই buffer-এর জমে থাকা data-র লাইভ পরিমাপ। Recv-Q বড় হয়ে থাকা মানে — app data পড়ছে না; Send-Q বড় মানে — অপর পাশ নিতে পারছে না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Send path-এ TCP আর IP-র ভাগের কাজ কী কী?</li>
+      <li>write() return করা আর data পৌঁছানো আলাদা কেন?</li>
+      <li>Receive path-এ process কখন, কীভাবে জাগে?</li>
+    </ul>
+  </div>

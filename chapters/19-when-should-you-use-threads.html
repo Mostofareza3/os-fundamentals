@@ -1,0 +1,40 @@
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 19 — Thread কখন ব্যবহার করবে?</h2>
+  <p class="chap-sub">Workload চেনো, তারপর tool বাছো — একটা practical decision framework।</p>
+
+  <h3>প্রথম প্রশ্ন: তোমার workload কী-bound?</h3>
+  <ul>
+    <li><strong>CPU-bound:</strong> সময় যাচ্ছে হিসাবে — image processing, encryption, বড় JSON parse, ML inference। CPU 100%-এ আটকে।</li>
+    <li><strong>I/O-bound:</strong> সময় যাচ্ছে <em>অপেক্ষায়</em> — DB query, HTTP call, file read। CPU বেশিরভাগ সময় অলস; process টা Waiting state-এ (Chapter 15) পড়ে থাকে।</li>
+  </ul>
+  <p>বেশিরভাগ web backend আসলে I/O-bound — request-এর জীবনের সিংহভাগ কাটে DB আর downstream service-এর অপেক্ষায়।</p>
+
+  <h3>Framework</h3>
+  <div class="table-wrap"><table>
+    <tr><th>পরিস্থিতি</th><th>ভালো fit</th><th>কেন</th></tr>
+    <tr><td>CPU-bound, কাজগুলো মোটামুটি স্বাধীন, data ভারী share করতে হয় না</td><td><strong>Multiple processes</strong></td><td>সব core কাজে লাগে, isolation ফ্রি — একটার crash/leak অন্যদের ছোঁয় না। (PM2 cluster, worker process)</td></tr>
+    <tr><td>CPU-bound, কিন্তু বড় shared data structure-এর উপর সবাই কাজ করবে</td><td><strong>Threads</strong></td><td>Data copy না করে share করা যায়; process-এর মধ্যে বড় data পাঠানো দামি।</td></tr>
+    <tr><td>I/O-bound, অনেক concurrent connection</td><td><strong>Event loop / async I/O</strong></td><td>অপেক্ষার জন্য thread পোষা অপচয় — এক thread-ই non-blocking ভাবে হাজারটা সামলায় (Chapter 28-29)।</td></tr>
+    <tr><td>I/O-bound, কিন্তু blocking API/library ব্যবহার করতেই হবে</td><td><strong>Thread pool</strong></td><td>Blocking call-গুলো pool-এর thread-এ ফেলে main flow মুক্ত রাখো। (Node-এর libuv নিজেই এটা করে।)</td></tr>
+  </table></div>
+
+  <h3>Thread-এর hidden bill</h3>
+  <ul>
+    <li>প্রতিটা thread-এর নিজস্ব stack (default প্রায়ই MB-স্কেলে reserve হয়) — দশ হাজার thread মানে memory-র বিশাল দাবি।</li>
+    <li>Thread যত বেশি, context switch তত বেশি (Chapter 17) — একটা সীমার পরে থread যোগ করলে throughput <em>কমে</em>।</li>
+    <li>Shared state এলেই lock, lock এলেই contention + deadlock-এর ঝুঁকি + মাথার ব্যথা (Chapter 18)।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">RULE OF THUMB</div>
+    <p>CPU-bound হলে parallelism দরকার — core-সংখ্যার কাছাকাছি worker (process বা thread)। I/O-bound হলে parallelism না, দরকার <em>অপেক্ষাটা সস্তায় করা</em> — async I/O/event loop। আর isolation যত পাও নিয়ে নাও: shared state যত কম, রাতের ঘুম তত ভালো।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>নিজের কোনো real project-এর workload — CPU না I/O bound? প্রমাণ কী?</li>
+      <li>I/O-bound কাজে ১০০০ thread বানানো অপচয় কেন?</li>
+      <li>CPU-bound কাজে core-এর চেয়ে অনেক বেশি thread দিলে কী হয়?</li>
+    </ul>
+  </div>

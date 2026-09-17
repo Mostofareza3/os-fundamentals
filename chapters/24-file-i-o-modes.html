@@ -1,0 +1,36 @@
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 24 — File I/O-র Mode গুলো</h2>
+  <p class="chap-sub">Blocking, sync, async, O_SYNC, O_DIRECT — শব্দগুলোর পিছনের আসল প্রশ্ন দুটো মাত্র।</p>
+
+  <p>File I/O-র যাবতীয় mode আসলে দুইটা স্বাধীন প্রশ্নের উত্তর:</p>
+  <ol>
+    <li><strong>আমার thread কি অপেক্ষা করবে?</strong> (blocking vs non-blocking/async)</li>
+    <li><strong>Page cache-এর সাথে সম্পর্ক কী হবে?</strong> (durability/caching)</li>
+  </ol>
+
+  <h3>প্রশ্ন ১: অপেক্ষা</h3>
+  <ul>
+    <li><strong>Blocking (default):</strong> <code>read()</code> ডাকলে data না আসা পর্যন্ত thread টা Waiting-এ। সরল, বোঝা সহজ — আর এক thread-এ এক সময়ে একটাই I/O।</li>
+    <li><strong>Asynchronous:</strong> "কাজটা শুরু করো, আমি অন্য কাজে যাচ্ছি — শেষ হলে জানিও।" Thread আটকায় না। Linux-এ আধুনিক উত্তর <strong>io_uring</strong>; Node.js তোমাকে যে async <code>fs</code> API দেয়, তার পিছনে (ঐতিহাসিকভাবে) থাকে thread pool — blocking read-গুলো অন্য thread-এ চালিয়ে <em>তোমার</em> thread-কে মুক্ত রাখা।</li>
+  </ul>
+
+  <h3>প্রশ্ন ২: cache-এর সাথে বোঝাপড়া</h3>
+  <ul>
+    <li><strong>Default:</strong> সব page cache-এর মধ্য দিয়ে — write মানে cache-এ লেখা (fast, কিন্তু durable না যতক্ষণ না flush)।</li>
+    <li><strong><code>O_SYNC</code>:</strong> প্রতিটা write disk-এ পৌঁছানোর পরেই return করবে — যেন প্রতি write-এর সাথে ফাউ fsync। Durability সর্বোচ্চ, speed-এর দাম দিয়ে।</li>
+    <li><strong><code>O_DIRECT</code>:</strong> Page cache-কে পুরোপুরি bypass — data সরাসরি disk ↔ তোমার buffer। কে চায় এটা? যে নিজে আরও ভালো cache চালায় — যেমন কিছু database engine: "kernel, তোমার generic cache লাগবে না, আমি আমার data আমি-ই ভালো বুঝি।" সাধারণ application-এর জন্য এটা প্রায় সবসময় ভুল choice — kernel-এর cache-টা আসলে চমৎকার।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">TRADE-OFF TRIANGLE</div>
+    <p>Speed, durability, simplicity — তিনটা একসাথে পুরোপুরি পাওয়া যায় না। Default mode: speed + simplicity। O_SYNC/fsync: durability কিনলে speed বেচতে হয়। O_DIRECT: control কিনলে simplicity বেচতে হয়। Database design-এর অর্ধেক আলোচনা এই ত্রিভুজের ভিতরে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>File I/O mode-এর পিছনের দুইটা স্বাধীন প্রশ্ন কী কী?</li>
+      <li>O_SYNC আর O_DIRECT-এর পার্থক্য — কে কী bypass/guarantee করে?</li>
+      <li>সাধারণ app-এ O_DIRECT bad idea কেন?</li>
+    </ul>
+  </div>

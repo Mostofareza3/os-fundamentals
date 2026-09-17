@@ -1,0 +1,25 @@
+  <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
+  <h2>Chapter 28 — Blocking vs Non-blocking I/O</h2>
+  <p class="chap-sub">C10K সমস্যার শিকড় — এবং event-driven জগতের জন্মকথা।</p>
+
+  <h3>Blocking model আর তার দেয়াল</h3>
+  <p>Default socket blocking: <code>read()</code> ডাকলে data না আসা পর্যন্ত thread ঘুমায়। সরল model-এ তাই দাঁড়ায়: <strong>এক connection = এক thread</strong> — যে-যার connection-এর read-এ ঝুলে থাকে।</p>
+  <p>১০০ connection-এ চলে। ১০,০০০-এ? ১০,০০০ thread: প্রত্যেকের stack-এ memory, scheduler-এর ঘাড়ে ১০,০০০ জনের হিসাব, অগুনতি context switch (Chapter 17, 19-এর সেই bill)। অথচ মজার ব্যাপার — <strong>এই thread-গুলোর ৯৯% কোনো কাজই করছে না, শুধু অপেক্ষা করছে।</strong> অপেক্ষার জন্য এত দামি জিনিস (thread) পোষা — এটাই মূল অপচয়। এই সমস্যার ঐতিহাসিক নাম "C10K problem"।</p>
+
+  <h3>Non-blocking: অপেক্ষা করতে অস্বীকার</h3>
+  <p>Socket-কে non-blocking mode-এ দিলে চুক্তি বদলে যায়: <code>read()</code>-এ data থাকলে দাও, না থাকলে <em>ঘুমিয়ো না</em> — সাথে সাথে বলো "এখন নেই" (<code>EWOULDBLOCK</code>)। Thread মুক্ত।</p>
+  <p>কিন্তু একা non-blocking যথেষ্ট না — data আছে কি না বারবার জিজ্ঞেস করতে থাকলে (busy polling) CPU পোড়ে অকারণে। দরকার একটা তৃতীয় জিনিস: <strong>kernel-কে বলা — "এই ১০,০০০ socket-এর <em>যেকোনোটায়</em> কিছু ঘটলে আমাকে ডেকো।"</strong> এক thread, ঘুমাবে একবারে, জাগবে ঠিক তখনই যখন সত্যি কাজ আছে। এই mechanism-টাই I/O multiplexing — পরের chapter পুরোটা এটা নিয়ে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Blocking model: প্রতি কাস্টমারের জন্য একজন dedicated কর্মচারী, যে কাস্টমার মেনু দেখার পুরোটা সময় পাশে দাঁড়িয়ে থাকে। Event-driven model: একজনই কর্মচারী, কিন্তু কাউন্টারে বেল আছে — যার দরকার সে বাজায়। কর্মচারীর সময় যায় শুধু <em>কাজে</em>, অপেক্ষায় না। শর্ত একটাই: প্রতিটা কাজ ছোট হতে হবে — কেউ কাউন্টার ২০ মিনিট আটকে রাখলে (event loop block!) বাকি সবাই আটকে যায়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Thread-per-connection কোথায় গিয়ে ভেঙে পড়ে — ঠিক কী কী খরচে?</li>
+      <li>Non-blocking mode-এ read()-এর আচরণ কী বদলায়?</li>
+      <li>Non-blocking একা কেন যথেষ্ট না?</li>
+    </ul>
+  </div>

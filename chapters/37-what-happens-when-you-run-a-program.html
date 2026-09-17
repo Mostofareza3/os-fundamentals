@@ -1,0 +1,21 @@
+  <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
+  <h2>Chapter 37 — একটা Program চালালে কী কী ঘটে?</h2>
+  <p class="chap-sub">পুরো বইয়ের প্রথম মহাসংযোগ। Terminal-এ লিখলে <code>./app</code> আর Enter চাপলে —</p>
+
+  <ol>
+    <li><strong>Shell পড়লো তোমার লাইন</strong> — সে নিজেও এক সাধারণ process, stdin-এ <code>read()</code> করে বসে ছিল (Waiting-এ)। তোমার Enter-এ keyboard-এর interrupt → kernel → shell জাগলো। <em>[Ch 15, 31]</em></li>
+    <li><strong>Executable খোঁজা</strong> — PATH-এর directory-গুলোতে; প্রতিটা খোঁজ মানে filesystem-এ path resolution। <em>[Ch 22]</em></li>
+    <li><strong>fork()</strong> — shell নিজের copy বানালো; copy-on-write-এ প্রায় বিনা খরচে। <em>[Ch 15, 9]</em></li>
+    <li><strong>exec()</strong> — child-এর ভিতরে নতুন program: ELF header পড়া, নতুন virtual address space, code/data mmap (কিন্তু lazy!), stack-এ argv, dynamic linker-এর library জোড়া, PC → entry point। <em>[Ch 34, 33, 5]</em></li>
+    <li><strong>প্রথম instruction-এই page fault!</strong> — code-এর page টা তো এখনো disk-এ। Kernel: filesystem → block layer → driver → device → DMA → page cache → page table update → আবার চালাও। প্রথম কিছু মুহূর্ত এভাবে fault-এ fault-এ program-টা "টুকরো টুকরো জন্মায়"। <em>[Ch 9, 21, 11]</em></li>
+    <li><strong>এবার আসল দৌড়</strong> — fetch-decode-execute-এর কোটি কোটি চক্কর; কখনো cache hit-এর সুখ, কখনো miss-এর RAM-যাত্রা, TLB-র নীরব অনুবাদ প্রতি access-এ। <em>[Ch 12, 13, 9]</em></li>
+    <li><strong>Program কিছু চাইলো</strong> — file পড়া? <code>read()</code> syscall → kernel → (ভাগ্য ভালো হলে page cache hit) → data। Network? socket path। প্রতিটা চাওয়ায় নীল-থেকে-amber-থেকে-নীল সেই যাত্রা। <em>[Ch 21, 25-27, 31-32]</em></li>
+    <li><strong>মাঝে মাঝে সে-ও থামলো</strong> — I/O-র wait-এ Blocked, বা timer interrupt-এ scheduler-এর preemption; তার context save, অন্য কারো restore — machine-জুড়ে চলা হাজারো process-এর নাচের এক পা মাত্র সে। <em>[Ch 15, 17]</em></li>
+    <li><strong>Output</strong> — তোমার terminal-এ লেখাও আসলে <code>write()</code> — terminal-ও এক file descriptor! <em>[Ch 21, 25]</em></li>
+    <li><strong>exit()</strong> — শেষ syscall। Kernel memory ফেরত নিলো, fd গুলো বন্ধ করলো, exit code রেখে দিলো — shell (parent) <code>wait()</code> করে সেটা তুললো, prompt ফিরিয়ে দিলো। <em>[Ch 15]</em></li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">এখন পরীক্ষা করো নিজেকে</div>
+    <p>উপরের দশটা ধাপ বই বন্ধ করে, নিজের ভাষায়, কাউকে (বা রাবার হাঁসকে) বলে যাও — কোথায় আটকাও দেখো। যেখানে আটকাবে, সংশ্লিষ্ট chapter-টাই তোমার revision list। এই এক গল্প ঝরঝরে বলতে পারা মানে বইয়ের ৮০% হজম।</p>
+  </div>

@@ -1,0 +1,58 @@
+  <p class="part-label">PART 1 · THE BIG PICTURE</p>
+  <h2>Chapter 1 — Operating System কেন দরকার?</h2>
+  <p class="chap-sub">Hardware আর application-এর মাঝখানে একটা layer কেন লাগে, আর সেই layer-টা আসলে কী কী responsibility নেয়।</p>
+
+  <h3>Problem-টা আগে বুঝি</h3>
+  <p>Computer hardware মানে মূলত চারটা জিনিস — <strong>CPU</strong> (instruction execute করে), <strong>RAM</strong> (running data রাখে), <strong>storage</strong> (persistent data রাখে), আর <strong>network interface</strong> (বাইরের দুনিয়ার সাথে কথা বলে)। এগুলো ভয়ংকর রকমের "dumb"। CPU শুধু raw instruction চেনে, disk শুধু block number চেনে — "file" বলে কিছু চেনে না, network card শুধু raw packet পাঠাতে জানে।</p>
+  <p>অন্যদিকে application মানে তোমার লেখা code — যে চায় "এই file-টা পড়ো", "এই port-এ listen করো", "এই object-টা memory-তে রাখো"। এখন ভাবো, OS না থাকলে প্রতিটা application-কে নিজে নিজে disk-এর electronics-এর সাথে কথা বলতে হতো, নিজে RAM-এর কোন byte কার সেটা track করতে হতো, নিজে network card-এর driver লিখতে হতো।</p>
+  <p>তার উপর আরেকটা বড় সমস্যা — এক computer-এ <strong>একসাথে অনেকগুলো program চলে</strong>। Chrome, VS Code, node server, Spotify — সবাই একই CPU, একই RAM চায়। কে কখন CPU পাবে? কার data কোন RAM-এ থাকবে? একজন আরেকজনের memory-তে হাত দিলে কী হবে? এই ঝগড়া মেটানোর জন্য একজন referee লাগে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Operating System = <strong>Resource Manager + Abstraction Layer</strong>। Resource manager হিসেবে ঠিক করে কে কখন CPU/RAM/disk/network পাবে। Abstraction layer হিসেবে dumb hardware-কে ঢেকে সুন্দর interface দেয় — raw disk block-এর বদলে <em>file</em>, raw packet-এর বদলে <em>socket</em>, raw physical memory-র বদলে <em>virtual memory</em>, raw CPU time-এর বদলে <em>process</em>।</p>
+  </div>
+
+  <h3>Kernel, user space, kernel space</h3>
+  <p>OS-এর core অংশটার নাম <strong>kernel</strong>। এটা একটা special program যেটা machine boot হওয়ার সময় load হয় এবং সবসময় memory-তে থাকে। Kernel-ই আসল resource manager — process schedule করা, memory ভাগ করা, filesystem চালানো, network stack চালানো, driver দিয়ে device-এর সাথে কথা বলা — সব kernel-এর কাজ।</p>
+  <p>CPU-তে hardware level-এ দুইটা privilege mode আছে (Chapter 31-এ deep dive করবো):</p>
+  <ul>
+    <li><strong>User mode / user space</strong> — তোমার application এখানে চলে। Restricted। Hardware-এ direct হাত দিতে পারে না, অন্য process-এর memory ছুঁতে পারে না।</li>
+    <li><strong>Kernel mode / kernel space</strong> — kernel এখানে চলে। Full power। যেকোনো memory, যেকোনো device access করতে পারে।</li>
+  </ul>
+  <p>তাহলে তোমার app file পড়ে কীভাবে? উত্তর: <strong>system call</strong>। Application kernel-কে অনুরোধ করে — "আমার হয়ে এই কাজটা করে দাও।" CPU controlled ভাবে kernel mode-এ ঢোকে, kernel কাজটা করে, তারপর result নিয়ে আবার user mode-এ ফেরত আসে। <code>read()</code>, <code>write()</code>, <code>open()</code>, <code>socket()</code> — এগুলো সব system call।</p>
+
+  <pre class="diagram"><span class="u">Application (তোমার code)</span>
+        ↓
+<span class="u">Libraries / Runtime (libc, Node.js, JVM ...)</span>
+        ↓
+━━━━━━ <span class="dim">system call boundary</span> ━━━━━━
+        ↓
+<span class="k">Kernel</span>
+  <span class="k">├── Process Management</span>
+  <span class="k">├── Memory Management</span>
+  <span class="k">├── File System</span>
+  <span class="k">├── Network Stack</span>
+  <span class="k">└── Device Drivers</span>
+        ↓
+Hardware
+  ├── CPU    ├── RAM
+  ├── Storage└── Network</pre>
+  <p class="diagram-caption">পুরো বইয়ে এই ছবিটা বারবার ফিরে আসবে — নীল মানে user space, amber মানে kernel space।</p>
+
+  <h3>একজন engineer-এর কেন এটা জানা দরকার</h3>
+  <p>কারণ তোমার code-এর performance-এর বড় অংশ ঠিক হয় এই boundary-গুলোতে। একটা slow API-এর কারণ হতে পারে excessive system call, হতে পারে disk I/O, হতে পারে memory pressure — এগুলো তোমার JavaScript-এ দেখা যায় না, দেখা যায় OS layer-এ। Black box-টা খুললে debugging আর optimization দুটোই অন্য level-এ চলে যায়।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>Terminal-এ চালাও: <code>uname -a</code> — এটা তোমার kernel-এর নাম আর version দেখায় (macOS-এ Darwin, Linux-এ Linux)। তারপর <code>ps aux | head -15</code> — এই মুহূর্তে চলা process-এর list। খেয়াল করো, তুমি কিছু run না করলেও কত process চলছে — এদের সবাইকে kernel-ই manage করছে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>OS-কে "resource manager + abstraction layer" বললে দুইটা অংশের মানে কী?</li>
+      <li>Kernel কী, আর সেটা user space থেকে আলাদা কেন?</li>
+      <li>Application hardware-এ direct হাত দিতে পারে না — তাহলে কাজ করায় কীভাবে?</li>
+      <li>System call এক কথায় কী?</li>
+    </ul>
+  </div>

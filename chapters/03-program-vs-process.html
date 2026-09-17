@@ -1,0 +1,44 @@
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 3 — Program vs Process</h2>
+  <p class="chap-sub">এই পার্থক্যটা পরিষ্কার না হলে সামনের অর্ধেক বই ঝাপসা লাগবে। তাই আলাদা করে একটা পুরো chapter।</p>
+
+  <h3>Program: disk-এ শুয়ে থাকা file</h3>
+  <p><strong>Program</strong> হলো একটা executable file — disk-এ পড়ে থাকা bytes। এর ভিতরে আছে machine instructions (CPU-র ভাষায় compiled code), কিছু initial data, আর metadata (কোথা থেকে execution শুরু হবে ইত্যাদি)। Linux-এ এই file format-এর নাম <strong>ELF</strong>। গুরুত্বপূর্ণ কথা: program একটা <em>passive</em> জিনিস। <code>/usr/bin/node</code> file-টা disk-এ পড়ে আছে — কিছুই করছে না।</p>
+
+  <h3>Process: সেই file-এর একটা running instance</h3>
+  <p>তুমি যখন <code>node server.js</code> চালাও, OS ওই executable-টা নিয়ে একটা <strong>process</strong> বানায়। Process মানে শুধু "চলছে" না — process মানে OS একগাদা জিনিস তৈরি করে দিয়েছে:</p>
+  <ul>
+    <li>একটা <strong>PID</strong> (Process ID) — kernel-এর খাতায় unique নাম্বার</li>
+    <li>নিজস্ব <strong>virtual address space</strong> — process-এর নিজের "private" memory জগৎ (Chapter 9)</li>
+    <li>Memory-তে load হওয়া code, data, <strong>heap</strong> আর <strong>stack</strong> (Chapter 5)</li>
+    <li>CPU state — registers, program counter (এখন কোন instruction-এ আছে)</li>
+    <li>Open file/socket-দের list — <strong>file descriptor table</strong></li>
+    <li>Kernel-এর bookkeeping — state (running/waiting), owner, parent কে, ইত্যাদি</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Program = <strong>recipe</strong> (কাগজে লেখা, passive)। Process = <strong>রান্না চলছে</strong> (চুলা জ্বলছে, উপকরণ কাটা হচ্ছে, নির্দিষ্ট state আছে)। একই recipe থেকে একসাথে দুই হাঁড়িতে রান্না চলতে পারে — দুইটা আলাদা process, আলাদা state, আলাদা হাঁড়ি (memory)।</p>
+  </div>
+
+  <h3>একই program, দুইটা process</h3>
+  <p>দুইটা terminal খুলে দুই জায়গায় <code>node</code> চালাও। Executable file একটাই, কিন্তু process দুইটা — আলাদা PID, আলাদা memory, আলাদা variables। একটাতে crash হলে আরেকটার কিছু হয় না। এটাই <strong>isolation</strong> — OS-এর অন্যতম প্রধান উপহার। তোমার Chrome-এর প্রতিটা tab আলাদা process রাখার পিছনেও এই একই logic — এক tab মরলে বাকিরা বাঁচে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Process = program in execution" — শুরুর জন্য ঠিক আছে, কিন্তু অসম্পূর্ণ। Process-এর নিজস্ব identity (PID), নিজস্ব address space, নিজস্ব resources আছে। শুধু "চলমান code" না — বরং <strong>code + memory + state + kernel bookkeeping-এর একটা পুরো package</strong>। আর সামনে দেখবে, একটা process-এ একাধিক thread-ও থাকতে পারে — তখন "in execution" অংশটা আসলে thread-এর কাজ।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>দুইটা terminal-এ চালাও: <code>sleep 300</code> (দুই জায়গায়)। তৃতীয় terminal-এ: <code>ps aux | grep sleep</code>। দেখবে একই program (<code>/bin/sleep</code>) কিন্তু দুইটা আলাদা PID। Linux হলে <code>ls /proc/&lt;PID&gt;/</code> চালিয়ে দেখো — প্রতিটা process-এর জন্য kernel কত কিছু track করে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program passive আর process active — মানে কী?</li>
+      <li>Process বানাতে OS কী কী জিনিস তৈরি করে দেয়?</li>
+      <li>একই executable-এর দুই process একে অপরের variable দেখতে পায় না কেন?</li>
+    </ul>
+  </div>

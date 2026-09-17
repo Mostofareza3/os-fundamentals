@@ -1,0 +1,41 @@
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 23 — Page Cache</h2>
+  <p class="chap-sub">Memory আর storage-এর জগৎ যেখানে মিলে যায় — এবং তোমার "দ্বিতীয়বার fast" রহস্যের সমাধান।</p>
+
+  <h3>Idea</h3>
+  <p>Disk RAM-এর চেয়ে মাত্রায়-মাত্রায় ধীর (Chapter 20)। আর RAM-এর খালি অংশ এমনিতেই বসে থাকে। Kernel-এর সিদ্ধান্ত: <strong>disk থেকে যা-ই পড়া হোক, RAM-এ রেখে দাও</strong> — কে জানে আবার লাগবে। এই জায়গাটার নাম <strong>page cache</strong> — file data-র page-size টুকরো, RAM-এ, kernel-এর জিম্মায়।</p>
+  <p>এজন্যই <code>free -h</code>-তে "buff/cache" এত বড় (Chapter 7-এর সেই ধাঁধা!) — এটা "দখল" না, এটা service। কোনো process-এর memory লাগলে kernel cache ছেড়ে দেয় — clean page ফেলে দেওয়া তো free।</p>
+
+  <h3>Read path আর write path</h3>
+  <pre class="diagram"><span class="dim">READ:</span>  read() → page cache-এ আছে? ── hit → copy, শেষ। <span class="dim">(RAM speed!)</span>
+                    └── miss → disk থেকে এনে cache-এ রাখো → copy
+
+<span class="dim">WRITE:</span> write() → cache-এর page-এ লেখো → page টা <span class="k">dirty</span> → return!
+                    <span class="dim">...পরে background-এ kernel dirty page গুলো disk-এ নামায়</span></pre>
+  <p>Dirty page মানে: cache-এর version disk-এর চেয়ে নতুন। Kernel এগুলো সময়মতো/চাপে পড়ে flush করে; <code>fsync</code> মানে "এই file-এর dirty page গুলো এক্ষুনি নামাও" (Chapter 21-এর সেই গল্প)।</p>
+
+  <h3>ফলাফল: চেনা চেনা কিছু behavior-এর ব্যাখ্যা</h3>
+  <ul>
+    <li>একই file <strong>দ্বিতীয়বার পড়া নাটকীয়ভাবে fast</strong> — প্রথমবার disk, দ্বিতীয়বার RAM। Benchmark করার সময় এটা মাথায় না রাখলে ভুল সিদ্ধান্তে পৌঁছাবে ("cold cache vs warm cache")।</li>
+    <li><strong>Database server-এ "free RAM" প্রায় শূন্য দেখায়</strong> — এবং সেটাই কাম্য: পুরো RAM জুড়ে data file-এর cache।</li>
+    <li>Server restart-এর পর প্রথম কিছুক্ষণ সব ধীর — cache ঠান্ডা, ধীরে ধীরে গরম হয়।</li>
+  </ul>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>এতক্ষণে খেয়াল করেছ নিশ্চয়ই — এই গল্পটা আগে শুনেছ: CPU-র জন্য cache (Chapter 13), address translation-এর জন্য TLB (Chapter 9), আর disk-এর জন্য page cache। <strong>যেখানেই দুই স্তরের speed-এ বিশাল ফারাক, মাঝখানে একটা cache</strong> — computing-এর সবচেয়ে পুনরাবৃত্ত design pattern। তোমার Redis layer-ও একই pattern-এর আরেক তলা।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p>একটা বড় file নাও (না থাকলে বানাও: <code>dd if=/dev/zero of=big.bin bs=1M count=500</code>)। তারপর: <code>time cat big.bin &gt; /dev/null</code> — দুইবার চালাও। দ্বিতীয়বারের সময়টা দেখো। এটাই page cache, খালি চোখে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Page cache কী এবং কার memory-তে থাকে?</li>
+      <li>Dirty page মানে কী, এবং এর ঝুঁকি কী?</li>
+      <li>"Linux ate my RAM" অভিযোগটা ভুল কেন?</li>
+    </ul>
+  </div>

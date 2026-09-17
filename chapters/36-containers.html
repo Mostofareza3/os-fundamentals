@@ -1,0 +1,35 @@
+  <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
+  <h2>Chapter 36 — Containers</h2>
+  <p class="chap-sub">Docker-এর ভিতরের সত্য: নতুন কোনো জাদু না — এই বইয়ের চেনা জিনিসের চতুর সাজানো।</p>
+
+  <h3>মূল সত্যটা আগে</h3>
+  <p><strong>Container কোনো VM না। Container হলো সাধারণ process — শুধু kernel তাকে সীমিত আর বিভ্রান্ত করে রাখে।</strong> কোনো guest OS নেই, নকল hardware নেই, আলাদা kernel নেই — host-এর kernel-ই সবার। <code>docker run node</code> মানে host-এ একটা node process-ই চলছে; host থেকে <code>ps</code> দিলে দেখাও যায় তাকে।</p>
+  <p>তাহলে "আলাদা machine" feeling-টা আসে কোথা থেকে? Linux kernel-এর দুটো feature থেকে:</p>
+  <ul>
+    <li><strong>Namespaces — "কী দেখতে পাবে":</strong> Process-এর বিভিন্ন দৃষ্টিশক্তির আলাদা আলাদা নকল সংস্করণ। PID namespace — container নিজেকে PID 1 দেখে, বাইরের কাউকে দেখে না; mount namespace — নিজের আলাদা filesystem গাছ (image-এর সেই ubuntu/alpine ফাইলগুলো — ব্যস, ফাইলই, kernel না!); network namespace — নিজস্ব IP, নিজস্ব port জগৎ। চেনা লাগছে? <strong>Virtual memory যা address-এর জন্য, namespace তা-ই বাকি সবকিছুর জন্য</strong> — প্রত্যেকে ভাবে জগৎটা তার একার।</li>
+    <li><strong>cgroups — "কতটুকু পাবে":</strong> Process-দলের resource-এর রেশন কার্ড — এই দলের memory সর্বোচ্চ 512MB, CPU-র 50%, এতটুকু disk I/O। Docker-এর <code>--memory</code>/<code>--cpus</code> flag মানে স্রেফ cgroup-এর ঘর পূরণ। রেশন পার হলে? Memory-র বেলায় দলের কেউ খুন হয় — সেই কুখ্যাত <strong>OOM kill</strong>, তোমার Kubernetes pod-এর "OOMKilled"-এর জন্মস্থান।</li>
+  </ul>
+  <pre class="diagram"><span class="dim">VM:</span>                              <span class="dim">Container:</span>
+┌─App─┐ ┌─App─┐                  ┌─App─┐ ┌─App─┐   <span class="dim">← স্রেফ process,</span>
+│Guest│ │Guest│                  │ ns+ │ │ ns+ │      <span class="dim">namespace-এ মোড়া</span>
+│ OS  │ │ OS  │ <span class="dim">← ২টা kernel!</span>    │cgrp │ │cgrp │
+├─────┴─┴─────┤                  ├─────┴─┴─────┤
+│ Hypervisor  │                  │ <span class="k">এক Host Kernel</span>│
+│  Hardware   │                  │  Hardware    │
+└─────────────┘                  └──────────────┘</pre>
+  <p>এখন trade-off-টা নিজেই বলে দিতে পারবে: container start হয় process start-এর গতিতে (কোনো OS boot নেই), memory খায় process-এর মতো — কিন্তু সবাই <strong>এক kernel share করে</strong>, তাই isolation VM-এর মতো শক্ত না (kernel-এর ছিদ্র মানে সবার ছিদ্র), আর Linux container-এর Linux kernel-ই লাগে — এজন্যই তোমার Mac-এ Docker Desktop গোপনে একটা Linux VM চালিয়ে তার <em>ভিতরে</em> container চালায়। দুই chapter মিলে গেল।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker থাকলে)</div>
+    <p>Container-এর ভিতরে: <code>docker run --rm -it alpine ps aux</code> — গোটা "machine"-এ হাতে গোনা process, node/shell-টার PID 1! তারপর host-এ (Linux host হলে) <code>ps aux | grep &lt;সেই command&gt;</code> — একই process, বাইরে থেকে সাধারণ PID-তে। এক process, দুই দৃষ্টিকোণ — এটাই namespace।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>"Container is not a lightweight VM" — প্রমাণসহ?</li>
+      <li>Namespace আর cgroup — কে কোন প্রশ্নের উত্তর ("কী দেখবে" vs "কত পাবে")?</li>
+      <li>Mac-এ Docker-এর VM লাগে কেন?</li>
+      <li>OOMKilled আসলে কার সিদ্ধান্ত?</li>
+    </ul>
+  </div>

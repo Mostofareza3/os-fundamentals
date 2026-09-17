@@ -1,0 +1,32 @@
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 7 — Physical Memory বোঝা</h2>
+  <p class="chap-sub">RAM আসলে কী, আর কেন সেটা যত fast ভাবো তত fast না।</p>
+
+  <h3>RAM কী</h3>
+  <p><strong>RAM</strong> (Random Access Memory) হলো সেই hardware যেখানে চলমান process-দের code আর data থাকে। "Random access" মানে যেকোনো address-এ প্রায় সমান সময়ে পৌঁছানো যায় — disk-এর মতো ঘুরে ঘুরে খুঁজতে হয় না। আর RAM <strong>volatile</strong> — power গেলে সব মুছে যায়। এজন্যই "save" বলে একটা জিনিস আছে: RAM থেকে persistent storage-এ নেওয়া।</p>
+  <p>Physically RAM থাকে <strong>DIMM</strong> module-এ (motherboard-এর ওই লম্বা stick গুলো), আর আজকের প্রযুক্তির নাম <strong>DDR</strong> (DDR4/DDR5)। আমাদের জন্য এটুকু জানাই যথেষ্ট — এই বই memory hardware-এর encyclopedia না।</p>
+
+  <h3>Physical address</h3>
+  <p>RAM-কে ভাবো একটা বিশাল byte-এর array। প্রতিটা byte-এর একটা নাম্বার আছে — <strong>physical address</strong>। 16GB RAM মানে মোটামুটি 0 থেকে ১৬০০ কোটি+ পর্যন্ত address। CPU যখন memory access করে, শেষ পর্যন্ত এই physical address-ই ব্যবহৃত হয়। (কিন্তু তোমার process এই address কখনো সরাসরি দেখে না — সেই twist Chapter 9-এ।)</p>
+
+  <h3>Memory infinitely fast না কেন</h3>
+  <p>এখানেই একটা অস্বস্তিকর সত্য: <strong>CPU-র তুলনায় RAM ধীর</strong>। আধুনিক CPU প্রতি nanosecond-এ একাধিক instruction চালাতে পারে, কিন্তু RAM থেকে একটা data আনতে লাগে দশগুণ-শতগুণ বেশি সময় (exact number hardware-ভেদে ভিন্ন, তাই মুখস্থ করার দরকার নেই — অনুপাতটাই আসল)। কারণটা physics + engineering: RAM chip CPU থেকে physically দূরে, signal যেতে-আসতে সময় লাগে, আর DRAM cell পড়ার নিজস্ব latency আছে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>CPU হলো একটা দ্রুতগতির chef, RAM হলো storeroom। Chef-এর হাত যত দ্রুতই চলুক, প্রতিটা উপকরণের জন্য storeroom-এ হেঁটে গেলে রান্নার speed storeroom-এর হাঁটাপথেই আটকে যাবে। এই gap-টার নাম চলতি ভাষায় "memory wall" — আর এটা মেটানোর জন্যই cache-এর জন্ম (Chapter 8, 13)।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>Linux-এ <code>free -h</code> চালাও। <code>used</code>, <code>free</code>, আর <code>buff/cache</code> column গুলো দেখো। অবাক লাগতে পারে যে "free" এত কম — আসলে OS ইচ্ছা করেই অলস RAM-কে file cache হিসেবে ব্যবহার করে (Chapter 23-এ বুঝবে কেন এটা ভালো জিনিস)। <code>available</code> column-টাই আসল "কতটুকু পাওয়া যাবে"-র হিসাব।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Volatile মানে কী, আর তার consequence কী?</li>
+      <li>Physical address জিনিসটা কী?</li>
+      <li>CPU-র তুলনায় RAM slow — এটা software design-এ কেন matter করে?</li>
+    </ul>
+  </div>

@@ -1,0 +1,54 @@
+  <p class="part-label">PART 1 · THE BIG PICTURE</p>
+  <h2>Chapter 2 — The System Architecture</h2>
+  <p class="chap-sub">সব component-এর relationship একটা map-এ, আর একটা end-to-end উদাহরণ।</p>
+
+  <h3>Player-দের চিনে নেই</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Component</th><th>এক লাইনে কাজ</th></tr>
+    <tr><td><strong>CPU</strong></td><td>Instruction execute করে। একমাত্র জায়গা যেখানে "কাজ" হয়।</td></tr>
+    <tr><td><strong>RAM (Memory)</strong></td><td>Running process-এর code আর data রাখে। Fast, কিন্তু volatile — power গেলে সব শেষ।</td></tr>
+    <tr><td><strong>Storage (SSD/HDD)</strong></td><td>Persistent data। Slow (RAM-এর তুলনায়), কিন্তু power গেলেও থাকে।</td></tr>
+    <tr><td><strong>Network device</strong></td><td>Packet পাঠায়/রিসিভ করে।</td></tr>
+    <tr><td><strong>Program</strong></td><td>Disk-এ পড়ে থাকা executable file। Passive জিনিস।</td></tr>
+    <tr><td><strong>Process</strong></td><td>Running program — নিজস্ব memory, নিজস্ব state সহ। Active জিনিস।</td></tr>
+    <tr><td><strong>Kernel</strong></td><td>Resource manager। সবসময় memory-তে থাকে।</td></tr>
+    <tr><td><strong>Driver</strong></td><td>Kernel-এর ভিতরের সেই code যেটা specific hardware-এর ভাষা জানে।</td></tr>
+    <tr><td><strong>File system</strong></td><td>Raw disk block-কে file/directory হিসেবে organize করে।</td></tr>
+    <tr><td><strong>System call</strong></td><td>User space → kernel space-এ ঢোকার একমাত্র official দরজা।</td></tr>
+  </table></div>
+
+  <h3>End-to-end example: একটা file read</h3>
+  <p>ধরো তোমার Node.js code লিখলো <code>fs.readFileSync("config.json")</code>। Broadly যা ঘটে:</p>
+  <pre class="diagram"><span class="u">1. Application:  readFileSync("config.json") call করলো</span>
+<span class="u">2. Runtime/libc: ভিতরে গিয়ে read() system call বানালো</span>
+━━━━━━━━━━ <span class="dim">user → kernel mode switch</span> ━━━━━━━━━━
+<span class="k">3. Kernel:       request receive করলো</span>
+<span class="k">4. File system:  "config.json" মানে disk-এর কোন block? বের করলো</span>
+<span class="k">5. Page cache:   data আগেই cache-এ আছে কি? (থাকলে shortcut!)</span>
+<span class="k">6. Block layer:  না থাকলে disk-এর জন্য read request queue করলো</span>
+<span class="k">7. Driver:       storage device-কে command পাঠালো</span>
+8. Device:       data পড়ে DMA দিয়ে memory-তে দিলো
+<span class="k">9. Kernel:       data process-এর buffer-এ copy করলো</span>
+━━━━━━━━━━ <span class="dim">kernel → user mode switch</span> ━━━━━━━━━━
+<span class="u">10. Application: data হাতে পেলো, কাজ চললো</span></pre>
+
+  <p>প্রতিটা step এখনই পুরোপুরি বোঝার দরকার নেই — page cache, DMA, block layer সব সামনের chapter-গুলোতে আসবে। এখন শুধু structure-টা মাথায় গাঁথো: <strong>application কখনো disk-কে সরাসরি দেখে না। মাঝখানে সবসময় kernel থাকে।</strong></p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>যেকোনো I/O-এর গল্প আসলে একই pattern: <strong>user space request → system call → kernel-এর layer গুলো → hardware → ফেরার পথ উল্টো।</strong> File হোক, network হোক — pattern এক, শুধু মাঝের layer বদলায়।</p>
+  </div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"OS মানে UI — desktop, window, icon।" না। Desktop environment একটা application মাত্র। আসল OS হলো kernel + তার service গুলো, যেটা server-এ UI ছাড়াই দিব্যি চলে। তুমি যে production server-এ deploy করো, সেখানে OS পুরোদমে কাজ করছে — কোনো UI ছাড়াই।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program আর process-এর পার্থক্য এক লাইনে?</li>
+      <li>File read-এর সময় request-টা কোন কোন layer পার হয়?</li>
+      <li>Driver জিনিসটা kernel-এর ভিতরে কেন থাকে?</li>
+    </ul>
+  </div>

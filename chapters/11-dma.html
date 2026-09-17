@@ -1,0 +1,30 @@
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 11 — DMA</h2>
+  <p class="chap-sub">Device আর memory-র মধ্যে data transfer-এ CPU-কে মুক্তি দেওয়ার কৌশল।</p>
+
+  <h3>Problem: CPU-কে কুলি বানানো</h3>
+  <p>ধরো disk থেকে 1GB data আনতে হবে। এক উপায়: CPU নিজে device থেকে টুকরো টুকরো data পড়ে RAM-এ লেখে — byte-কুলিগিরি। এতে দুইটা ক্ষতি: (১) দুনিয়ার সবচেয়ে দামি resource-টা (CPU) copy-র মতো বোকা কাজে আটকে থাকে, (২) সেই সময়ে সে আর কোনো process চালাতে পারে না।</p>
+
+  <h3>Solution: Direct Memory Access</h3>
+  <p><strong>DMA</strong>-তে কাজটা এভাবে ভাগ হয়:</p>
+  <pre class="diagram"><span class="k">1. Kernel/driver: DMA controller-কে বলে —</span>
+   "disk-এর এই block গুলো, RAM-এর এই address-এ, এতটুকু data"
+2. CPU: ততক্ষণে <span class="u">অন্য process চালাতে চলে যায়</span>
+3. DMA engine: device ↔ RAM data transfer নিজে নিজে করে
+4. শেষ হলে device একটা <span class="k">interrupt</span> দেয় — "কাজ শেষ!"
+<span class="k">5. Kernel: interrupt handle করে, waiting process-কে জাগিয়ে দেয়</span></pre>
+  <p>অর্থাৎ CPU-র ভূমিকা এখন শুধু <em>setup</em> আর <em>completion handling</em> — মাঝের ভারী transfer-টা hardware নিজে করে। আধুনিক প্রায় সব serious I/O (disk, network card) DMA-ই ব্যবহার করে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>এই chapter-টা আসলে একটা বড় সত্যের ছোট উদাহরণ: <strong>I/O চলাকালীন CPU সাধারণত বসে থাকে না — সে অন্য কাজ করে।</strong> "Disk read হচ্ছে" মানে CPU busy না; মানে <em>তোমার process</em> waiting, আর CPU অন্য কাউকে সময় দিচ্ছে। Async I/O, event loop, "I/O-bound vs CPU-bound" — এই সব আলোচনার ভিত্তি এখানেই।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>DMA ছাড়া বড় I/O-তে কী ক্ষতি হতো?</li>
+      <li>DMA transfer-এ CPU-র ভূমিকা ঠিক কতটুকু?</li>
+      <li>Transfer শেষ হয়েছে — kernel জানে কীভাবে?</li>
+    </ul>
+  </div>

@@ -1,0 +1,47 @@
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 17 — Context Switching</h2>
+  <p class="chap-sub">৪টা core-এ ৪০০টা process "একসাথে" চলার জাদু — আর সেই জাদুর দাম।</p>
+
+  <h3>Context মানে কী</h3>
+  <p>Chapter 12-র সেই বাক্যটা ফিরিয়ে আনি: একটা thread-এর execution state মানে <strong>registers + program counter + stack pointer-এর snapshot</strong>। এটাই তার <strong>context</strong> — "আমি কোন instruction-এ ছিলাম, আমার হিসাবের মাঝপথের value গুলো কী, আমার stack কোথায়।"</p>
+
+  <h3>Switch-টা কীভাবে ঘটে</h3>
+  <pre class="diagram"><span class="u">Process A চলছে...</span>
+   ↓ <span class="k">interrupt (timer) বা A নিজেই block হলো (I/O চাইলো)</span>
+━━━━━━ <span class="dim">kernel mode-এ প্রবেশ</span> ━━━━━━
+<span class="k">1. A-র context (registers, PC, SP) kernel-এ save</span>
+<span class="k">2. Scheduler: "এরপর কে?" → B নির্বাচিত</span>
+<span class="k">3. Address space switch — B-র page table চালু</span>
+<span class="k">4. B-র সেভ-করা context registers-এ restore</span>
+━━━━━━ <span class="dim">user mode-এ ফেরা</span> ━━━━━━
+<span class="u">Process B ঠিক সেখান থেকে চলা শুরু করলো,
+যেখানে সে শেষবার থেমেছিল — যেন কিছুই হয়নি</span></pre>
+  <p>Switch trigger হয় মূলত দুইভাবে: (১) process নিজে block হলো — I/O, sleep, lock-এর অপেক্ষা; (২) kernel জোর করে থামালো — timer interrupt-এ scheduler দেখলো অনেকক্ষণ চলেছে, এবার অন্যের পালা (preemption)। এই দ্বিতীয়টার জন্যই একটা infinite loop-ওয়ালা process পুরো machine জমিয়ে ফেলতে পারে না।</p>
+
+  <h3>দামটা কোথায়</h3>
+  <p>Context switch free না — কিন্তু দামটা যেখানে ভাবো সেখানে না। Register save/restore নিজে সস্তা। আসল খরচ:</p>
+  <ul>
+    <li><strong>Kernel-এ ঢোকা-বেরোনো</strong> — mode switch-এর overhead।</li>
+    <li><strong>Cache দূষণ:</strong> A-র data দিয়ে গরম হয়ে থাকা CPU cache B-র কোনো কাজে লাগে না; B-র শুরুটা হয় ঠান্ডা cache-এ — miss-এর ঝড়। A ফিরে এলে তার cache-ও ততক্ষণে B-র data-য় ভরে গেছে।</li>
+    <li><strong>TLB flush:</strong> Address space বদলালে পুরনো translation গুলোও অচল।</li>
+  </ul>
+  <p>মানে switch-এর পরের কিছু সময় ধরে <em>সবকিছুই</em> একটু ধীর চলে। Exact nanosecond মুখস্থের দরকার নেই — takeaway হলো: <strong>switch যত ঘনঘন, "আসল কাজ"-এর ভাগ তত কম।</strong> হাজার হাজার thread বানিয়ে ফেললে CPU সময়ের বড় অংশ যায় জায়গা বদলাবদলিতেই — এই রোগের নাম thrashing। (এক process-এর দুই thread-এর মধ্যে switch একটু সস্তা — address space বদলায় না — কিন্তু cache-এর সমস্যা থেকেই যায়।)</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>CPU হলো এমন এক পাঠক যে হাজারটা বই "একসাথে" পড়ছে — প্রতিটা বইয়ে bookmark (context) রেখে রেখে লাফাচ্ছে। লাফানো এত দ্রুত যে মনে হয় সব বই একসাথে পড়া হচ্ছে। কিন্তু প্রতিটা লাফে bookmark রাখা-খোঁজা + "কোথায় যেন ছিলাম" মনে করার (cache warm-up) খরচ আছে।</p>
+  </div>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux)</div>
+    <p><code>vmstat 1</code> চালাও — <code>cs</code> column দেখায় প্রতি second context switch-এর সংখ্যা। একটা idle machine-এও হাজারে হাজারে দেখতে পারো। তারপর কোনো busy কাজ চালিয়ে দেখো সংখ্যাটা কীভাবে নড়ে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Context-এ ঠিক কী কী থাকে?</li>
+      <li>Switch trigger হওয়ার দুই পথ কী কী?</li>
+      <li>Context switch-এর সবচেয়ে বড় hidden cost কোনটা এবং কেন?</li>
+    </ul>
+  </div>

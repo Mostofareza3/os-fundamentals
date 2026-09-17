@@ -1,0 +1,37 @@
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 10 — Memory-র Cost আর Trade-off</h2>
+  <p class="chap-sub">Virtual memory ফ্রি না — কোথায় কী দাম দিতে হয়, সেটার engineering হিসাব।</p>
+
+  <h3>Page size-এর টানাটানি</h3>
+  <p>Page 4KB কেন — 1 byte বা 1GB না কেন? দুই দিকেই খরচ আছে:</p>
+  <ul>
+    <li>Page <strong>ছোট</strong> হলে → page table-এ entry বেশি → table-এর নিজেরই memory খরচ বাড়ে, TLB-তে কম range ধরে।</li>
+    <li>Page <strong>বড়</strong> হলে → <strong>internal fragmentation</strong>: 5KB data-র জন্য 2MB page দিলে বাকিটা অপচয়। (তুলনায়, heap allocator-এর free space টুকরা টুকরা হয়ে যাওয়াটা <strong>external fragmentation</strong> — Chapter 6-এ দেখেছিলে।)</li>
+  </ul>
+  <p>4KB একটা historical sweet spot। Database/বড়-memory workload-এর জন্য Linux-এ "huge pages" (2MB) option-ও আছে — TLB-র উপর চাপ কমাতে।</p>
+
+  <h3>কোন operation-এর কী দাম</h3>
+  <div class="table-wrap"><table>
+    <tr><th>ঘটনা</th><th>Cost-এর ধরন</th></tr>
+    <tr><td>TLB hit</td><td>প্রায় free — translation cache থেকেই।</td></tr>
+    <tr><td>TLB miss</td><td>Page table হেঁটে আসতে হয় (memory access) — লক্ষণীয় কিন্তু ছোট দাম। এলোমেলো বিশাল data structure ঘাঁটলে এটা জমে জমে বড় হয়।</td></tr>
+    <tr><td>Minor page fault</td><td>Kernel-এ যেতে হয়, কিন্তু disk লাগে না (যেমন প্রথমবার ছোঁয়া lazy page)। মাঝারি দাম।</td></tr>
+    <tr><td>Major page fault</td><td><strong>Disk থেকে page আনতে হয়</strong> (swap বা file)। দাম কয়েক মাত্রা (orders of magnitude) বেশি। এগুলো ঘনঘন হলে performance ধসে যায়।</td></tr>
+  </table></div>
+
+  <h3>Memory mapping: file-কে memory বানিয়ে ফেলা</h3>
+  <p>Virtual memory-র আরেকটা elegant ব্যবহার — <strong>mmap</strong>। একটা file-কে process-এর address space-এ map করে দাও; এরপর file পড়া মানে স্রেফ memory পড়া। প্রথম access-এ page fault হবে, kernel disk থেকে page আনবে, তারপর থেকে direct। Database engine, dynamic linker (shared library load), বড় file processing — সবখানে এই কৌশল। এখানে দেখো কীভাবে concepts জোড়া লাগছে: page fault যেটা Chapter 9-এ "error handling" মনে হচ্ছিল, সেটাই এখানে একটা <em>loading mechanism</em>।</p>
+
+  <div class="box concept">
+    <div class="box-title">ENGINEERING INTUITION</div>
+    <p>Memory নিয়ে চিন্তা করার সময় দুইটা প্রশ্ন করো: <strong>(১) আমার working set (একই সময়ে দরকারি data) RAM-এ ধরে তো?</strong> না ধরলে major fault/swap শুরু হবে — তখন কোনো code optimization বাঁচাবে না। <strong>(২) আমার access pattern কি ঘেঁষাঘেঁষি (dense) নাকি ছড়ানো (sparse)?</strong> ছড়ানো হলে TLB আর cache দুটোই কাঁদবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Internal আর external fragmentation-এর পার্থক্য?</li>
+      <li>Minor আর major page fault-এর পার্থক্য এবং কোনটা ভয়ংকর কেন?</li>
+      <li>mmap কীভাবে page fault-কে feature বানিয়ে ফেলে?</li>
+    </ul>
+  </div>

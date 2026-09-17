@@ -1,0 +1,22 @@
+  <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
+  <h2>Chapter 35 — Virtualization</h2>
+  <p class="chap-sub">এক hardware-এ একাধিক "computer" — cloud-এর ভিত্তিপ্রস্তর।</p>
+
+  <h3>Idea: illusion-এর আরেক ধাপ উপরে</h3>
+  <p>এই বইয়ে বারবার দেখেছি OS process-কে illusion দেয় — "CPU তোমার, memory তোমার।" Virtualization সেই একই খেলা এক level উপরে: <strong>একটা পুরো OS-কে illusion দেওয়া যে hardware-টা তার একার।</strong></p>
+  <ul>
+    <li><strong>Virtual machine (VM):</strong> Software দিয়ে বানানো একটা "computer" — virtual CPU, virtual RAM, virtual disk, virtual NIC।</li>
+    <li><strong>Guest OS:</strong> সেই নকল computer-এ install হওয়া পূর্ণাঙ্গ OS — নিজের kernel সহ, যে জানেও না সে নকলের উপর চলছে।</li>
+    <li><strong>Hypervisor:</strong> যে software এই সার্কাস চালায় — আসল hardware-কে ভাগ করে VM-দের দেয়, guest-দের বিপজ্জনক কাজগুলো ধরে ধরে সামলায়। Host hardware-এ সরাসরি বসতে পারে (server/cloud-এর ধরন), বা host OS-এর উপরে (তোমার laptop-এর VirtualBox/UTM)। আধুনিক CPU-তে hardware virtualization support থাকায় guest-এর সাধারণ code প্রায় native গতিতে চলে।</li>
+  </ul>
+  <p>Isolation-টা এখানে খুবই শক্ত — দুই VM-এর মাঝে আস্ত দুইটা kernel আর hypervisor-এর দেয়াল। এজন্যই cloud provider-রা অচেনা customer-দের এক machine-এ রাখতে VM-এই ভরসা করে। তুমি EC2/DigitalOcean-এ যে "server" ভাড়া নাও — সেটা প্রায় নিশ্চিতভাবেই একটা VM।</p>
+  <p>দামটাও পরিষ্কার: প্রতিটা VM-এ পুরো একটা OS — শত শত MB memory, নিজস্ব boot, নিজস্ব kernel-এর যাবতীয় খরচ। ১০টা ছোট service-এর জন্য ১০টা VM মানে ১০ কপি OS পোষা। এই অপচয়ের অস্বস্তি থেকেই পরের chapter-এর জন্ম।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Hypervisor-এর কাজ এক লাইনে?</li>
+      <li>VM-এর isolation এত শক্ত কেন?</li>
+      <li>VM-এর মূল অপচয়টা কোথায়?</li>
+    </ul>
+  </div>

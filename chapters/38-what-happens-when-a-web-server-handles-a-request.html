@@ -1,0 +1,20 @@
+  <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
+  <h2>Chapter 38 — একটা Web Server-এ Request এলে কী ঘটে?</h2>
+  <p class="chap-sub">দ্বিতীয় মহাসংযোগ — এবং তোমার প্রতিদিনের কাজের সবচেয়ে কাছের গল্পটা। ধরি: Node/Express API, Postgres, এক user browser-এ চাপ দিলো।</p>
+
+  <ol>
+    <li><strong>Browser-এর দিক:</strong> DNS, তারপর TCP handshake — SYN উড়ে এলো তোমার server-এ। <em>তোমার Node process টেরও পেলো না</em> — kernel একাই SYN queue → handshake → accept queue সামলালো। <em>[Ch 26]</em></li>
+    <li><strong>Event loop-এর ঘুম ভাঙলো:</strong> Node <code>epoll_wait</code>-এ ঘুমিয়ে ছিল; listening fd ready → জাগলো → <code>accept()</code> → নতুন connection fd, non-blocking করে epoll-এ ADD। <em>[Ch 29, 25]</em></li>
+    <li><strong>Request এলো:</strong> NIC → DMA → interrupt → kernel TCP: চার-টুপল মিলিয়ে সঠিক socket-এর receive buffer-এ HTTP bytes → epoll-এ সেই fd ready। Node <code>read()</code> করলো, HTTP parse হলো, তোমার route handler ডাক পেলো — <strong>এতক্ষণে, প্রথমবারের মতো, তোমার লেখা code মঞ্চে।</strong> <em>[Ch 27, 29]</em></li>
+    <li><strong>Handler-এ <code>await db.query(...)</code>:</strong> Postgres-এর দিকের socket-এ query <code>write()</code> (send buffer-এ জমা) — আর ব্যস, <em>অপেক্ষা নয়</em>: callback নথিভুক্ত করে event loop পরের event ধরলো। ওই এক thread এই ফাঁকে অন্য দশটা request-এর টুকরো এগোলো — এটাই সেই waiter-এর জাদু। <em>[Ch 28-29, 19]</em></li>
+    <li><strong>ওদিকে Postgres (আলাদা process!):</strong> নিজের socket-এ query পেলো, plan করলো, data চাইলো — তার নিজের page cache-জগৎ, ভাগ্য খারাপে disk: block layer → driver → DMA। ফলাফল socket-এ ফেরত <code>write()</code>। <em>[Ch 21, 23, 20]</em></li>
+    <li><strong>ফলাফল ফিরলো:</strong> আবার NIC → interrupt → TCP → Node-এর সেই fd ready → event loop জাগলো → তোমার <code>await</code>-এর পরের লাইন চললো। Response JSON বানানো — এটুকু খাঁটি CPU কাজ: V8-এর machine code, cache hit/miss, heap-এ object জন্ম (পরে GC-র খোরাক)। <em>[Ch 12-13, 6]</em></li>
+    <li><strong>Response রওনা:</strong> <code>res.json()</code> → শেষমেশ socket-এ <code>write()</code> → send buffer → TCP segment → IP → NIC → ইন্টারনেটের ওপারে browser-এর kernel → তার receive buffer → browser-এর epoll-জাতীয় জিনিস → পর্দায় pixel। <em>[Ch 27]</em></li>
+  </ol>
+
+  <p>পুরো যাত্রায় হয়তো তোমার handler-এর CPU-সময় মিলিসেকেন্ডেরও ভগ্নাংশ — বাকিটা kernel-এর কারিগরি আর অপেক্ষার শিল্প। এবার production-এর চেনা রোগগুলোও নতুন চোখে দেখো: <strong>latency spike?</strong> — DB-র disk নাকি event loop কেউ আটকে রেখেছে নাকি accept queue উপচে পড়ছে? <strong>Memory বাড়ছে?</strong> — heap leak নাকি কেউ receive buffer পড়ছে না? প্রতিটা প্রশ্ন এখন এই map-এর কোনো না কোনো জায়গায় pin করা যায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">চূড়ান্ত উপলব্ধি</div>
+    <p>"Backend engineer" পদটার গোপন অর্থ: <strong>দুই kernel-এর মাঝখানে বসে orchestration করা মানুষ।</strong> তোমার code যত ভালো হোক, request-এর ভাগ্য নির্ধারণ করে buffers, queues, caches, syscalls আর scheduler — এখন থেকে এরা তোমার কাছে অদৃশ্য না।</p>
+  </div>

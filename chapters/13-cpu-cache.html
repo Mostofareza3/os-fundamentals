@@ -1,0 +1,43 @@
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 13 — CPU Cache</h2>
+  <p class="chap-sub">Memory wall-এর জবাব — এবং তোমার code-এর speed-এর অন্যতম নীরব নিয়ন্ত্রক।</p>
+
+  <h3>Cache কেন exists করে</h3>
+  <p>Chapter 7-এ দেখেছি RAM CPU-র তুলনায় বহুগুণ ধীর। প্রতিটা instruction-এ RAM-এ গেলে 3GHz CPU-র বেশিরভাগ সময় কাটতো অপেক্ষায়। সমাধান: CPU-র গা ঘেঁষে ছোট কিন্তু অতি দ্রুত memory রাখো, আর সেখানে <em>সম্ভবত-আবার-লাগবে</em> data রাখো।</p>
+  <p>"সম্ভবত আবার লাগবে" — এটা অনুমান করা যায় কারণ program-দের behavior-এ দুইটা দারুণ predictable pattern আছে, একসাথে যাদের নাম <strong>locality</strong>:</p>
+  <ul>
+    <li><strong>Temporal locality:</strong> এইমাত্র যে data ছুঁয়েছ, শিগগিরই আবার ছোঁবে (loop-এর counter, hot object)।</li>
+    <li><strong>Spatial locality:</strong> যে address ছুঁয়েছ, তার <em>পাশের</em> address-ও ছোঁবে (array-র পরের element, struct-এর পরের field)।</li>
+  </ul>
+
+  <h3>Hierarchy</h3>
+  <pre class="diagram">CPU core
+  │
+  ├─ L1  <span class="dim">— ক্ষুদ্র (KB-স্কেল), দ্রুততম, প্রতি core-এ নিজস্ব</span>
+  ├─ L2  <span class="dim">— বড়, একটু ধীর, সাধারণত core-প্রতি</span>
+  ├─ L3  <span class="dim">— আরও বড় (MB-স্কেল), সব core-এ shared</span>
+  ↓
+ RAM   <span class="dim">— বিশাল, সবচেয়ে ধীর</span></pre>
+  <p>আর আগের অধ্যায়ের সেই কথা: data আনা-নেওয়া হয় <strong>cache line</strong> (~64 bytes) ধরে। একটা <code>int</code> চাইলে আশেপাশের আরও ১৫টা ফাউ আসে।</p>
+
+  <h3>Sequential vs random: পার্থক্যটা কোথা থেকে আসে</h3>
+  <p>একটা বড় array-র সব element sum করছো — দুইভাবে:</p>
+  <ul>
+    <li><strong>Sequential (index 0,1,2,3...):</strong> প্রথম access-এ এক cache line এলো — পরের ১৫টা element-ও সাথে এলো। ১৬টার মধ্যে ১৫টা access-ই cache hit। Spatial locality-র জয়।</li>
+    <li><strong>Random (এলোমেলো index):</strong> প্রায় প্রতিটা access নতুন cache line — miss, miss, miss। একই পরিমাণ কাজ, কিন্তু বাস্তবে কয়েকগুণ ধীর হতে পারে।</li>
+  </ul>
+  <p>এজন্যই linked list বনাম array-র পার্থক্য শুধু Big-O-তে ধরা পড়ে না: linked list-এর node গুলো heap-এ ছড়িয়ে থাকে (pointer chase = random access), array cache-এর প্রিয় বন্ধু। Big-O সমান হলেও বাস্তব ঘড়িতে array প্রায়ই জেতে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Cache মানে just faster RAM।" এতে দুটো জিনিস miss হয়: (১) cache একটা <strong>hierarchy</strong> — স্তরে স্তরে size/speed trade-off, (২) cache কাজই করে <strong>locality-র জুয়ায়</strong> — তোমার access pattern এলোমেলো হলে cache প্রায় অকেজো। Cache-এর সুবিধা automatic না; সেটা তোমার data layout আর access pattern-এর পুরস্কার।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Temporal আর spatial locality — একটা করে নিজের code-এর উদাহরণ?</li>
+      <li>Cache line কীভাবে sequential access-কে জেতায়?</li>
+      <li>L1/L2/L3-এর size ছোট → বড় আর speed দ্রুত → ধীর কেন সাজানো?</li>
+    </ul>
+  </div>

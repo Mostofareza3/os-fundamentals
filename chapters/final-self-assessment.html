@@ -1,0 +1,75 @@
+  <p class="part-label">উপসংহার</p>
+  <h2>Final Self-Assessment</h2>
+  <p class="chap-sub">৪৫টা প্রশ্ন — multiple choice না, "নিজের ভাষায় বলো" ধাঁচের। উত্তর লিখে/বলে ফেলো; আটকালে বন্ধনীর chapter-এ ফিরে যাও। লক্ষ্য: "term চিনি" আর "বুঝি"-র পার্থক্য ধরা।</p>
+
+  <h3>Big picture আর process</h3>
+  <ol>
+    <li>OS-এর kernel লাগে কেন — kernel-বিহীন জগতে কী কী ভাঙতো? (Ch 1)</li>
+    <li>Program থেকে process হওয়ার মুহূর্তে ঠিক কী কী তৈরি হয়? (Ch 3-4)</li>
+    <li>একই executable-এর দুই process আলাদা জগতে থাকে — কোন mechanism-এ? (Ch 3, 9)</li>
+    <li>Stack কেন লাগে — function call-এর কোন সমস্যাটা সে solve করে? (Ch 5)</li>
+    <li>Heap কেন লাগে — stack-এ সব রাখলে কী আটকাতো? (Ch 6)</li>
+    <li>Scope আর lifetime-এর পার্থক্য, একটা bug-এর উদাহরণসহ। (Ch 6)</li>
+    <li>fork() একবার ডাকলে দুইবার return — ব্যাপারটা কী? (Ch 15)</li>
+    <li>Ready, Running, Waiting — কোন process কোন state-এ CPU চায়/চায় না? (Ch 15)</li>
+  </ol>
+  <h3>Memory</h3>
+  <ol start="9">
+    <li>প্রতিটা process-কে নিজস্ব virtual address space দেওয়ার তিনটা কারণ। (Ch 9)</li>
+    <li>Page আর page table কী, কে ব্যবহার করে? (Ch 9)</li>
+    <li>TLB না থাকলে প্রতিটা memory access-এ কী বাড়তি খরচ হতো? (Ch 9)</li>
+    <li>Page fault সবসময় error না — একটা "ভালো" page fault-এর উদাহরণ। (Ch 9-10)</li>
+    <li>Copy-on-write কীভাবে fork-কে সস্তা করে? (Ch 9)</li>
+    <li>Minor vs major page fault — কোনটা কেন ভয়ংকর? (Ch 10)</li>
+    <li>Swap আর virtual memory এক জিনিস না কেন? (Ch 9)</li>
+    <li>DMA ছাড়া বড় I/O-তে CPU-র কী দশা হতো? (Ch 11)</li>
+  </ol>
+  <h3>CPU</h3>
+  <ol start="17">
+    <li>Program counter কী, jump/branch-এর সাথে সম্পর্ক কী? (Ch 12)</li>
+    <li>CPU cache কেন লাগে — কোন gap-টা সে ভরাট করে? (Ch 13)</li>
+    <li>Temporal আর spatial locality — নিজের code থেকে একটা করে উদাহরণ। (Ch 13)</li>
+    <li>Array বনাম linked list — Big-O সমান হলেও বাস্তবে কে, কেন জেতে? (Ch 13)</li>
+    <li>Pipelining কী বাড়ায় — latency না throughput? কেন? (Ch 14)</li>
+    <li>Branch prediction ভুল হলে কী দাম দিতে হয়? (Ch 14)</li>
+  </ol>
+  <h3>Concurrency</h3>
+  <ol start="23">
+    <li>Process vs thread — "container vs execution unit" ব্যাখ্যা করো। (Ch 16)</li>
+    <li>Thread-এর কোনটা নিজস্ব, কোনটা shared — এবং প্রতিটার কারণ। (Ch 16)</li>
+    <li>Context switch-এ কী save/restore হয়, আর লুকানো খরচটা কোথায়? (Ch 17)</li>
+    <li>counter++ কীভাবে race condition বানায় — instruction level-এ। (Ch 18)</li>
+    <li>Mutex আর semaphore-এর পার্থক্য, একটা করে use case। (Ch 18)</li>
+    <li>Shared state ছাড়া কি race condition সম্ভব? যুক্তি দাও। (Ch 18)</li>
+    <li>CPU-bound-এ thread/process আর I/O-bound-এ event loop — কেন এই ভাগ? (Ch 19)</li>
+  </ol>
+  <h3>Storage আর file I/O</h3>
+  <ol start="30">
+    <li>File I/O-তে kernel জড়িত থাকতেই হয় কেন? (Ch 21, 31)</li>
+    <li>File descriptor কী, কার table-এ থাকে? (Ch 21)</li>
+    <li>write() return করা সত্ত্বেও data হারাতে পারে — পুরো ঘটনাটা। (Ch 21, 23)</li>
+    <li>OS file data cache করে কেন, আর সেই cache ছাড়ে কখন? (Ch 23)</li>
+    <li>inode-এ file-এর নাম থাকে না — তাহলে নাম থাকে কোথায়? (Ch 22)</li>
+    <li>একই file দ্বিতীয়বার পড়া দ্রুত কেন — benchmark-এ এর তাৎপর্য কী? (Ch 23)</li>
+  </ol>
+  <h3>Network</h3>
+  <ol start="36">
+    <li>Socket কী, আর file descriptor হওয়াটা কেন সুবিধাজনক? (Ch 25)</li>
+    <li>TCP "connection" জিনিসটা physically কোথায় থাকে? (Ch 26)</li>
+    <li>SYN queue আর accept queue — কে ভরলে কী উপসর্গ? (Ch 26)</li>
+    <li>Data আসার পর ঘুমন্ত server process জাগে কীভাবে — interrupt থেকে epoll পর্যন্ত। (Ch 27, 29)</li>
+    <li>Thread-per-connection কোথায় ভাঙে, আর epoll ঠিক কী বদলে দেয়? (Ch 28-29)</li>
+    <li>Event loop-এ ভারী sync কাজ চালালে kernel level-এ কী ঘটে? (Ch 29)</li>
+  </ol>
+  <h3>Boundary, virtualization আর সংযোগ</h3>
+  <ol start="42">
+    <li>Process সরাসরি hardware ছুঁতে পারে না — enforcement-টা কে করে, কীভাবে? (Ch 31)</li>
+    <li>Syscall-এর overhead কখন তুচ্ছ, কখন মুখ্য — নিয়মটা কী? (Ch 32)</li>
+    <li>Container VM না কেন — namespace আর cgroup দিয়ে ব্যাখ্যা করো। (Ch 35-36)</li>
+    <li>শেষটা বড়: browser-এ একটা button চাপা থেকে API response ফেরা পর্যন্ত গল্পটা — CPU, memory, socket, kernel, syscall, cache, scheduler সবাইকে চরিত্র বানিয়ে — নিজের ভাষায় বলো। (Ch 38 — এবং আসলে পুরো বই)</li>
+  </ol>
+
+  <div class="box concept">
+    <div class="box-title">এরপর কী</div>
+    <p>এই বই ইচ্ছা করেই অনেক কিছু বাদ দিয়েছে — scheduling algorithm-এর ভিতর, filesystem internals-এর গভীরতা, kernel development। যদি ক্ষুধা লাগে: <em>strace/perf দিয়ে নিজের production app-এর নিচে তাকানো</em> — এটাই সেরা পরের ধাপ। আর মনে রেখো এই বইয়ের মূলমন্ত্র: Depth &gt; Breadth, Mental Model &gt; Memorization।</p>
+  </div>

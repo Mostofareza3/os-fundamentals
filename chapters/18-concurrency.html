@@ -1,0 +1,51 @@
+  <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
+  <h2>Chapter 18 — Concurrency</h2>
+  <p class="chap-sub">Shared state + একাধিক thread = software engineering-এর সবচেয়ে কুখ্যাত bug-দের জন্মভূমি।</p>
+
+  <h3>Concurrency vs parallelism</h3>
+  <p>দুটো আলাদা জিনিস, প্রায়ই গুলিয়ে যায়:</p>
+  <ul>
+    <li><strong>Concurrency:</strong> একাধিক কাজ <em>overlapping সময়ে এগোচ্ছে</em> — এক core-ও হতে পারে, context switch করে করে। Structure-এর ব্যাপার।</li>
+    <li><strong>Parallelism:</strong> একাধিক কাজ <em>আক্ষরিক একই মুহূর্তে</em> চলছে — একাধিক core লাগবেই। Execution-এর ব্যাপার।</li>
+  </ul>
+  <p>একজন waiter ১০টা টেবিল সামলাচ্ছে = concurrency। ১০ জন waiter = parallelism। Node.js event loop হলো এক waiter-এর master class; multi-core কাজে লাগানো মানে waiter বাড়ানো।</p>
+
+  <h3>Race condition: কুখ্যাত counter++</h3>
+  <p>দুই thread একই shared counter বাড়াচ্ছে। Source code-এ <code>counter++</code> এক লাইন, কিন্তু CPU-র চোখে তিনটা আলাদা instruction:</p>
+  <div class="codewrap"><pre><code>1. LOAD   counter → register     (পড়ো)
+2. ADD    register + 1           (বাড়াও)
+3. STORE  register → counter     (লেখো)</code></pre></div>
+  <p>এখন এই interleaving-টা দেখো (counter = 5 থেকে শুরু):</p>
+  <pre class="diagram">Thread A                    Thread B
+LOAD  → 5
+                            LOAD  → 5      <span class="dim">← A এখনো লেখেনি!</span>
+ADD   → 6
+                            ADD   → 6
+STORE → 6
+                            STORE → 6      <span class="dim">← A-র কাজ মুছে গেল</span>
+
+দুইবার increment, কিন্তু ফলাফল 6 — 7 না।</pre>
+  <p>এটাই <strong>race condition</strong>: ফলাফল নির্ভর করছে কে-কখন-চললো তার timing-এর উপর। ভয়ংকর দিকটা হলো — বেশিরভাগ সময় ঠিকঠাক চলে; হাজারে একবার ভুল হয়, সেটাও production-এ, load-এর সময়, আর reproduce করা প্রায় অসম্ভব।</p>
+
+  <h3>রক্ষার অস্ত্র</h3>
+  <p>যে code shared state ছোঁয়, সেই অংশটার নাম <strong>critical section</strong>। নিয়ম: এক সময়ে এক thread-ই সেখানে ঢুকবে (mutual exclusion)। Tools:</p>
+  <ul>
+    <li><strong>Mutex (lock):</strong> Critical section-এর দরজার তালা। ঢোকার আগে lock নাও, বেরিয়ে ছাড়ো; অন্যরা lock না পাওয়া পর্যন্ত block থাকে। সরল, সর্বাধিক ব্যবহৃত। বিপদ: দুই thread দুই lock ধরে পরস্পরেরটার জন্য বসে থাকলে <strong>deadlock</strong> — কেউই আর নড়ে না। (এর mathematical treatment-এ যাচ্ছি না; "lock নেওয়ার order সব জায়গায় এক রাখো" — এই practical নিয়মটাই বেশিরভাগ deadlock ঠেকায়।)</li>
+    <li><strong>Semaphore:</strong> Counter-ওয়ালা তালা — "সর্বোচ্চ N জন একসাথে"। যেমন DB connection pool: ১০টা connection, ১১তম আবেদনকারী অপেক্ষা করবে।</li>
+    <li><strong>Atomic operations:</strong> Hardware-এর দেওয়া বিশেষ instruction যা load-modify-store-কে একটা অবিভাজ্য ধাপে করে — ছোট কাজে (counter!) lock-এর চেয়ে সস্তা।</li>
+  </ul>
+
+  <div class="box kern">
+    <div class="box-title">"JS-এ তো race condition নেই!" — সত্যি?</div>
+    <p>Memory-level race (উপরের counter++) single-threaded JS-এ হয় না, ঠিক। কিন্তু <strong>logical race</strong> দিব্যি হয়: দুইটা async request-ই আগে DB থেকে balance পড়লো, তারপর দুজনেই লিখলো — একই lost-update গল্প, শুধু interleaving-টা instruction level-এ না, await point-এ। Race-এর মূল কারণ thread না — <strong>shared mutable state + non-atomic read-modify-write</strong>। সেটা DB row-তেও হয়।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Concurrency আর parallelism-এর পার্থক্য একটা analogy দিয়ে?</li>
+      <li>counter++ কেন atomic না, আর সেটা থেকে bug কীভাবে জন্মায়?</li>
+      <li>Mutex আর semaphore-এর পার্থক্য?</li>
+      <li>Race condition ধরা এত কঠিন কেন?</li>
+    </ul>
+  </div>

@@ -1,0 +1,40 @@
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 12 — CPU-র ভিতরে</h2>
+  <p class="chap-sub">যেখানে আসল "কাজ" হয় — সেই যন্ত্রটার minimum viable mental model।</p>
+
+  <h3>ভিতরের যন্ত্রপাতি</h3>
+  <ul>
+    <li><strong>ALU</strong> (Arithmetic Logic Unit): যোগ-বিয়োগ-তুলনা-bitwise — actual হিসাবের জায়গা।</li>
+    <li><strong>Control Unit:</strong> Instruction পড়ে ঠিক করে কোন যন্ত্রাংশ কী করবে — অর্কেস্ট্রার conductor।</li>
+    <li><strong>Registers:</strong> CPU-র ভিতরের হাতেগোনা কয়েকটা ultra-fast storage slot। যেকোনো হিসাবের operand আগে register-এ আসে। এর মধ্যে দুটো special:
+      <ul>
+        <li><strong>Program Counter (PC):</strong> পরের instruction-এর address। "Program চলছে" মানে এই register এগোচ্ছে।</li>
+        <li><strong>Instruction Register:</strong> এই মুহূর্তে execute হওয়া instruction।</li>
+      </ul>
+    </li>
+    <li><strong>Cores:</strong> আধুনিক CPU আসলে এক chip-এ একাধিক স্বাধীন CPU — প্রতিটা core-এর নিজস্ব ALU, registers, L1/L2 cache। 8-core মানে সত্যিকারের ৮টা কাজ একসাথে।</li>
+    <li><strong>Clock speed:</strong> প্রতি second-এ কত cycle (3GHz = ৩০০ কোটি)। প্রতি cycle-এ CPU-র যন্ত্রপাতি এক ধাপ এগোয়।</li>
+  </ul>
+
+  <h3>একটা instruction-এর জীবনচক্র</h3>
+  <pre class="diagram">Fetch    → PC যেখানে দেখাচ্ছে, memory থেকে সেই instruction আনো
+Decode   → instruction-টা কী বলছে বোঝো (add? load? jump?)
+Execute  → ALU দিয়ে কাজটা করো
+Memory   → দরকার হলে memory read/write করো
+Writeback→ result register-এ লেখো
+   ↺ PC বাড়াও (বা jump হলে নতুন address বসাও), আবার Fetch</pre>
+  <p>তোমার পুরো career-এর সব code — React component থেকে SQL query — শেষ বিচারে এই লুপ: fetch, decode, execute, কোটি কোটি বার প্রতি second-এ। High-level ভাষা যত জাদুই দেখাক, নিচে নেমে সবকিছু এই সরল চক্রে দাঁড়ায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">CONNECTION</div>
+    <p>Chapter 5-এর stack pointer, Chapter 4-এর entry point, সামনের Chapter 17-এর context switch — সবকিছু ঘোরে registers-এর চারপাশে। <strong>Process-এর "execution state" মানে মূলত: registers + PC + stack pointer-এর snapshot।</strong> এই বাক্যটা মনে রেখো, context switching-এ কাজে লাগবে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Program counter কী, আর jump/if-else এর সাথে এর সম্পর্ক কী?</li>
+      <li>Fetch-decode-execute চক্রটা নিজের ভাষায়?</li>
+      <li>Core আর clock speed — কে কী বাড়ায়?</li>
+    </ul>
+  </div>

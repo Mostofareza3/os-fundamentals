@@ -1,0 +1,35 @@
+/* code.css
+   Code blocks, ASCII diagrams, copy button.
+*/
+
+/* ---------- code + diagrams ---------- */
+.codewrap{position:relative; margin:0 0 20px;}
+pre{
+  background:var(--code-bg); color:#D3DCE6;
+  border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; overflow-x:auto; line-height:1.7;
+  font-family:var(--font-mono); font-size:13px;
+  tab-size:2;
+}
+pre code{background:none; border:none; padding:0; color:inherit; white-space:pre; font-size:inherit;}
+pre.diagram{
+  background:linear-gradient(180deg, var(--panel), var(--panel-2));
+  color:var(--text); border:1px solid var(--border);
+  line-height:1.6; font-size:12.5px; text-align:left; padding:18px 20px;
+}
+pre.diagram .u{color:var(--user); font-weight:600;}
+pre.diagram .k{color:var(--kernel); font-weight:600;}
+pre.diagram .dim{color:var(--muted);}
+.copybtn{
+  position:absolute; top:9px; right:9px;
+  background:color-mix(in srgb, var(--panel) 90%, transparent);
+  backdrop-filter:blur(6px);
+  color:var(--muted); border:1px solid var(--border);
+  font-size:11.5px; border-radius:6px; padding:3px 9px; cursor:pointer; font-family:inherit;
+  opacity:0; transition:opacity .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+}
+.codewrap:hover .copybtn, .copybtn:focus-visible{opacity:1;}
+.copybtn:hover{color:var(--heading); border-color:var(--user);}
+.copybtn.done{color:var(--ok); border-color:var(--ok); opacity:1;}
+@media(hover:none){ .copybtn{opacity:1;} }
+.diagram-caption{font-size:13px; color:var(--muted); margin:-12px 0 22px; text-align:center; line-height:1.6;}

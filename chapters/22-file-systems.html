@@ -1,0 +1,36 @@
+  <p class="part-label">PART 6 · STORAGE</p>
+  <h2>Chapter 22 — File Systems</h2>
+  <p class="chap-sub">Disk তো শুধু নাম্বার-দেওয়া block-এর সমুদ্র — "file" জিনিসটা বানায় কে?</p>
+
+  <h3>Problem আর idea</h3>
+  <p>Storage device-এর ভাষা: "block #48211 পড়ো/লেখো।" আমাদের ভাষা: "<code>/home/reza/notes.md</code> খোলো।" মাঝের অনুবাদক-টাই <strong>file system</strong> — disk-এর block গুলোর উপর সে বানায় নাম, hierarchy, permission, size — পুরো একটা সাজানো জগৎ।</p>
+
+  <h3>Core building blocks (ext4-এর ছবিতে)</h3>
+  <ul>
+    <li><strong>File = data blocks + metadata।</strong> Metadata থাকে <strong>inode</strong>-এ: size, owner, permission, timestamps, আর সবচেয়ে জরুরি — data কোন কোন block-এ আছে তার map। মজার fact: <strong>inode-এ file-এর নাম নেই।</strong></li>
+    <li><strong>Directory আসলে একটা বিশেষ file</strong> — যার content হলো একটা তালিকা: নাম → inode number। "File-এর নাম" আসলে directory-র সম্পত্তি। এজন্যই hard link সম্ভব — দুই নাম, এক inode।</li>
+    <li><strong>Path resolution:</strong> <code>/home/reza/notes.md</code> খুলতে kernel হাঁটে: root-এর inode → তার entry-তে "home" → সেই inode → entry "reza" → inode → entry "notes.md" → অবশেষে file-এর inode। প্রতিটা ধাপে permission check।</li>
+    <li><strong>Allocation:</strong> নতুন data-র জন্য কোন free block দেবে সেটা filesystem-এর কৌশল — ভালো filesystem চেষ্টা করে এক file-এর block গুলো কাছাকাছি রাখতে (sequential read-এর সুবিধা, Chapter 20)।</li>
+  </ul>
+  <pre class="diagram">directory entry          inode #5021              disk blocks
+"notes.md" → 5021   →   size: 8KB           →    [block 300][block 301]
+                        owner: reza
+                        perms: rw-r--r--
+                        blocks: 300, 301</pre>
+
+  <p>ext4 আধুনিক Linux-এর default — এতে আছে <em>journaling</em>: metadata বদলানোর আগে একটা log-এ intention লিখে রাখা, যাতে crash-এর পরে filesystem অসঙ্গত (corrupt) না থাকে। আর FAT? সেই সাদাসিধে পুরনো filesystem — permission নেই, journaling নেই — আজও pendrive/SD card-এ বেঁচে আছে কারণ সবাই এটা পড়তে পারে।</p>
+  <p>শেষ টুকরো — <strong>VFS</strong> (Virtual File System): kernel-এর ভিতরের সেই abstraction layer যার কারণে ext4, FAT, নেটওয়ার্ক filesystem — সবাইকে application একই <code>open/read/write</code> দিয়ে দেখে। Abstraction on abstraction — OS design-এর প্রিয় খেলা।</p>
+
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p><code>ls -li</code> চালাও — প্রথম column-টাই inode number। তারপর <code>stat &lt;filename&gt;</code> — এক file-এর পুরো inode-এর গল্প: size, blocks, links, timestamps। <code>df -T .</code> দিয়ে দেখো তোমার filesystem-টা আসলে কী (Linux-এ ext4, macOS-এ apfs)।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>inode-এ কী থাকে, আর কী থাকে <em>না</em>?</li>
+      <li>Directory-কে "special file" বলা হয় কেন?</li>
+      <li>VFS কী সমস্যা solve করে?</li>
+    </ul>
+  </div>

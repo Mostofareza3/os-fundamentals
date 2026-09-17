@@ -1,0 +1,46 @@
+  <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
+  <h2>Chapter 4 — Program কীভাবে execute হয়</h2>
+  <p class="chap-sub">Source code থেকে চলমান process পর্যন্ত পুরো pipeline — high level-এ।</p>
+
+  <h3>Source থেকে executable</h3>
+  <p>একটা ছোট C program ধরি (C এখানে শুধু tool — OS-এর সবচেয়ে কাছের ভাষা বলে):</p>
+  <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
+
+int main() {
+    printf("hello\n");
+    return 0;
+}</code></pre></div>
+  <p><code>gcc hello.c -o hello</code> চালালে ভিতরে কয়েকটা ধাপ ঘটে:</p>
+  <pre class="diagram">hello.c (source)
+   ↓ <span class="dim">compiler — C কে assembly/machine code-এ translate</span>
+hello.o (object file — machine code, কিন্তু অসম্পূর্ণ)
+   ↓ <span class="dim">linker — printf-এর মতো বাইরের function-এর ঠিকানা জোড়া লাগায়</span>
+hello (executable — ELF file, run করার জন্য ready)</pre>
+  <p>Object file "অসম্পূর্ণ" কেন? কারণ তোমার code <code>printf</code> call করেছে, কিন্তু <code>printf</code>-এর code তোমার file-এ নেই — সেটা C library-তে। <strong>Linker</strong>-এর কাজ এই reference গুলো resolve করা। (Static vs dynamic linking Chapter 33-এ।)</p>
+
+  <h3>ELF: executable-এর গঠন</h3>
+  <p>Linux executable-এর format হলো <strong>ELF</strong> (Executable and Linkable Format)। ভিতরে মোটা দাগে থাকে: header (এটা কী ধরনের file, execution কোথা থেকে শুরু — <strong>entry point</strong>), machine code section, initialized data section, আর dynamic library-র dependency list। JavaScript developer হিসেবে ভাবতে পারো — ELF হলো compiled program-এর <code>package.json</code> + bundle একসাথে।</p>
+
+  <h3>Run করার মুহূর্তে: loader</h3>
+  <p><code>./hello</code> চালালে shell একটা system call দিয়ে kernel-কে বলে "এই executable থেকে process বানাও"। তখন kernel-এর <strong>loader</strong> অংশ কাজ করে:</p>
+  <ol>
+    <li>নতুন process তৈরি করে (PID, address space)</li>
+    <li>ELF header পড়ে code আর data segment গুলো process-এর memory-তে <em>map</em> করে</li>
+    <li>Stack setup করে, dynamic libraries load করে</li>
+    <li>CPU-র <strong>program counter</strong> (instruction pointer)-কে entry point-এ set করে দেয়</li>
+  </ol>
+  <p>ব্যস — এখন CPU ওই address থেকে instruction fetch করে execute করা শুরু করে। Program "চলছে" মানে আসলে এটুকুই: <strong>CPU-র program counter তোমার code-এর ভিতর দিয়ে হাঁটছে।</strong></p>
+
+  <div class="box kern">
+    <div class="box-title">তাহলে JavaScript/Python-এর বেলায়?</div>
+    <p><code>node server.js</code> চালালে process টা আসলে <code>node</code> executable-এর — সেটাই ELF, সেটাই load হয়। তোমার <code>server.js</code> হলো ওই process-এর data, যেটা V8 engine পড়ে ভিতরে JIT compile করে চালায়। OS-এর চোখে process একটাই — node। এজন্যই <code>ps</code> দিলে দেখো "node", "server.js" না।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Compiler আর linker-এর কাজের পার্থক্য কী?</li>
+      <li>Loader ঠিক কী কী কাজ করে?</li>
+      <li>Entry point আর program counter-এর সম্পর্ক কী?</li>
+    </ul>
+  </div>

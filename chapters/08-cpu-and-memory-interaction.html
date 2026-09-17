@@ -1,0 +1,33 @@
+  <p class="part-label">PART 3 · MEMORY</p>
+  <h2>Chapter 8 — CPU আর Memory-র কথাবার্তা</h2>
+  <p class="chap-sub">একটা memory access-এর ভিতরের যাত্রাপথ — cache-এর foundation এখানেই।</p>
+
+  <h3>একটা load instruction-এর যাত্রা</h3>
+  <p>ধরো CPU-র সামনে instruction: "address X থেকে value আনো" (load)। ঘটনা broadly এরকম:</p>
+  <pre class="diagram">CPU: "address X-এর data চাই"
+  ↓
+1. L1 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও  <span class="dim">(দ্রুততম)</span>
+  ↓ না
+2. L2 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
+  ↓ না
+3. L3 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
+  ↓ না
+4. RAM থেকে আনো    <span class="dim">(সবচেয়ে ধীর ধাপ — শত শত cycle)</span>
+  └─ আনার সময় data-টা cache-এও রেখে দাও, পরেরবারের জন্য</pre>
+  <p>মূল idea: CPU সরাসরি RAM-এ যায় না। মাঝে ছোট, দ্রুত memory-র কয়েকটা স্তর আছে — <strong>cache hierarchy</strong>। সম্প্রতি ব্যবহৃত data cache-এ থাকে; পাওয়া গেলে <strong>cache hit</strong> (সস্তা), না পেলে <strong>cache miss</strong> (দামি — RAM পর্যন্ত যাত্রা)।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Memory access-এর cost একটা fixed number না — এটা একটা <strong>lottery</strong>: data কোথায় বসে আছে তার উপর নির্ভর করে একই instruction সস্তাও হতে পারে, শতগুণ দামিও হতে পারে। Performance-sensitive code লেখার সময় আসল খেলা হলো এই lottery-তে জেতার সম্ভাবনা বাড়ানো — মানে cache-friendly access pattern। কীভাবে, সেটা Chapter 13-এ।</p>
+  </div>
+
+  <p>আরেকটা সূক্ষ্ম কথা: CPU byte ধরে ধরে RAM থেকে আনে না — আনে <strong>cache line</strong> ধরে (সাধারণত 64 bytes-এর chunk)। মানে address X চাইলে তার আশেপাশের byte গুলোও ফাউ হিসেবে cache-এ চলে আসে। এই এক তথ্যই sequential vs random access-এর পুরো পার্থক্যের বীজ — মাথায় রেখো।</p>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>CPU data খোঁজার order-টা কী?</li>
+      <li>Cache hit আর miss-এর cost-এর পার্থক্য এত বড় কেন?</li>
+      <li>Cache line ধরে data আনার ফলে কী সুবিধা তৈরি হয়?</li>
+    </ul>
+  </div>

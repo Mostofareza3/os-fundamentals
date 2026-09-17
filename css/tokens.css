@@ -1,0 +1,31 @@
+/* tokens.css
+   Design tokens — color, type scale, spacing, motion.
+   Light theme overrides live here too.
+*/
+
+:root{
+  /* dark (default) */
+  --bg:#0E1319; --bg-soft:#121820; --panel:#18212B; --panel-2:#1E2833;
+  --text:#CBD5E0; --muted:#8494A5; --heading:#F2F6FA;
+  --user:#7FB4E6; --user-dim:rgba(127,180,230,.11); --user-glow:rgba(127,180,230,.22);
+  --kernel:#E8AC64; --kernel-dim:rgba(232,172,100,.11);
+  --ok:#8FCB92; --ok-dim:rgba(143,203,146,.10);
+  --danger:#E58F8F; --danger-dim:rgba(229,143,143,.10);
+  --border:#28323E; --border-soft:#1F2833;
+  --code-bg:#0A0F14; --shadow:rgba(0,0,0,.45);
+  --sidebar-w:302px; --rail-w:220px;
+  --radius:12px; --radius-sm:8px;
+  --font-bn:"Kohinoor Bangla","Noto Sans Bengali","Nirmala UI","Bangla MN",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,"Courier New",monospace;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+html[data-theme="light"]{
+  --bg:#FBFCFD; --bg-soft:#F3F6F9; --panel:#FFFFFF; --panel-2:#F5F8FA;
+  --text:#33414E; --muted:#66788A; --heading:#111A23;
+  --user:#2A6CA8; --user-dim:rgba(42,108,168,.08); --user-glow:rgba(42,108,168,.16);
+  --kernel:#9C5D14; --kernel-dim:rgba(156,93,20,.09);
+  --ok:#37743F; --ok-dim:rgba(55,116,63,.08);
+  --danger:#A94545; --danger-dim:rgba(169,69,69,.07);
+  --border:#DCE3EA; --border-soft:#E8EDF2;
+  --code-bg:#141C25; --shadow:rgba(30,45,60,.10);
+}

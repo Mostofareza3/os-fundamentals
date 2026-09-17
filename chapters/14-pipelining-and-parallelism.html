@@ -1,0 +1,33 @@
+  <p class="part-label">PART 4 · CPU</p>
+  <h2>Chapter 14 — Pipelining আর Parallelism</h2>
+  <p class="chap-sub">CPU একটা instruction শেষ করে পরেরটা ধরে না — কেন এবং তার মানে কী।</p>
+
+  <h3>Pipeline: assembly line-এর কৌশল</h3>
+  <p>Chapter 12-র সেই fetch → decode → execute → memory → writeback ধাপগুলো ভাবো একটা garment factory-র line হিসেবে। এক instruction যখন decode হচ্ছে, পরেরটা তখন fetch হতে পারে — ধাপগুলো তো আলাদা যন্ত্রাংশে চলে। এটাই <strong>pipelining</strong>: এক মুহূর্তে pipeline-এর ভিতরে একাধিক instruction, প্রত্যেকে আলাদা stage-এ। ফলে প্রতিটা instruction-এর নিজের সময় না কমলেও প্রতি cycle-এ একটা করে instruction "বের হয়ে আসে"।</p>
+  <p>Pipeline-এর শত্রু হলো <strong>branch</strong> — if/else, loop-এর শর্ত। পরের instruction কোনটা, তা তো শর্তের result-এর আগে জানা যায় না! CPU তখন <em>অনুমান</em> করে (branch prediction) আগেভাগে কাজ চালিয়ে যায়; অনুমান ভুল হলে pipeline-এর আধখাওয়া কাজ ফেলে দিতে হয়। এজন্যই খুব unpredictable branching-ওয়ালা code (যেমন unsorted data-র উপর শর্ত) মাঝে মাঝে আশ্চর্যরকম ধীর হয়।</p>
+
+  <h3>Parallelism-এর স্তরগুলো</h3>
+  <ul>
+    <li><strong>Pipeline (এক core-এর ভিতরে):</strong> ধাপ overlap — উপরে দেখলাম।</li>
+    <li><strong>Multiple cores:</strong> সত্যিকারের একসাথে একাধিক instruction stream। ৮ core = ৮টা process/thread আক্ষরিকভাবেই simultaneously।</li>
+    <li><strong>SMT / Hyper-threading:</strong> এক physical core দুইটা "hardware thread" সাজে — এক thread memory-র জন্য wait করলে core-এর অলস যন্ত্রাংশ আরেক thread চালায়। দুই core-এর সমান না, কিন্তু utilization বাড়ে। এজন্যই ৪-core laptop-এ <code>nproc</code> ৮ দেখাতে পারে।</li>
+  </ul>
+
+  <details><summary>Side note: RISC vs CISC, 32-bit vs 64-bit</summary><div class="d-body">
+    <p><strong>RISC vs CISC:</strong> Instruction set design-এর দুই দর্শন — ছোট-সরল instruction (RISC: ARM, তোমার M-series Mac) বনাম জটিল-শক্তিশালী instruction (CISC: x86)। আজকাল ভিতরের বাস্তবায়ন অনেকটা মিলে গেছে; app developer হিসেবে মূল takeaway: আলাদা instruction set মানে আলাদা machine code — এজন্যই ARM Mac-এ x86 binary সরাসরি চলে না (Rosetta translate করে)।</p>
+    <p><strong>32-bit vs 64-bit:</strong> মূলত address-এর size। 32-bit-এ virtual address space সর্বোচ্চ 4GB — আধুনিক workload-এর জন্য হাস্যকর ছোট; 64-bit-এ কার্যত সীমাহীন। Registers-ও চওড়া হয়। ব্যস, এটুকুই দরকার।</p>
+  </div></details>
+
+  <div class="box concept">
+    <div class="box-title">ENGINEERING TAKEAWAY</div>
+    <p>CPU নিজে ভিতরে ভিতরে প্রচণ্ড parallel — কিন্তু <strong>এক core-এ তোমার single-threaded JS যতই optimize করো, বাকি ৭টা core বসে থাকবে</strong>। Multi-core কাজে লাগাতে হলে process/thread level-এ parallelism আনতে হয় — সেই গল্প Part 5-এ।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>Pipelining কীভাবে throughput বাড়ায় অথচ একক instruction-এর সময় কমায় না?</li>
+      <li>Branch prediction কেন লাগে, ভুল হলে কী দাম?</li>
+      <li>Core আর hardware thread (SMT)-এর পার্থক্য?</li>
+    </ul>
+  </div>

@@ -1,0 +1,260 @@
+[
+  {
+    "id": "cover",
+    "part": "ভূমিকা",
+    "title": "Cover — এই বই কেন",
+    "file": "cover.html"
+  },
+  {
+    "id": "chapter-01",
+    "part": "Part 1 — The Big Picture",
+    "title": "Operating System কেন দরকার?",
+    "file": "01-operating-system.html"
+  },
+  {
+    "id": "chapter-02",
+    "part": "Part 1 — The Big Picture",
+    "title": "The System Architecture",
+    "file": "02-the-system-architecture.html"
+  },
+  {
+    "id": "chapter-03",
+    "part": "Part 2 — From Program to Process",
+    "title": "Program vs Process",
+    "file": "03-program-vs-process.html"
+  },
+  {
+    "id": "chapter-04",
+    "part": "Part 2 — From Program to Process",
+    "title": "How a Program Is Executed",
+    "file": "04-how-a-program-is-executed.html"
+  },
+  {
+    "id": "chapter-05",
+    "part": "Part 2 — From Program to Process",
+    "title": "Anatomy of a Process",
+    "file": "05-anatomy-of-a-process.html"
+  },
+  {
+    "id": "chapter-06",
+    "part": "Part 2 — From Program to Process",
+    "title": "Stack vs Heap",
+    "file": "06-stack-vs-heap.html"
+  },
+  {
+    "id": "chapter-07",
+    "part": "Part 3 — Memory",
+    "title": "Understanding Physical Memory",
+    "file": "07-understanding-physical-memory.html"
+  },
+  {
+    "id": "chapter-08",
+    "part": "Part 3 — Memory",
+    "title": "CPU and Memory Interaction",
+    "file": "08-cpu-and-memory-interaction.html"
+  },
+  {
+    "id": "chapter-09",
+    "part": "Part 3 — Memory",
+    "title": "Virtual Memory",
+    "file": "09-virtual-memory.html"
+  },
+  {
+    "id": "chapter-10",
+    "part": "Part 3 — Memory",
+    "title": "Memory Cost and Trade-offs",
+    "file": "10-memory-cost-and-trade-offs.html"
+  },
+  {
+    "id": "chapter-11",
+    "part": "Part 3 — Memory",
+    "title": "DMA",
+    "file": "11-dma.html"
+  },
+  {
+    "id": "chapter-12",
+    "part": "Part 4 — CPU",
+    "title": "Inside the CPU",
+    "file": "12-inside-the-cpu.html"
+  },
+  {
+    "id": "chapter-13",
+    "part": "Part 4 — CPU",
+    "title": "CPU Cache",
+    "file": "13-cpu-cache.html"
+  },
+  {
+    "id": "chapter-14",
+    "part": "Part 4 — CPU",
+    "title": "Pipelining and Parallelism",
+    "file": "14-pipelining-and-parallelism.html"
+  },
+  {
+    "id": "chapter-15",
+    "part": "Part 5 — Process Management",
+    "title": "Process Management",
+    "file": "15-process-management.html"
+  },
+  {
+    "id": "chapter-16",
+    "part": "Part 5 — Process Management",
+    "title": "Process vs Thread",
+    "file": "16-process-vs-thread.html"
+  },
+  {
+    "id": "chapter-17",
+    "part": "Part 5 — Process Management",
+    "title": "Context Switching",
+    "file": "17-context-switching.html"
+  },
+  {
+    "id": "chapter-18",
+    "part": "Part 5 — Process Management",
+    "title": "Concurrency",
+    "file": "18-concurrency.html"
+  },
+  {
+    "id": "chapter-19",
+    "part": "Part 5 — Process Management",
+    "title": "When Should You Use Threads?",
+    "file": "19-when-should-you-use-threads.html"
+  },
+  {
+    "id": "chapter-20",
+    "part": "Part 6 — Storage",
+    "title": "Persistent Storage",
+    "file": "20-persistent-storage.html"
+  },
+  {
+    "id": "chapter-21",
+    "part": "Part 6 — Storage",
+    "title": "How File I/O Works",
+    "file": "21-how-file-i-o-works.html"
+  },
+  {
+    "id": "chapter-22",
+    "part": "Part 6 — Storage",
+    "title": "File Systems",
+    "file": "22-file-systems.html"
+  },
+  {
+    "id": "chapter-23",
+    "part": "Part 6 — Storage",
+    "title": "Page Cache",
+    "file": "23-page-cache.html"
+  },
+  {
+    "id": "chapter-24",
+    "part": "Part 6 — Storage",
+    "title": "File I/O Modes",
+    "file": "24-file-i-o-modes.html"
+  },
+  {
+    "id": "chapter-25",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "What Is a Socket?",
+    "file": "25-what-is-a-socket.html"
+  },
+  {
+    "id": "chapter-26",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "TCP Connection Internals",
+    "file": "26-tcp-connection-internals.html"
+  },
+  {
+    "id": "chapter-27",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "Sending and Receiving Data",
+    "file": "27-sending-and-receiving-data.html"
+  },
+  {
+    "id": "chapter-28",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "Blocking vs Non-blocking I/O",
+    "file": "28-blocking-vs-non-blocking-i-o.html"
+  },
+  {
+    "id": "chapter-29",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "I/O Multiplexing",
+    "file": "29-i-o-multiplexing.html"
+  },
+  {
+    "id": "chapter-30",
+    "part": "Part 7 — Networking and Sockets",
+    "title": "Socket Programming",
+    "file": "30-socket-programming.html"
+  },
+  {
+    "id": "chapter-31",
+    "part": "Part 8 — User Space and Kernel Space",
+    "title": "User Mode vs Kernel Mode",
+    "file": "31-user-mode-vs-kernel-mode.html"
+  },
+  {
+    "id": "chapter-32",
+    "part": "Part 8 — User Space and Kernel Space",
+    "title": "System Calls and Their Cost",
+    "file": "32-system-calls-and-their-cost.html"
+  },
+  {
+    "id": "chapter-33",
+    "part": "Part 9 — Compilers, Linkers and Executables",
+    "title": "From Source Code to Executable",
+    "file": "33-from-source-code-to-executable.html"
+  },
+  {
+    "id": "chapter-34",
+    "part": "Part 9 — Compilers, Linkers and Executables",
+    "title": "Loading an Executable",
+    "file": "34-loading-an-executable.html"
+  },
+  {
+    "id": "chapter-35",
+    "part": "Part 10 — Virtualization and Containers",
+    "title": "Virtualization",
+    "file": "35-virtualization.html"
+  },
+  {
+    "id": "chapter-36",
+    "part": "Part 10 — Virtualization and Containers",
+    "title": "Containers",
+    "file": "36-containers.html"
+  },
+  {
+    "id": "chapter-37",
+    "part": "Part 11 — Putting Everything Together",
+    "title": "What Happens When You Run a Program?",
+    "file": "37-what-happens-when-you-run-a-program.html"
+  },
+  {
+    "id": "chapter-38",
+    "part": "Part 11 — Putting Everything Together",
+    "title": "What Happens When a Web Server Handles a Request?",
+    "file": "38-what-happens-when-a-web-server-handles-a-request.html"
+  },
+  {
+    "id": "chapter-39",
+    "part": "Part 12 — Engineering Intuition",
+    "title": "Why Software Becomes Slow",
+    "file": "39-why-software-becomes-slow.html"
+  },
+  {
+    "id": "chapter-40",
+    "part": "Part 12 — Engineering Intuition",
+    "title": "Performance Mental Model",
+    "file": "40-performance-mental-model.html"
+  },
+  {
+    "id": "synthesis",
+    "part": "উপসংহার",
+    "title": "The Operating Systems Mental Model",
+    "file": "the-operating-systems-mental-model.html"
+  },
+  {
+    "id": "assessment",
+    "part": "উপসংহার",
+    "title": "Final Self-Assessment",
+    "file": "final-self-assessment.html"
+  }
+]
