@@ -17,8 +17,8 @@
   <h3>প্রশ্ন ২: cache-এর সাথে বোঝাপড়া</h3>
   <ul>
     <li><strong>Default:</strong> সব page cache-এর মধ্য দিয়ে — write মানে cache-এ লেখা (fast, কিন্তু durable না যতক্ষণ না flush)।</li>
-    <li><strong><code>O_SYNC</code>:</strong> প্রতিটা write disk-এ পৌঁছানোর পরেই return করবে — যেন প্রতি write-এর সাথে ফাউ fsync। Durability সর্বোচ্চ, speed-এর দাম দিয়ে।</li>
-    <li><strong><code>O_DIRECT</code>:</strong> Page cache-কে পুরোপুরি bypass — data সরাসরি disk ↔ তোমার buffer। কে চায় এটা? যে নিজে আরও ভালো cache চালায় — যেমন কিছু database engine: "kernel, তোমার generic cache লাগবে না, আমি আমার data আমি-ই ভালো বুঝি।" সাধারণ application-এর জন্য এটা প্রায় সবসময় ভুল choice — kernel-এর cache-টা আসলে চমৎকার।</li>
+    <li><strong><code>O_SYNC</code>:</strong> প্রতিটা write disk-এ পৌঁছানোর পরেই return করবে — যেন প্রতি write-এর সাথে ফাউ fsync। Durability সর্বোচ্চ, speed-এর দাম দিয়ে। (ছোট ভাই <code>O_DSYNC</code> — data আর শুধু ফেরত পড়ার জন্য দরকারি metadata sync করে, পুরো metadata না। WAL-ধরনের append path-এ সাধারণত এটাই যথেষ্ট আর সস্তা।)</li>
+    <li><strong><code>O_DIRECT</code>:</strong> Page cache-কে পুরোপুরি bypass — data সরাসরি disk ↔ তোমার buffer। কে চায় এটা? যে নিজে আরও ভালো cache চালায় — যেমন কিছু database engine: "kernel, তোমার generic cache লাগবে না, আমি আমার data আমি-ই ভালো বুঝি।" সাধারণ application-এর জন্য এটা প্রায় সবসময় ভুল choice — kernel-এর cache-টা আসলে চমৎকার।<br><strong>একটা ফাঁদ:</strong> O_DIRECT durability-র কথা বলে <em>না</em>। সে শুধু page cache এড়ায়; device-এর নিজের cache তো রয়েই গেল (Chapter 21)। তাই O_DIRECT দিয়ে লিখেও durability চাইলে fsync/O_DSYNC লাগবেই — database গুলো ঠিক তাই করে। O_DIRECT-এর প্রশ্নটা "cache-এর মালিক কে", "data কি নিরাপদ" না।</li>
   </ul>
 
   <div class="box concept">
@@ -30,7 +30,7 @@
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
       <li>File I/O mode-এর পিছনের দুইটা স্বাধীন প্রশ্ন কী কী?</li>
-      <li>O_SYNC আর O_DIRECT-এর পার্থক্য — কে কী bypass/guarantee করে?</li>
+      <li>O_SYNC আর O_DIRECT-এর পার্থক্য — কে কী bypass করে, কে কী guarantee করে (আর কে কিছুই guarantee করে না)?</li>
       <li>সাধারণ app-এ O_DIRECT bad idea কেন?</li>
     </ul>
   </div>

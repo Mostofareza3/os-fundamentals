@@ -22,7 +22,13 @@
 
   <div class="box concept">
     <div class="box-title">মাত্রাজ্ঞান (মুখস্থ না, অনুপাত)</div>
-    <p>মোটা দাগে: CPU cache → RAM → NVMe → HDD → network storage — প্রতিটা ধাপে latency মোটামুটি এক-দুই <em>মাত্রা</em> (order of magnitude) করে বাড়ে। মানে RAM-এ যা চোখের পলক, disk-এ তা দুপুরের খাবার-বিরতি। এই অনুপাতটাই মনে রাখো — এটাই বোঝায় কেন OS এত মরিয়া হয়ে disk access এড়াতে চায় (Chapter 23-এর page cache)।</p>
+    <p>মোটা দাগে সিঁড়িটা এরকম — লাফগুলো সমান নয়, আর অসমতাটাই আসল খবর:</p>
+    <pre class="diagram">CPU cache   <span class="dim">~1 ns</span>
+RAM         <span class="dim">~100 ns      ← ×১০০</span>
+NVMe        <span class="dim">~50–100 µs   ← ×~৫০০  (সিঁড়ির সবচেয়ে বড় লাফ)</span>
+HDD         <span class="dim">~10 ms       ← ×~১০০</span></pre>
+    <p>মানে RAM-এ যা চোখের পলক, disk-এ তা দুপুরের খাবার-বিরতি। বিশেষ করে <strong>RAM → NVMe</strong> লাফটা খেয়াল করো — এটা এক-দুই মাত্রা না, তিন মাত্রার কাছাকাছি। এটাই বোঝায় কেন OS এত মরিয়া হয়ে disk access এড়াতে চায় (Chapter 23-এর page cache)।</p>
+    <p>Network storage-কে ইচ্ছা করেই সিঁড়ির শেষে বসাইনি, কারণ তার কোনো স্থির ধাপ নেই — same-AZ-এ ভালো provisioned network SSD (EBS, NVMe-oF) প্রায়ই ১ ms-এর নিচে জবাব দেয়, অর্থাৎ <em>local HDD-র চেয়ে দ্রুত</em>। আর WAN-এর ওপাশে বসা storage শত ms-ও নিতে পারে। "Network মানেই সবচেয়ে ধীর" — এই intuition টা ভুল সিদ্ধান্ত আনে; দূরত্ব আর provisioning দেখে বিচার করতে হয়।</p>
   </div>
 
   <div class="box quiz">

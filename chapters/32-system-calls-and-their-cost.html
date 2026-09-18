@@ -4,7 +4,8 @@
 
   <h3>দামটা আসে কোথা থেকে</h3>
   <p>একটা syscall মানে সাধারণ function call না — মানে: mode switch (CPU state বদল), kernel-এ ঢুকে register বাঁচানো, syscall dispatch, argument validation, কাজ, তারপর পুরোটা উল্টো করে ফেরা। তার উপর আছে পরোক্ষ খরচ — kernel-এর code/data cache-এ ঢোকায় তোমার code-এর cache-এর কিছুটা দখল হয়ে যায় (Chapter 17-এর সেই cache দূষণের ছোট ভাই)।</p>
-  <p>কিন্তু ভারসাম্যটাও বলি: একটা syscall-এর নিজস্ব overhead nanoseconds-এর জগতে — আর তার ভিতরের <em>কাজটা</em> (disk read!) হতে পারে milliseconds-এর জগতে। অর্থাৎ <strong>overhead টা matter করে তখনই, যখন syscall গুলো ছোট এবং অনেক।</strong></p>
+  <p>কিন্তু ভারসাম্যটাও বলি: একটা syscall-এর নিজস্ব overhead অনেক ছোট — আর তার ভিতরের <em>কাজটা</em> (disk read!) হতে পারে milliseconds-এর জগতে। অর্থাৎ <strong>overhead টা matter করে তখনই, যখন syscall গুলো ছোট এবং অনেক।</strong></p>
+  <p>একটা আধুনিক সংশোধনী, কারণ পুরনো লেখায় এই খরচকে "নগণ্য, nanosecond-এর ব্যাপার" বলা হতো: Meltdown/Spectre-এর প্রতিকার আসার পর <strong>syscall-এর দাম বেড়ে গেছে</strong>। KPTI (Chapter 31) প্রতিবার kernel-এ ঢোকা-বেরোনোয় page table বদলায়, সাথে যোগ হয় speculation-এর বিরুদ্ধে নেওয়া পদক্ষেপগুলো। ঠিক সংখ্যাটা hardware, kernel version আর কোন mitigation চালু — তার উপর নির্ভর করে, তাই মুখস্থ করার মতো কিছু নেই; যা মনে রাখার তা হলো <em>দিক</em>: ২০১৮-র পর প্রতি boundary পারাপার আগের চেয়ে দামি, তাই batching-এর যুক্তিটা আরও জোরালো হয়েছে।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>

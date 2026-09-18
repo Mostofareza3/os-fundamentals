@@ -26,10 +26,22 @@ Storage Device     — data পড়ে DMA-তে RAM-এ দেয়</pre>
   <h3>Write-এর গল্প: একটা মোচড় আছে</h3>
   <p><code>write(fd, data, len)</code> return করলো মানে data disk-এ পৌঁছে গেছে? <strong>না।</strong> Default behavior: kernel data-টা page cache-এ লিখে page-টাকে <em>dirty</em> mark করে <em>সাথে সাথেই return করে দেয়</em>। Disk-এ আসল লেখা হয় পরে, background-এ (writeback)। ফলে write অবিশ্বাস্য fast লাগে — কারণ তুমি আসলে RAM-এ লিখেছ।</p>
   <p>Trade-off পরিষ্কার: মাঝখানে power গেলে সেই dirty data হারিয়ে যায়। এজন্যই "সত্যি সত্যি disk-এ নামাও" বলার আলাদা system call আছে — <code>fsync(fd)</code>। Database-রা transaction commit-এ এটাই করে; এজন্যই durable write ধীর, আর এজন্যই Postgres-এর WAL config-এ fsync নিয়ে এত কথা।</p>
+  <p>কিন্তু শিকলটা দুই ধাপের না, তিন ধাপের — আর এটা না জানলেই "fsync করেছি তো, তাহলে গেল কীভাবে?" প্রশ্নটা জন্মায়:</p>
+  <pre class="diagram">write()
+   ↓
+<span class="k">page cache (dirty)</span>
+   ↓  <span class="dim">fsync এখানে ঠেলে দেয়</span>
+device
+   ↓  <span class="dim">fsync flush command-ও পাঠায়</span>
+<span class="dim">device-এর নিজের cache</span>
+   ↓  <span class="dim">← এই ধাপটাই বইয়ে সাধারণত থাকে না</span>
+media <span class="dim">(power গেলেও টেকে)</span></pre>
+  <p><code>fsync</code> দুটো কাজ করে: dirty page গুলো device-এ পাঠায়, <em>এবং</em> device-কে "তোমার নিজের cache খালি করো" command দেয়। দ্বিতীয় কাজটা device না মানলে (consumer SSD-র volatile cache, barrier ছাড়া <code>hdparm -W1</code>, hypervisor-এ <code>cache=unsafe</code>) fsync সফল return করবে, কিন্তু data তখনো volatile cache-এ — power গেলে গেল। মানে <strong>fsync দরকারি, কিন্তু একা যথেষ্ট না</strong> — নিচের স্তরটাকেও সৎ হতে হয়।</p>
+  <p>আর একটা ফাঁদ, যেটা আসল data-loss bug-এর জন্ম দেয়: <code>fsync</code> fail করতে পারে, আর Linux-এ writeback fail হলে kernel dirty bit মুছে দিয়ে error টা <em>একজন</em> caller-কেই জানাতে পারে। ফলে একই fd-তে আবার fsync ডাকলে সে <strong>success return করবে</strong> যদিও data কখনো লেখা হয়নি। নিয়মটা তাই: <code>fsync</code> fail মানে "আবার চেষ্টা করি" না — মানে "এই data সম্ভবত চিরতরে গেছে"। (Postgres-এর ২০১৮-র "fsyncgate" এই নিয়েই।)</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"write() সফল return করেছে মানে data নিরাপদ।" না — মানে data <em>kernel-এর হাতে</em> পৌঁছেছে। Durability চাইলে fsync (এবং তার দাম) লাগবে। এই এক ভুল বোঝাবুঝি থেকে বহু "power গেল, data গেল" ঘটনা জন্মেছে।</p>
+    <p>"write() সফল return করেছে মানে data নিরাপদ।" না — মানে data <em>kernel-এর হাতে</em> পৌঁছেছে। Durability চাইলে fsync (এবং তার দাম) লাগবে, আর fsync-এর return value দেখতেই হবে। এই এক ভুল বোঝাবুঝি থেকে বহু "power গেল, data গেল" ঘটনা জন্মেছে।</p>
   </div>
 
   <div class="box lab">
@@ -43,6 +55,7 @@ Storage Device     — data পড়ে DMA-তে RAM-এ দেয়</pre>
       <li>File descriptor কী, কোথায় থাকে?</li>
       <li>Read path-এ page cache কোথায় বসে, কী বাঁচায়?</li>
       <li>write() fast কেন, আর সেই speed-এর দাম কী?</li>
-      <li>fsync কখন লাগে?</li>
+      <li>fsync কখন লাগে — আর কেন fsync একা durability-র গ্যারান্টি না?</li>
+      <li>fsync fail করলে কী করতে হবে, আর কী করলে সর্বনাশ?</li>
     </ul>
   </div>

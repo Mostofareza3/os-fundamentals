@@ -3,7 +3,7 @@
   <p class="chap-sub">৪টা core-এ ৪০০টা process "একসাথে" চলার জাদু — আর সেই জাদুর দাম।</p>
 
   <h3>Context মানে কী</h3>
-  <p>Chapter 12-র সেই বাক্যটা ফিরিয়ে আনি: একটা thread-এর execution state মানে <strong>registers + program counter + stack pointer-এর snapshot</strong>। এটাই তার <strong>context</strong> — "আমি কোন instruction-এ ছিলাম, আমার হিসাবের মাঝপথের value গুলো কী, আমার stack কোথায়।"</p>
+  <p>Chapter 12-র সেই বাক্যটা ফিরিয়ে আনি — Chapter 16-এর পরে এখন আরও সঠিক করে বলা যায়, রাষ্ট্রটা process-এর না, <em>thread</em>-এর: একটা thread-এর execution state মানে <strong>registers + program counter + stack pointer-এর snapshot</strong> (সাথে FPU/SSE/AVX-এর vector state, যেটা আসলে সবচেয়ে ভারী অংশ — AVX-512-তে কয়েক KB, তাই kernel এটা অলসভাবে সরায়)। এটাই তার <strong>context</strong> — "আমি কোন instruction-এ ছিলাম, আমার হিসাবের মাঝপথের value গুলো কী, আমার stack কোথায়।"</p>
 
   <h3>Switch-টা কীভাবে ঘটে</h3>
   <pre class="diagram"><span class="u">Process A চলছে...</span>
@@ -23,9 +23,9 @@
   <ul>
     <li><strong>Kernel-এ ঢোকা-বেরোনো</strong> — mode switch-এর overhead।</li>
     <li><strong>Cache দূষণ:</strong> A-র data দিয়ে গরম হয়ে থাকা CPU cache B-র কোনো কাজে লাগে না; B-র শুরুটা হয় ঠান্ডা cache-এ — miss-এর ঝড়। A ফিরে এলে তার cache-ও ততক্ষণে B-র data-য় ভরে গেছে।</li>
-    <li><strong>TLB flush:</strong> Address space বদলালে পুরনো translation গুলোও অচল।</li>
+    <li><strong>TLB-র উপর চাপ:</strong> এখানে একটা পুরনো কথা শুধরে নেওয়া দরকার — "address space বদলালে TLB flush হয়" আজ আর সত্যি না। ২০১০-এর পর থেকে প্রতিটা x86-64 প্রতিটা TLB entry-র সাথে একটা address space id জুড়ে রাখে (x86-এ <strong>PCID</strong>, ARM-এ ASID), তাই switch-এ অন্য process-এর translation মুছে যায় না — বসে থাকে, সে ফিরে এলে আবার কাজে লাগে। খরচটা তাই মুছে ফেলার না, <em>জায়গার প্রতিযোগিতার</em>: TLB-র entry সংখ্যা সীমিত, আর অনেক address space সেই সীমিত জায়গার জন্য ঠেলাঠেলি করে।</li>
   </ul>
-  <p>মানে switch-এর পরের কিছু সময় ধরে <em>সবকিছুই</em> একটু ধীর চলে। Exact nanosecond মুখস্থের দরকার নেই — takeaway হলো: <strong>switch যত ঘনঘন, "আসল কাজ"-এর ভাগ তত কম।</strong> হাজার হাজার thread বানিয়ে ফেললে CPU সময়ের বড় অংশ যায় জায়গা বদলাবদলিতেই — এই রোগের নাম thrashing। (এক process-এর দুই thread-এর মধ্যে switch একটু সস্তা — address space বদলায় না — কিন্তু cache-এর সমস্যা থেকেই যায়।)</p>
+  <p>মানে switch-এর পরের কিছু সময় ধরে <em>সবকিছুই</em> একটু ধীর চলে। Exact nanosecond মুখস্থের দরকার নেই — takeaway হলো: <strong>switch যত ঘনঘন, "আসল কাজ"-এর ভাগ তত কম।</strong> হাজার হাজার thread বানিয়ে ফেললে CPU সময়ের বড় অংশ যায় জায়গা বদলাবদলিতেই — এর নাম <strong>oversubscription</strong>, আর খরচটার নাম scheduler overhead। (সাবধান: এটাকে <em>thrashing</em> বলবে না — ওই শব্দটা আলাদা রোগের, যেখানে working set RAM-এ আঁটে না বলে system অবিরাম page in-out করে। কাউকে "thrashing" বললে সে paging খুঁজতে যাবে, thread না।) (এক process-এর দুই thread-এর মধ্যে switch একটু সস্তা — address space বদলায় না — কিন্তু cache-এর সমস্যা থেকেই যায়।)</p>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>

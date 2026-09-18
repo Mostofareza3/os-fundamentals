@@ -79,6 +79,10 @@ main{
   display:flex; justify-content:center; padding:44px 32px 100px; gap:36px;
 }
 .page{max-width:740px; width:100%; min-width:0;}
+/* A wide <pre> scrolls inside itself, but the chapter section around it would
+   still stretch to the content width and push the whole page sideways on a
+   phone. Clamp the section so the scroll stays where it belongs. */
+.page > section.chapter{min-width:0; max-width:100%; overflow-x:clip;}
 
 /* ---------- right rail (on this page) ---------- */
 aside.rail{

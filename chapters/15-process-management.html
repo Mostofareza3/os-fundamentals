@@ -31,7 +31,7 @@ if (pid == 0) {
 } else {
     // এখানে parent — pid-এ child-এর PID
 }</code></pre></div>
-  <p><code>fork()</code> call করলে kernel চলমান process-এর একটা প্রায়-হুবহু copy বানায়: একই code, memory-র copy (আসলে copy-on-write — Chapter 9 মনে আছে? তাই প্রায় instant), একই open file-গুলো। মজাটা হলো — <strong>একই fork() call দুই process-এ দুইবার return করে</strong>: parent পায় child-এর PID, child পায় 0। ওই if/else দিয়েই দুজনের রাস্তা আলাদা হয়।</p>
+  <p><code>fork()</code> call করলে kernel চলমান process-এর একটা প্রায়-হুবহু copy বানায়: একই code, memory-র copy (আসলে copy-on-write — Chapter 9 মনে আছে? তাই প্রায় instant), একই open file গুলো — খেয়াল রেখো, প্রত্যেকে নিজের কপি পায় না; দুজনে <em>একই</em> open file description ভাগ করে, তাই file offset-ও এক। এজন্যই fork-এর পর দুজনেই একই fd-তে লিখলে লেখাগুলো একে অন্যের উপর না পড়ে পরপর বসে (আর buffered stdio flush না করে fork করলে output দুবার ছাপা হয়)। মজাটা হলো — <strong>একই fork() call দুই process-এ দুইবার return করে</strong>: parent পায় child-এর PID, child পায় 0। ওই if/else দিয়েই দুজনের রাস্তা আলাদা হয়।</p>
   <p>তারপর child সাধারণত <code>exec()</code> family-র একটা call দিয়ে নিজের ভিতরে নতুন executable load করে — পুরনো memory ছবি মুছে নতুন program বসে। Shell ঠিক এটাই করে: তুমি <code>ls</code> লিখলে shell fork করে, child-এ exec("ls") হয়, parent (shell) child শেষ হওয়ার wait করে। এই fork+exec ভাগাভাগির সুবিধা: fork আর exec-এর মাঝখানে child নিজের setup বদলাতে পারে (যেমন output redirect — <code>ls &gt; file.txt</code> এভাবেই কাজ করে)।</p>
   <p>এভাবেই পুরো system-এ process-দের একটা <strong>parent-child tree</strong> তৈরি হয় — সবার আদি পূর্বপুরুষ PID 1 (init/systemd)।</p>
 

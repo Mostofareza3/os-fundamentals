@@ -12,7 +12,7 @@
 
 <span class="dim">WRITE:</span> write() → cache-এর page-এ লেখো → page টা <span class="k">dirty</span> → return!
                     <span class="dim">...পরে background-এ kernel dirty page গুলো disk-এ নামায়</span></pre>
-  <p>Dirty page মানে: cache-এর version disk-এর চেয়ে নতুন। Kernel এগুলো সময়মতো/চাপে পড়ে flush করে; <code>fsync</code> মানে "এই file-এর dirty page গুলো এক্ষুনি নামাও" (Chapter 21-এর সেই গল্প)।</p>
+  <p>Dirty page মানে: cache-এর version disk-এর চেয়ে নতুন। Kernel এগুলো সময়মতো/চাপে পড়ে flush করে; <code>fsync</code> মানে "এই file-এর dirty page গুলো এক্ষুনি নামাও" (Chapter 21-এর সেই গল্প)। "চাপে পড়ে"-র একটা সীমা আছে — dirty page RAM-এর একটা অনুপাত (<code>dirty_ratio</code>) ছাড়িয়ে গেলে kernel <strong>লেখক process-টাকেই <code>write()</code>-এ আটকে দেয়</strong> যতক্ষণ না writeback ধরে ফেলে। এজন্যই মাঝেমধ্যে "write() তো block করে না" বলা সেই call-টাই হঠাৎ সেকেন্ড খেয়ে ফেলে।</p>
 
   <h3>ফলাফল: চেনা চেনা কিছু behavior-এর ব্যাখ্যা</h3>
   <ul>

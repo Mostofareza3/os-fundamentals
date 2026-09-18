@@ -25,7 +25,7 @@
   <pre class="diagram">SYN এলো → <span class="k">[SYN queue]</span>          <span class="dim">— handshake চলছে, আধা-পাকা connection</span>
 handshake শেষ → <span class="k">[accept queue]</span>  <span class="dim">— পুরো ready, app-এর accept()-এর অপেক্ষায়</span>
 app accept() করলো → connection app-এর হাতে</pre>
-  <p>এই ভাগাভাগির মানে গভীর: <strong>handshake পুরোটাই kernel সামলায় — তোমার Node process ঘুমিয়ে থাকলেও connection establish হয়ে accept queue-তে জমা হতে থাকে।</strong> আর app যদি accept করতে ধীর হয় (event loop আটকে আছে?), accept queue ভরে যায় — নতুন connection তখন refuse/drop হয়। <code>listen()</code>-এর backlog parameter এই queue-র সাইজই ঠিক করে। Production-এ "connection refused under load"-এর একটা classic কারণ এই queue overflow।</p>
+  <p>এই ভাগাভাগির মানে গভীর: <strong>handshake পুরোটাই kernel সামলায় — তোমার Node process ঘুমিয়ে থাকলেও connection establish হয়ে accept queue-তে জমা হতে থাকে।</strong> আর app যদি accept করতে ধীর হয় (event loop আটকে আছে?), accept queue ভরে যায় — নতুন connection তখন আর ঢুকতে পারে না। <code>listen()</code>-এর backlog parameter এই queue-র সাইজ চায় — কিন্তু kernel সেটাকে <code>net.core.somaxconn</code> দিয়ে ছেঁটে দেয়, তাই আসল মাপ <code>min(backlog, somaxconn)</code>। Production-এর classic ফাঁদ এটাই: code ১০২৪ চেয়েছে, kernel ১২৮ দিয়েছে, কেউ টের পায়নি। আর overflow হলে Linux default-এ RST পাঠায় না — handshake-এর শেষ ACK <em>নীরবে ফেলে দেয়</em>, client retransmit করে, ফলে উপসর্গ হয় ঝুলে থাকা বা ধীর connect, দ্রুত "connection refused" না। (সাথে সাথে refuse চাইলে <code>tcp_abort_on_overflow</code>।)</p>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>

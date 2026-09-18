@@ -3,7 +3,9 @@
   <p class="chap-sub">এই বইয়ের নীল-আর-amber রেখাটা এবার পুরো আলোয়।</p>
 
   <h3>Privilege: hardware-এ খোদাই করা নিয়ম</h3>
-  <p>এটা কোনো software convention না — <strong>CPU নিজে</strong> দুই (বা ততোধিক) privilege level-এ চলে। Kernel mode-এ সব instruction, সব memory, সব device বৈধ। User mode-এ dangerous instruction (device-এ কথা বলা, page table বদলানো, interrupt বন্ধ করা) দিলে CPU নিজেই আটকে দিয়ে kernel-কে ডেকে দেয়। মানে যত বড় bug-ই লেখো, তোমার process hardware-এর ক্ষতি করতে বা অন্যের memory পড়তে <em>পারবেই না</em> — দারোয়ান silicon-এ বসানো।</p>
+  <p>এটা কোনো software convention না — <strong>CPU নিজে</strong> দুই (বা ততোধিক) privilege level-এ চলে। Kernel mode-এ সব instruction, সব memory, সব device বৈধ। User mode-এ dangerous instruction (device-এ কথা বলা, page table বদলানো, interrupt বন্ধ করা) দিলে CPU নিজেই আটকে দিয়ে kernel-কে ডেকে দেয়। মানে যত বড় bug-ই লেখো, তোমার process সরাসরি hardware নাড়াতে পারবে না — দারোয়ান silicon-এ বসানো।</p>
+  <p>এখানে একটা জিনিস আলাদা করে রাখা দরকার, কারণ দুটো প্রহরীকে প্রায়ই এক ভাবা হয়। <strong>Privilege level</strong> আটকায় privileged <em>instruction</em> আর সরাসরি device access। কিন্তু "অন্য process-এর memory পড়তে পারবে না" — এটা privilege level-এর কাজ না, এটা <strong>per-process page table</strong>-এর কাজ (Chapter 9)। B-র data-র কোনো entry A-র page table-এ নেই, তাই A-র কাছে ওই address-টা উচ্চারণযোগ্যই না। দুটো ভিন্ন mechanism, দুটো ভিন্ন কাজ।</p>
+  <p>আর সীমানাগুলো পরম নয়। ইচ্ছাকৃত ফাঁক আছে (shared memory, <code>ptrace</code>, <code>/proc/&lt;pid&gt;/mem</code> — debugger এভাবেই কাজ করে), আর অনিচ্ছাকৃত ফাঁকও ধরা পড়েছে: <strong>Meltdown</strong> (২০১৮) user mode থেকেই kernel memory পড়ে ফেলেছিল, কোনো privileged instruction ছাড়া — speculative execution-এর পার্শ্বপ্রতিক্রিয়া মেপে। এজন্যই আজকের kernel user আর kernel-এর page table আলাদা রাখে (KPTI), আর এজন্যই syscall আগের চেয়ে দামি (Chapter 32)।</p>
   <p>কেন এত কড়াকড়ি? কারণ machine-টা shared। শত process, ভিন্ন user, আধা-বিশ্বাসী code — এদের মাঝে বিশ্বাসের সীমানা টানতেই হয়। Protection ছাড়া এক process-এর ভুল মানে পুরো machine-এর মৃত্যু (পুরনো DOS-যুগের বাস্তবতা)।</p>
 
   <h3>দরজাটা: system call-এর যাত্রাপথ</h3>
@@ -29,6 +31,7 @@
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
       <li>Privilege enforcement software না hardware — কেন এটা গুরুত্বপূর্ণ পার্থক্য?</li>
+      <li>"অন্যের memory পড়তে পারি না" — এটা কোন mechanism-এর কাজ, privilege level না page table?</li>
       <li>User code kernel-এর "যেখানে খুশি" ঢুকতে পারে না — ব্যবস্থাটা কী?</li>
       <li>Mode switch-এর তিন দরজা কী কী?</li>
     </ul>

@@ -4,6 +4,7 @@
 
   <h3>Pipeline: assembly line-এর কৌশল</h3>
   <p>Chapter 12-র সেই fetch → decode → execute → memory → writeback ধাপগুলো ভাবো একটা garment factory-র line হিসেবে। এক instruction যখন decode হচ্ছে, পরেরটা তখন fetch হতে পারে — ধাপগুলো তো আলাদা যন্ত্রাংশে চলে। এটাই <strong>pipelining</strong>: এক মুহূর্তে pipeline-এর ভিতরে একাধিক instruction, প্রত্যেকে আলাদা stage-এ। ফলে প্রতিটা instruction-এর নিজের সময় না কমলেও প্রতি cycle-এ একটা করে instruction "বের হয়ে আসে"।</p>
+  <p>আসল hardware আরও এক ধাপ এগিয়ে। আধুনিক প্রতিটা core <strong>superscalar</strong> আর <strong>out-of-order</strong> — একাধিক ALU, একাধিক load/store port, তাই এক cycle-এই কয়েকটা স্বাধীন instruction চালিয়ে শেষ করতে পারে। এজন্যই <code>perf stat</code>-এ IPC (instructions per cycle) প্রায়ই ১-এর অনেক উপরে দেখবে। ফলাফল: এক core-এ performance-এর সিলিং ঠিক করে instruction-এর <em>সংখ্যা</em> নয় — ঠিক করে dependency chain (একটা result-এর জন্য পরেরটার অপেক্ষা) আর cache miss।</p>
   <p>Pipeline-এর শত্রু হলো <strong>branch</strong> — if/else, loop-এর শর্ত। পরের instruction কোনটা, তা তো শর্তের result-এর আগে জানা যায় না! CPU তখন <em>অনুমান</em> করে (branch prediction) আগেভাগে কাজ চালিয়ে যায়; অনুমান ভুল হলে pipeline-এর আধখাওয়া কাজ ফেলে দিতে হয়। এজন্যই খুব unpredictable branching-ওয়ালা code (যেমন unsorted data-র উপর শর্ত) মাঝে মাঝে আশ্চর্যরকম ধীর হয়।</p>
 
   <h3>Parallelism-এর স্তরগুলো</h3>
@@ -15,7 +16,7 @@
 
   <details><summary>Side note: RISC vs CISC, 32-bit vs 64-bit</summary><div class="d-body">
     <p><strong>RISC vs CISC:</strong> Instruction set design-এর দুই দর্শন — ছোট-সরল instruction (RISC: ARM, তোমার M-series Mac) বনাম জটিল-শক্তিশালী instruction (CISC: x86)। আজকাল ভিতরের বাস্তবায়ন অনেকটা মিলে গেছে; app developer হিসেবে মূল takeaway: আলাদা instruction set মানে আলাদা machine code — এজন্যই ARM Mac-এ x86 binary সরাসরি চলে না (Rosetta translate করে)।</p>
-    <p><strong>32-bit vs 64-bit:</strong> মূলত address-এর size। 32-bit-এ virtual address space সর্বোচ্চ 4GB — আধুনিক workload-এর জন্য হাস্যকর ছোট; 64-bit-এ কার্যত সীমাহীন। Registers-ও চওড়া হয়। ব্যস, এটুকুই দরকার।</p>
+    <p><strong>32-bit vs 64-bit:</strong> মূলত address-এর size। 32-bit-এ virtual address space সর্বোচ্চ 4GB — আধুনিক workload-এর জন্য হাস্যকর ছোট; 64-bit-এ বিশাল (x86-64 আসলে ৬৪ না, ৪৮ bit ব্যবহার করে — ২৫৬TB, Linux-এ user space পায় তার অর্ধেক; এজন্যই user pointer সবসময় <code>0x00007fff…</code>-এর নিচে)। Registers-ও চওড়া হয়। ব্যস, এটুকুই দরকার।</p>
   </div></details>
 
   <div class="box concept">

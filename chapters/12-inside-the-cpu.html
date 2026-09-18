@@ -9,6 +9,7 @@
     <li><strong>Registers:</strong> CPU-র ভিতরের হাতেগোনা কয়েকটা ultra-fast storage slot। যেকোনো হিসাবের operand আগে register-এ আসে। এর মধ্যে দুটো special:
       <ul>
         <li><strong>Program Counter (PC):</strong> পরের instruction-এর address। "Program চলছে" মানে এই register এগোচ্ছে।</li>
+        <li><strong>Stack Pointer (SP):</strong> stack-এর এই মুহূর্তের চূড়া কোথায়। Chapter 6-এর সেই "stack pointer একটু সরানো" — সেটা এই register-টাই।</li>
         <li><strong>Instruction Register:</strong> এই মুহূর্তে execute হওয়া instruction।</li>
       </ul>
     </li>
@@ -27,7 +28,7 @@ Writeback→ result register-এ লেখো
 
   <div class="box concept">
     <div class="box-title">CONNECTION</div>
-    <p>Chapter 5-এর stack pointer, Chapter 4-এর entry point, সামনের Chapter 17-এর context switch — সবকিছু ঘোরে registers-এর চারপাশে। <strong>Process-এর "execution state" মানে মূলত: registers + PC + stack pointer-এর snapshot।</strong> এই বাক্যটা মনে রেখো, context switching-এ কাজে লাগবে।</p>
+    <p>Chapter 6-এর stack pointer, Chapter 4-এর entry point, সামনের Chapter 17-এর context switch — সবকিছু ঘোরে registers-এর চারপাশে। <strong>"Execution state" মানে মূলত: registers + PC + stack pointer-এর snapshot।</strong> এই বাক্যটা মনে রেখো, context switching-এ কাজে লাগবে। (রাষ্ট্রটা আসলে কার — process না thread — সেই সূক্ষ্মতা Chapter 16-এ।)</p>
   </div>
 
   <div class="box quiz">

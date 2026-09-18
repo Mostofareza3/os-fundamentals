@@ -26,10 +26,11 @@ hello (executable — ELF file, run করার জন্য ready)</pre>
   <ol>
     <li>নতুন process তৈরি করে (PID, address space)</li>
     <li>ELF header পড়ে code আর data segment গুলো process-এর memory-তে <em>map</em> করে</li>
-    <li>Stack setup করে, dynamic libraries load করে</li>
+    <li>Stack setup করে (argv, envp বসায়)</li>
     <li>CPU-র <strong>program counter</strong> (instruction pointer)-কে entry point-এ set করে দেয়</li>
   </ol>
   <p>ব্যস — এখন CPU ওই address থেকে instruction fetch করে execute করা শুরু করে। Program "চলছে" মানে আসলে এটুকুই: <strong>CPU-র program counter তোমার code-এর ভিতর দিয়ে হাঁটছে।</strong></p>
+  <p>একটা সূক্ষ্মতা: dynamic library গুলো kernel load করে না। Binary টা dynamically linked হলে kernel প্রথম লাফ দেয় <strong>dynamic linker</strong> (<code>ld.so</code>)-এর entry point-এ — সেটা user space-এ চলা একটা program, আর সে-ই <code>.so</code> গুলো map করে, তারপর তোমার code-এ control ছাড়ে। মানে process-এর প্রথম user-space instruction টা আসলে তোমার না। বিস্তারিত Chapter 34-এ।</p>
 
   <div class="box kern">
     <div class="box-title">তাহলে JavaScript/Python-এর বেলায়?</div>
