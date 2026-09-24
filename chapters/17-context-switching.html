@@ -1,47 +1,162 @@
   <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
   <h2>Chapter 17 — Context Switching</h2>
-  <p class="chap-sub">৪টা core-এ ৪০০টা process "একসাথে" চলার জাদু — আর সেই জাদুর দাম।</p>
+  <p class="chap-sub">একটা core-এ এক মুহূর্তে একটাই thread — তবু শত শত thread "একসাথে" চলে। পালা বদলের যন্ত্রটা কীভাবে কাজ করে, কখন ঘটে, আর তার দাম কোথায় লুকিয়ে থাকে।</p>
 
-  <h3>Context মানে কী</h3>
-  <p>Chapter 12-র সেই বাক্যটা ফিরিয়ে আনি — Chapter 16-এর পরে এখন আরও সঠিক করে বলা যায়, রাষ্ট্রটা process-এর না, <em>thread</em>-এর: একটা thread-এর execution state মানে <strong>registers + program counter + stack pointer-এর snapshot</strong> (সাথে FPU/SSE/AVX-এর vector state, যেটা আসলে সবচেয়ে ভারী অংশ — AVX-512-তে কয়েক KB, তাই kernel এটা অলসভাবে সরায়)। এটাই তার <strong>context</strong> — "আমি কোন instruction-এ ছিলাম, আমার হিসাবের মাঝপথের value গুলো কী, আমার stack কোথায়।"</p>
+  <p>যা লাগবে, এক লাইনে: scheduler ready থাকা thread-দের মধ্য থেকে কাউকে core-এ বসায়, time slice শেষে বা কেউ block হলে পালা বদলায় (Chapter 15); প্রতিটা thread-এর নিজের PC, SP আর register (Chapter 16); প্রতিটা process-এর নিজের page table, যেটা CPU-র একটা register দেখায় (Chapter 9); আর cache ও TLB সাম্প্রতিক data আর অনুবাদ ধরে রাখে (Chapter 13, 10)। এই chapter-এ দেখব scheduler-এর সিদ্ধান্ত বাস্তবে কার্যকর হয় কীভাবে, আর তাতে কী হারায়।</p>
 
-  <h3>Switch-টা কীভাবে ঘটে</h3>
-  <pre class="diagram"><span class="u">Process A চলছে...</span>
-   ↓ <span class="k">interrupt (timer) বা A নিজেই block হলো (I/O চাইলো)</span>
-━━━━━━ <span class="dim">kernel mode-এ প্রবেশ</span> ━━━━━━
-<span class="k">1. A-র context (registers, PC, SP) kernel-এ save</span>
-<span class="k">2. Scheduler: "এরপর কে?" → B নির্বাচিত</span>
-<span class="k">3. Address space switch — B-র page table চালু</span>
-<span class="k">4. B-র সেভ-করা context registers-এ restore</span>
-━━━━━━ <span class="dim">user mode-এ ফেরা</span> ━━━━━━
-<span class="u">Process B ঠিক সেখান থেকে চলা শুরু করলো,
-যেখানে সে শেষবার থেমেছিল — যেন কিছুই হয়নি</span></pre>
-  <p>Switch trigger হয় মূলত দুইভাবে: (১) process নিজে block হলো — I/O, sleep, lock-এর অপেক্ষা; (২) kernel জোর করে থামালো — timer interrupt-এ scheduler দেখলো অনেকক্ষণ চলেছে, এবার অন্যের পালা (preemption)। এই দ্বিতীয়টার জন্যই একটা infinite loop-ওয়ালা process পুরো machine জমিয়ে ফেলতে পারে না।</p>
+  <h3>Context: থামানো thread-কে ঠিক সেখান থেকে চালানোর জন্য যা লাগে</h3>
+  <p>Kernel thread A-কে core থেকে নামিয়ে পরে আবার বসাতে চায় — আর A যেন টেরই না পায়। তাহলে নামানোর মুহূর্তে CPU-র ভেতরে A-র যা যা আছে, সব কোথাও তুলে রাখতে হবে: কোন instruction-এ ছিল (PC), stack কোথায় (SP), প্রতিটা সাধারণ register-এর মান (হিসাবের মাঝপথের সংখ্যা), শেষ তুলনার ফলাফল (flags), আর floating-point/SIMD register গুলো — এগুলোই সবচেয়ে বড়। A অন্য process-এর হলে তার page table-ও। এই পুরো সংগ্রহের নাম <strong>context</strong>। Kernel এটা রাখে thread-এর নিজের kernel-record-এ (Linux-এ <code>task_struct</code>-এর সাথে)। কিছু না হারিয়ে ঠিক এটুকু ফিরিয়ে দিলেই A আবার সেই instruction থেকে চলবে, যেন মাঝে কিছুই ঘটেনি।</p>
+
+  <h3>Switch কীভাবে ঘটে</h3>
+  <p>একটা <strong>context switch</strong> শুরু হয় দুইভাবে: timer interrupt এল আর scheduler ঠিক করল A-র পালা শেষ (Chapter 2, 15), অথবা A নিজেই এমন syscall করল যেটায় অপেক্ষা করতে হবে — <code>read</code>, <code>sleep</code>, lock-এর অপেক্ষা। দুই ক্ষেত্রেই CPU আগে kernel mode-এ ঢোকে (Chapter 1), তারপর:</p>
+  <ol>
+    <li>A-র register গুলো (PC, SP, বাকি সব) A-র kernel-record-এ সেভ।</li>
+    <li>Scheduler run queue থেকে পরের জনকে বাছে — ধরো B।</li>
+    <li>B অন্য process-এর হলে page table-এর register-এ B-র page table বসানো (Chapter 9)। একই process-এর দুই thread হলে এই ধাপ লাগে না।</li>
+    <li>B-র সেভ করা register গুলো CPU-তে ফেরত — SP এখন B-র stack দেখায়, PC B-র পরের instruction।</li>
+    <li>User mode-এ ফেরা। B ঠিক সেখান থেকে চলতে শুরু করে যেখানে সে শেষবার থেমেছিল।</li>
+  </ol>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 326" width="100%" role="img" aria-label="Context switch timeline: thread A runs in user mode; a timer interrupt or a blocking syscall enters the kernel; the kernel saves A's context, the scheduler picks B, switches the page table if B is in another process, loads B's context, and returns to user mode where B continues">
+      <defs>
+        <marker id="c17f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c17f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c17f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-u t-s">USER MODE</text>
+      <rect x="24" y="44" width="226" height="50" rx="8" class="b-u"/>
+      <text x="137" y="66" text-anchor="middle" class="t-h t-s">Thread A runs</text>
+      <text x="137" y="84" text-anchor="middle" class="t-m t-s">its PC, SP, registers in the CPU</text>
+      <rect x="570" y="44" width="206" height="50" rx="8" class="b-u"/>
+      <text x="673" y="66" text-anchor="middle" class="t-h t-s">Thread B runs</text>
+      <text x="673" y="84" text-anchor="middle" class="t-m t-s">from exactly where it paused</text>
+
+      <line x1="20" y1="118" x2="780" y2="118" class="ln-k dash"/>
+      <text x="780" y="112" text-anchor="end" class="t-k t-s">user ↑ · kernel ↓</text>
+      <text x="24" y="142" class="t-k t-s">KERNEL MODE</text>
+
+      <path d="M250 70 C 270 70, 280 110, 282 146" class="ln-k" marker-end="url(#c17f1-k)"/>
+      <text x="258" y="36" class="t-k t-s">timer interrupt, or A blocks</text>
+
+      <rect x="260" y="150" width="150" height="56" rx="8" class="b-k"/>
+      <text x="335" y="174" text-anchor="middle" class="t-s">① save A's context</text>
+      <text x="335" y="192" text-anchor="middle" class="t-m t-s">into A's task record</text>
+      <rect x="420" y="150" width="150" height="56" rx="8" class="b-k"/>
+      <text x="495" y="174" text-anchor="middle" class="t-s">② scheduler</text>
+      <text x="495" y="192" text-anchor="middle" class="t-m t-s">picks B</text>
+      <rect x="260" y="232" width="150" height="56" rx="8" class="b-k"/>
+      <text x="335" y="256" text-anchor="middle" class="t-s">③ switch page table</text>
+      <text x="335" y="274" text-anchor="middle" class="t-m t-s">only if another process</text>
+      <rect x="420" y="232" width="150" height="56" rx="8" class="b-k"/>
+      <text x="495" y="256" text-anchor="middle" class="t-s">④ load B's context</text>
+      <text x="495" y="274" text-anchor="middle" class="t-m t-s">PC, SP, registers</text>
+      <line x1="410" y1="178" x2="418" y2="178" class="ln" marker-end="url(#c17f1-a)"/>
+      <path d="M495 208 C 495 222, 340 214, 336 228" class="ln" marker-end="url(#c17f1-a)"/>
+      <line x1="410" y1="260" x2="418" y2="260" class="ln" marker-end="url(#c17f1-a)"/>
+      <path d="M570 260 C 610 260, 640 150, 646 98" class="ln-u" marker-end="url(#c17f1-u)"/>
+      <text x="628" y="200" class="t-u t-s">⑤ return to user mode</text>
+
+      <text x="24" y="310" class="t-m t-s">A's saved context waits in kernel memory until the scheduler picks A again</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">উপরে user mode-এ A চলছিল; timer interrupt বা একটা blocking syscall তাকে kernel-এ নিয়ে আসে। নিচে kernel-এর চার ধাপ — সেভ, বাছাই, (দরকার হলে) page table বদল, লোড — তারপর user mode-এ ফিরে B চলে। A-র কাছে পুরো ব্যাপারটা অদৃশ্য: পরেরবার ④-এ তার context লোড হলে সে ঠিক আগের instruction থেকে চলবে।</p>
+
+  <h3>দুই রকম switch: স্বেচ্ছায় আর বাধ্য হয়ে</h3>
+  <p>ওপরের দুই শুরুর পথের দুইটা নাম আছে। <strong>Voluntary</strong> switch — thread নিজেই CPU ছেড়ে দিল, কারণ তার অপেক্ষা করার কিছু আছে (I/O, sleep, lock)। <strong>Involuntary</strong> switch — thread চলতে চাইছিল, কিন্তু kernel জোর করে নামিয়ে দিল (time slice শেষ, বা বেশি গুরুত্বপূর্ণ কেউ জেগেছে)। Linux দুইটাই গোনে, আর Node <code>process.resourceUsage()</code> দিয়ে দেখায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — switches.js</div>
+    <div class="codewrap"><pre><code>const ru = () =&gt; { const r = process.resourceUsage(); return [r.voluntaryContextSwitches, r.involuntaryContextSwitches]; };
+const mode = process.argv[2];
+const [v0, i0] = ru();
+if (mode === 'sleepy') {
+  // বারবার ঘুমাও — প্রতিবার নিজে CPU ছেড়ে দিচ্ছে
+  let n = 0;
+  const tick = () =&gt; (++n &lt; 200 ? setTimeout(tick, 1) : report());
+  tick();
+} else {
+  // অবিরাম হিসাব — কখনো নিজে ছাড়ে না
+  const end = Date.now() + 2000;
+  let x = 0;
+  while (Date.now() &lt; end) x++;
+  report();
+}
+function report() {
+  const [v1, i1] = ru();
+  console.log(`${mode.padEnd(6)} voluntary: ${v1 - v0}   involuntary: ${i1 - i0}`);
+}</code></pre></div>
+    <p>তিনভাবে চালাও — ঘুমপ্রিয়টা, একা busy-টা, আর একটা core-এ আরেকটা loop-এর সাথে ভাগাভাগি করে busy-টা (<code>taskset -c 0</code> দুজনকেই CPU 0-তে আটকায়, Chapter 15):</p>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w node:22-bookworm-slim bash -c '
+  node /w/switches.js sleepy
+  node /w/switches.js busy
+  taskset -c 0 node -e "while(true){}" &amp; C=$!; sleep 0.5
+  taskset -c 0 node /w/switches.js busy; kill $C'</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>sleepy voluntary: 199   involuntary: 0
+busy   voluntary: 7   involuntary: 14
+busy   voluntary: 8   involuntary: 275</code></pre></div>
+  </div>
+  <p>ঘুমপ্রিয় process-এ প্রায় প্রতিটা <code>setTimeout</code>-এ একটা voluntary switch — সে নিজে block হয়ে CPU ছেড়েছে, কেউ তাকে সরায়নি। একা busy loop-এ switch প্রায় নেই: অন্য core খালি, কাউকে তার জায়গা লাগেনি। কিন্তু একই core আরেকটা loop-এর সাথে ভাগ করতেই দুই সেকেন্ডে ২৭৫টা involuntary switch — প্রায় প্রতি ৭ ms-এ scheduler জোর করে পালা বদলাচ্ছে। (macOS এই দুই সংখ্যা নির্ভরযোগ্যভাবে দেয় না, তাই Linux।)</p>
+  <p>Production-এ এই দুই সংখ্যা রোগ চেনায়: involuntary বেশি মানে CPU-র জন্য কাড়াকাড়ি — core-এর তুলনায় বেশি runnable thread; voluntary বেশি মানে প্রচুর blocking I/O বা lock-এর অপেক্ষা। পুরো system-এর হিসাব Linux রাখে <code>/proc/stat</code>-এর <code>ctxt</code> লাইনে (আসল machine-এ <code>vmstat 1</code>-এর <code>cs</code> column একই জিনিস):</p>
+  <div class="codewrap"><pre><code>docker run --rm alpine sh -c "awk '/^ctxt/{print \$2}' /proc/stat; sleep 1; awk '/^ctxt/{print \$2}' /proc/stat"</code></pre></div>
+  <p>আমার চালানোয় <code>58931623</code> থেকে <code>58934114</code> — প্রায় চুপচাপ একটা VM-এও সেকেন্ডে ~২,৫০০ switch।</p>
 
   <h3>দামটা কোথায়</h3>
-  <p>Context switch free না — কিন্তু দামটা যেখানে ভাবো সেখানে না। Register save/restore নিজে সস্তা। আসল খরচ:</p>
-  <ul>
-    <li><strong>Kernel-এ ঢোকা-বেরোনো</strong> — mode switch-এর overhead।</li>
-    <li><strong>Cache দূষণ:</strong> A-র data দিয়ে গরম হয়ে থাকা CPU cache B-র কোনো কাজে লাগে না; B-র শুরুটা হয় ঠান্ডা cache-এ — miss-এর ঝড়। A ফিরে এলে তার cache-ও ততক্ষণে B-র data-য় ভরে গেছে।</li>
-    <li><strong>TLB-র উপর চাপ:</strong> এখানে একটা পুরনো কথা শুধরে নেওয়া দরকার — "address space বদলালে TLB flush হয়" আজ আর সত্যি না। ২০১০-এর পর থেকে প্রতিটা x86-64 প্রতিটা TLB entry-র সাথে একটা address space id জুড়ে রাখে (x86-এ <strong>PCID</strong>, ARM-এ ASID), তাই switch-এ অন্য process-এর translation মুছে যায় না — বসে থাকে, সে ফিরে এলে আবার কাজে লাগে। খরচটা তাই মুছে ফেলার না, <em>জায়গার প্রতিযোগিতার</em>: TLB-র entry সংখ্যা সীমিত, আর অনেক address space সেই সীমিত জায়গার জন্য ঠেলাঠেলি করে।</li>
-  </ul>
-  <p>মানে switch-এর পরের কিছু সময় ধরে <em>সবকিছুই</em> একটু ধীর চলে। Exact nanosecond মুখস্থের দরকার নেই — takeaway হলো: <strong>switch যত ঘনঘন, "আসল কাজ"-এর ভাগ তত কম।</strong> হাজার হাজার thread বানিয়ে ফেললে CPU সময়ের বড় অংশ যায় জায়গা বদলাবদলিতেই — এর নাম <strong>oversubscription</strong>, আর খরচটার নাম scheduler overhead। (সাবধান: এটাকে <em>thrashing</em> বলবে না — ওই শব্দটা আলাদা রোগের, যেখানে working set RAM-এ আঁটে না বলে system অবিরাম page in-out করে। কাউকে "thrashing" বললে সে paging খুঁজতে যাবে, thread না।) (এক process-এর দুই thread-এর মধ্যে switch একটু সস্তা — address space বদলায় না — কিন্তু cache-এর সমস্যা থেকেই যায়।)</p>
+  <p>প্রথম দাম <strong>সরাসরি</strong>: kernel-এ ঢোকা-বেরোনো, register সেভ আর লোড, scheduler-এর সিদ্ধান্ত, আর ঘুমন্ত thread-কে জাগানো (অন্য core-এ হলে সেই core-কে interrupt পাঠিয়ে ডাকা)। কত? দুইটা thread-এর মধ্যে একটা বল চালাচালি করে মাপো — একবার অপেক্ষার সময় kernel-এর কাছে ঘুমিয়ে পড়ে (<code>Atomics.wait</code>), আরেকবার না ঘুমিয়ে অবিরাম দেখতে থেকে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — pingpong.js</div>
+    <p><code>Atomics.wait</code> kernel-এর কাছে বলে "এই memory-র মান না বদলানো পর্যন্ত আমাকে ঘুম পাড়াও"; <code>Atomics.notify</code> বলে "ওখানে যে ঘুমাচ্ছে তাকে জাগাও":</p>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+const ROUNDS = 100_000;
+
+if (isMainThread) {
+  for (const mode of ['sleep', 'spin']) {
+    const flag = new Int32Array(new SharedArrayBuffer(4));   // 0 = main-এর পালা, 1 = worker-এর পালা
+    const w = new Worker(__filename, { workerData: { flag, mode } });
+    const t = performance.now();
+    for (let i = 0; i &lt; ROUNDS; i++) {
+      Atomics.store(flag, 0, 1); Atomics.notify(flag, 0);      // বল worker-এর দিকে
+      if (mode === 'sleep') while (Atomics.load(flag, 0) === 1) Atomics.wait(flag, 0, 1);  // ঘুমিয়ে অপেক্ষা
+      else while (Atomics.load(flag, 0) === 1);                                              // না ঘুমিয়ে বারবার দেখা
+    }
+    const us = (performance.now() - t) * 1000 / ROUNDS;
+    console.log(`${mode.padEnd(5)}: ${us.toFixed(2)} µs per round trip`);
+    w.terminate();
+  }
+} else {
+  const { flag, mode } = workerData;
+  for (;;) {
+    if (mode === 'sleep') while (Atomics.load(flag, 0) === 0) Atomics.wait(flag, 0, 0);
+    else while (Atomics.load(flag, 0) === 0);
+    Atomics.store(flag, 0, 0); Atomics.notify(flag, 0);        // বল main-এর দিকে
+  }
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>sleep: 5.36 µs</code>, <code>spin: 0.22 µs</code> প্রতি round trip। Docker-এর Linux-এ: <code>2.36 µs</code> আর <code>0.30 µs</code>।</p>
+  </div>
+  <p>ঘুমিয়ে-জাগিয়ে পালা দিলে প্রতি চালাচালিতে কয়েক microsecond — kernel-এ দুইবার ঢোকা, ঘুম পাড়ানো, জাগানো, scheduler। না ঘুমিয়ে অবিরাম দেখলে (<strong>spin</strong>) kernel ছোঁয়াই হয় না — শুধু Chapter 13-এর মতো একটা cache line দুই core-এর মধ্যে চালাচালি — ২০ গুণেরও বেশি সস্তা। তাহলে সবসময় spin না কেন? কারণ spin করা thread অপেক্ষার পুরো সময় একটা core ১০০% জ্বালিয়ে রাখে, যেটা অন্য কেউ কাজে লাগাতে পারত। বাস্তব lock গুলো তাই মাঝামাঝি পথ নেয়: অল্প কিছুক্ষণ spin, তারপরও না পেলে kernel-এর কাছে ঘুম (Linux-এ এই ঘুম-জাগানোর syscall-এর নাম <code>futex</code>)।</p>
+  <p>দ্বিতীয় দাম <strong>লুকানো</strong>, আর প্রায়ই বড়টা: B core-এ বসে দেখে cache ভরা A-র data-য় (Chapter 13) — তার নিজের data আনতে একের পর এক miss। TLB-তেও A-র অনুবাদ (Chapter 10)। আধুনিক CPU প্রতিটা TLB entry-র সাথে address space-এর একটা ছোট tag রাখে (x86-এ PCID, ARM-এ ASID), তাই switch-এ TLB পুরো মুছতে হয় না — কিন্তু জায়গা সীমিত, সবাই ঠেলাঠেলি করে। Branch predictor-এর শেখা অভ্যাসও (Chapter 14) অন্যের। A ফিরে এসে দেখে তার গরম cache ততক্ষণে ঠান্ডা। Register সেভ-লোড nanosecond-এর কাজ; এই "গরম হতে লাগা" সময়টা কয়েক দশ microsecond পর্যন্ত যেতে পারে, working set যত বড় তত বেশি। একই process-এর দুই thread-এর মধ্যে switch একটু সস্তা — page table বদলায় না, আর ভাগ করা data হয়তো cache-এ থেকেই যায়।</p>
+
+  <h3>Oversubscription: বেশি thread, কম কাজ</h3>
+  <p>CPU-র কাজ করা thread যদি core-এর চেয়ে বেশি হয়, scheduler-কে ক্রমাগত জোর করে পালা বদলাতে হয় — প্রতিবার সরাসরি দাম আর cache ঠান্ডা হওয়ার দাম। মোট কাজ একটুও বাড়ে না, শুধু বদলাবদলির খরচ যোগ হয়। Chapter 14-এর <code>parallel.js</code> এর প্রমাণ: ১২টা worker-এ ১৬৯ ms, ২৪টায় ১৮০ ms — দ্বিগুণ thread, বেশি সময়। এই অবস্থার নাম <strong>oversubscription</strong>। (এটাকে "thrashing" বলো না — ওই শব্দ Chapter 10-এর রোগের, যেখানে working set RAM-এ আঁটে না বলে system অবিরাম page আনা-নেওয়া করে।)</p>
+  <p>ব্যবহারিক নিয়ম: CPU-র কাজের জন্য thread বা worker রাখো core-এর সংখ্যার কাছাকাছি — Node-এ <code>require('os').availableParallelism()</code> সংখ্যাটা দেয়। যে কাজ বেশিরভাগ সময় অপেক্ষা করে, তার জন্য হিসাব আলাদা — সেটা Chapter 19।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Context switch-এর খরচ হলো register সেভ আর লোড করা।" ওটা সবচেয়ে সস্তা অংশ — কয়েকশো byte, nanosecond-এর কাজ। আসল দাম kernel-এ ঢোকা-বেরোনো, ঘুমন্ত thread জাগানো (<code>pingpong.js</code>-এর কয়েক µs), আর তার চেয়েও বড় — switch-এর পরে ঠান্ডা cache, ভাগাভাগি করা TLB, আর অন্যের শেখা branch predictor। এজন্যই "সস্তা" thread হাজারটা বানালে machine ধীর হয়ে পড়ে।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>CPU হলো এমন এক পাঠক যে হাজারটা বই "একসাথে" পড়ছে — প্রতিটা বইয়ে bookmark (context) রেখে রেখে লাফাচ্ছে। লাফানো এত দ্রুত যে মনে হয় সব বই একসাথে পড়া হচ্ছে। কিন্তু প্রতিটা লাফে bookmark রাখা-খোঁজা + "কোথায় যেন ছিলাম" মনে করার (cache warm-up) খরচ আছে।</p>
-  </div>
-
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p><code>vmstat 1</code> চালাও — <code>cs</code> column দেখায় প্রতি second context switch-এর সংখ্যা। একটা idle machine-এও হাজারে হাজারে দেখতে পারো। তারপর কোনো busy কাজ চালিয়ে দেখো সংখ্যাটা কীভাবে নড়ে।</p>
+    <p>Context switch = kernel mode-এ ঢুকে একজনের context সেভ, scheduler-এর বাছাই, দরকার হলে page table বদল, আরেকজনের context লোড, ফেরা। শুরু হয় দুইভাবে — thread নিজে block হলে (voluntary) বা timer তাকে নামালে (involuntary)। দাম দুই স্তরে: সরাসরি কয়েক µs, আর cache/TLB ঠান্ডা হওয়ার লুকানো দাম। তাই CPU-র কাজে core-এর চেয়ে বেশি thread মানে লোকসান।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Context-এ ঠিক কী কী থাকে?</li>
-      <li>Switch trigger হওয়ার দুই পথ কী কী?</li>
-      <li>Context switch-এর সবচেয়ে বড় hidden cost কোনটা এবং কেন?</li>
+      <li>একটা thread-এর context-এ কী কী থাকে, আর switch-এর সময় সেটা কোথায় রাখা হয়?</li>
+      <li>Switch-এর ধাপ গুলো কী কী? কোন ধাপটা শুধু দুই আলাদা process-এর মধ্যে switch-এ লাগে?</li>
+      <li>Voluntary আর involuntary switch-এর পার্থক্য কী? <code>switches.js</code>-এর তিনটা ফল (১৯৯/০, ৭/১৪, ৮/২৭৫) ব্যাখ্যা করো।</li>
+      <li><code>pingpong.js</code>-এ ঘুমিয়ে পালা দেওয়া spin-এর চেয়ে ২০ গুণেরও বেশি দামি কেন? তবু সবসময় spin করা খারাপ কেন?</li>
+      <li>Context switch-এর লুকানো দাম কী? CPU-র কাজে core-এর চেয়ে বেশি thread দিলে কী হয়, আর এটাকে thrashing বলা ভুল কেন?</li>
     </ul>
   </div>

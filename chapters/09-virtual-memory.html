@@ -1,70 +1,215 @@
   <p class="part-label">PART 3 · MEMORY</p>
   <h2>Chapter 9 — Virtual Memory</h2>
-  <p class="chap-sub">এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ chapter-গুলোর একটা। ধীরে পড়ো — এটা clear হলে OS-এর অর্ধেক রহস্য খুলে যায়।</p>
+  <p class="chap-sub">এই বইয়ের সবচেয়ে গুরুত্বপূর্ণ ধারণাগুলোর একটা: প্রতিটা process কীভাবে নিজের একটা পুরো memory-জগৎ পায়, আর CPU প্রতিটা access-এ কীভাবে সেটাকে আসল RAM-এ অনুবাদ করে। ধীরে পড়ো।</p>
 
-  <h3>Problem: সবাই একই RAM চায়</h3>
-  <p>ধরো process-রা সরাসরি physical address ব্যবহার করতো। তাহলে তিনটা মারাত্মক সমস্যা:</p>
-    <ol>
-    <li><strong>Isolation নেই:</strong> Chrome ভুল করে (বা malware ইচ্ছা করে) তোমার password manager-এর memory পড়ে ফেলতে পারতো — শুধু address জানলেই হলো।</li>
-    <li><strong>Coordination নightmare:</strong> Compiler code বানানোর সময় জানেই না program-টা RAM-এর কোথায় বসবে, আর কোন address অন্য কেউ ব্যবহার করছে।</li>
-    <li><strong>RAM-এর সীমা = hard limit:</strong> 8GB RAM-এ সব process মিলে 8GB-র বেশি কিছুতেই না।</li>
-  </ol>
+  <p>এই chapter আগের অনেকগুলো ঝুলে থাকা সুতো একসাথে বাঁধবে, তাই আগে সেগুলো এক জায়গায় রাখি। <strong>Physical address</strong>: RAM-এর আসল ঠিকানা, যেটা শুধু kernel দেখে (Chapter 7)। <strong>Address space</strong>: প্রতিটা process-এর নিজস্ব address-এর জগৎ (Chapter 3), যার ভেতরে code, data, heap, stack নিজ নিজ <strong>permission</strong> (<code>r-x</code>, <code>rw-</code>) নিয়ে সাজানো (Chapter 5)। আর কয়েকটা প্রতিশ্রুতি: "লেখার চেষ্টায় CPU থামে" (Chapter 5-এর <code>writecode</code>), "১০৪ MB-র node চালু হয়ে মাত্র ৩৭ MB RAM নেয়" (Chapter 4), "kernel memory দেয় page ধরে" (Chapter 6)। এই chapter-এ সবগুলোর ব্যাখ্যা একটাই।</p>
 
-  <h3>Idea: প্রত্যেককে নিজের একটা "নকল" memory জগৎ দাও</h3>
-  <p>OS + hardware মিলে প্রতিটা process-কে একটা illusion দেয়: <strong>"পুরো memory তোমার একার।"</strong> প্রতিটা process পায় নিজস্ব <strong>virtual address space</strong> — address 0 থেকে শুরু করে বিশাল একটা range, যেখানে Chapter 5-এর সেই layout (code, data, heap, stack) সাজানো থাকে। Process-এর সব pointer, সব address — এগুলো <strong>virtual address</strong>। Physical RAM-এর সাথে এদের direct মিল নেই।</p>
-  <p>তাহলে আসল RAM-এ পৌঁছায় কীভাবে? <strong>Translation</strong>-এর মাধ্যমে। প্রতিটা memory access-এ virtual address → physical address-এ convert হয়।</p>
-
-  <h3>Page, page frame, page table</h3>
-  <p>Byte-by-byte translation রাখা অসম্ভব (mapping table-ই RAM খেয়ে ফেলতো)। তাই memory-কে ভাগ করা হয় fixed-size টুকরায়:</p>
+  <h3>Physical address সরাসরি দিলে কী হতো</h3>
+  <p>ধরো process গুলো RAM-এর physical address সরাসরি ব্যবহার করত — pointer মানে RAM-এর আসল ঠিকানা। তিনটা সমস্যা সঙ্গে সঙ্গে ধরা পড়ে:</p>
   <ul>
-    <li><strong>Page:</strong> Virtual address space-এর টুকরা — সাধারণত 4KB।</li>
-    <li><strong>Page frame:</strong> Physical RAM-এর একই size-এর টুকরা।</li>
-    <li><strong>Page table:</strong> প্রতিটা process-এর নিজস্ব "dictionary" — কোন virtual page কোন physical frame-এ বসেছে। Kernel এটা maintain করে।</li>
+    <li><strong>পাহারা নেই।</strong> যেকোনো process যেকোনো address-এ পড়তে-লিখতে পারত। তোমার password manager-এর secret কোন address-এ আছে জানলেই Chrome-এর একটা buggy extension সেটা পড়ে ফেলত।</li>
+    <li><strong>কে কোথায় বসবে?</strong> Chapter 4-এ দেখেছ linker <code>main</code>-কে বসিয়েছে <code>0x100000460</code>-এ, আর সেই সংখ্যা machine code-এর ভেতরে লেখা। দুইটা program যদি একই address চায়? প্রতিবার load-এর সময় program-এর ভেতরের সব address নতুন খালি জায়গা অনুযায়ী বদলাতে হতো; আর RAM-এ program আসা-যাওয়ায় খালি জায়গা টুকরো টুকরো হয়ে যেত — Chapter 6-এর fragmentation, এবার পুরো machine-এর মাপে।</li>
+    <li><strong>যা চাইবে, এখনই দিতে হবে।</strong> ১ GB-র একটা buffer বানালে ১ GB RAM এখনই আলাদা করে রাখতে হতো, তুমি সেটা ব্যবহার করো বা না করো। সব process-এর মোট চাহিদা RAM-এর মাপ ছাড়ালেই শেষ।</li>
   </ul>
-  <pre class="diagram"><span class="u">Process A</span>                                <span class="u">Process B</span>
-virtual addr 0x1000                       virtual addr 0x1000  <span class="dim">← একই address!</span>
-      ↓                                         ↓
-<span class="k">A-এর Page Table</span>                           <span class="k">B-এর Page Table</span>
-      ↓                                         ↓
-Physical frame #87                        Physical frame #412  <span class="dim">← আলাদা RAM!</span>
 
-              Physical RAM
-   [ frame 87: A-র data ] ... [ frame 412: B-র data ]</pre>
-  <p class="diagram-caption">দুই process-এর virtual address এক হলেও page table আলাদা — তাই physical memory আলাদা। এটাই isolation-এর মূলমন্ত্র।</p>
-  <p>Translation-টা করে CPU-র ভিতরের একটা hardware unit — <strong>MMU</strong> (Memory Management Unit)। প্রতিটা memory access-এ MMU page table দেখে address translate করে। আর যেহেতু প্রতিবার page table (যেটা নিজেই RAM-এ থাকে) পড়া দামি, MMU-র ভিতরে থাকে <strong>TLB</strong> (Translation Lookaside Buffer) — সাম্প্রতিক translation-গুলোর একটা ছোট cache। বেশিরভাগ access TLB-তেই মিটে যায়।</p>
+  <h3>Idea: প্রতিটা process-কে নিজস্ব address-এর জগৎ</h3>
+  <p>সমাধান: process যত address দেখে ও ব্যবহার করে — প্রতিটা pointer, PC, SP — সবই <strong>virtual address</strong>। প্রতিটা process-এর জন্য kernel একটা আলাদা অনুবাদ-তালিকা রাখে: "এই process-এর এই virtual address আসলে RAM-এর ওই physical address"। আর CPU প্রতিটা load, store আর instruction fetch-এর সময় hardware দিয়ে অনুবাদটা করে। Process কখনো জানে না তার data RAM-এর আসল কোথায় আছে।</p>
+  <p>এটা এখনই নিজের চোখে দেখা যায়। V8 সাধারণত নিজের heap এলোমেলো একটা জায়গায় বসায়, কিন্তু <code>--random-seed</code> দিয়ে এলোমেলোর বীজ বেঁধে দিলে দুইটা আলাদা process ঠিক একই virtual address বেছে নেয়। তখন দুইটা process একসাথে চালাও, আলাদা মান দিয়ে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — same-address.js</div>
+    <div class="codewrap"><pre><code>// চালাও: node --allow-natives-syntax --random-seed=42 same-address.js 111
+const box = { value: Number(process.argv[2]) };
+%DebugPrint(box);                       // box কোন address-এ আছে
+setTimeout(() =&gt; {
+  console.log(`pid ${process.pid}: 2 সেকেন্ড পরেও box.value = ${box.value}`);
+}, 2000);</code></pre></div>
+    <p>দুইটা terminal-এ প্রায় একসাথে চালাও — একটায় শেষে <code>111</code>, আরেকটায় <code>222</code>। আমার Mac-এ (লম্বা output থেকে দরকারি লাইন):</p>
+    <div class="codewrap"><pre><code># terminal 1
+DebugPrint: 0x23143ad24b49: [JS_OBJECT_TYPE]
+pid 93215: 2 সেকেন্ড পরেও box.value = 111
+
+# terminal 2
+DebugPrint: 0x23143ad24b49: [JS_OBJECT_TYPE]
+pid 93223: 2 সেকেন্ড পরেও box.value = 222</code></pre></div>
+  </div>
+  <p>দুইটা process একই মুহূর্তে জীবিত, দুইটার <code>box</code> <em>হুবহু একই address</em>-এ — <code>0x23143ad24b49</code>। অথচ একটায় ১১১, আরেকটায় ২২২, কেউ কারও মান মুছে দেয়নি। একই address দুই জায়গায় দুই রকম মান রাখতে পারে শুধু তখনই, যখন address-টা আসল জায়গা না — প্রত্যেকের নিজের অনুবাদ-তালিকা একই সংখ্যাকে RAM-এর আলাদা জায়গায় পাঠাচ্ছে। Chapter 3-এর দুই terminal-এর দুই <code>count</code>-এর রহস্যের সমাধানও এটাই।</p>
+
+  <h3>Page, frame, page table</h3>
+  <p>অনুবাদ-তালিকা byte ধরে রাখা অসম্ভব — প্রতি byte-এর জন্য একটা ৮-byte-এর entry লাগলে তালিকাটাই memory-র চেয়ে আটগুণ বড় হতো। তাই অনুবাদ হয় বড় টুকরো ধরে:</p>
+  <ul>
+    <li><strong>Page</strong> — virtual address space-এর নির্দিষ্ট মাপের একটা টুকরো।</li>
+    <li><strong>Frame</strong> (বা page frame) — physical RAM-এর একই মাপের একটা টুকরো।</li>
+    <li><strong>Page table</strong> — প্রতিটা process-এর নিজস্ব তালিকা: কোন page কোন frame-এ বসানো, আর সেই page-এর permission কী (পড়া, লেখা, চালানো যাবে কি না; user mode থেকে ছোঁয়া যাবে কি না)। Kernel এটা বানায় আর বদলায়; process নিজে এটা ছুঁতে পারে না।</li>
+  </ul>
+  <div class="codewrap"><pre><code>getconf PAGESIZE</code></pre></div>
+  <p>আমার Mac-এ <code>16384</code> (১৬ KB — Apple Silicon-এর মাপ), Docker-এর Linux-এ <code>4096</code> (৪ KB — বেশিরভাগ Linux machine-এর মাপ)। এখন একটা address-কে দুই ভাগে ভাঙা যায়। ১৬ KB = ২<sup>১৪</sup> byte, তাই address-এর নিচের ১৪টা bit হলো page-এর ভেতরে কত দূরে (<strong>offset</strong>), আর বাকি উপরের bit গুলো হলো <strong>page number</strong>। ওপরের <code>box</code>-এর address দিয়ে Node-এই হিসাব করো:</p>
+  <div class="codewrap"><pre><code>node -e "
+const addr = 0x23143ad24b49n;
+console.log('page number:', '0x' + (addr &gt;&gt; 14n).toString(16));
+console.log('offset     :', '0x' + (addr &amp; 0x3fffn).toString(16));"</code></pre></div>
+  <p>Output: <code>page number: 0x8c50eb49</code>, <code>offset: 0xb49</code>। অনুবাদের সময় শুধু page number বদলায় — page table থেকে frame number আনা হয় — আর offset হুবহু থাকে। দুই process-এর page number একই (<code>0x8c50eb49</code>), কিন্তু দুইজনের page table সেটাকে আলাদা frame-এ পাঠায়।</p>
+  <p>একটা বাস্তব সূক্ষ্মতা: ৬৪-bit address space বিশাল আর প্রায় পুরোটা ফাঁকা, তাই page table একটা সমতল তালিকা না — কয়েক স্তরের একটা গাছ (সাধারণত ৪ স্তর), যাতে ফাঁকা অংশের জন্য কোনো entry-ই রাখতে না হয়। আর CPU-র একটা বিশেষ register জানে এই মুহূর্তে কোন process-এর গাছ ব্যবহার করতে হবে; kernel এক process থেকে আরেক process-এ গেলে সেই register বদলে দেয় (Chapter 17)।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 440" width="100%" role="img" aria-label="Process A and process B each map the same virtual page of box to different physical frames holding 111 and 222; both map libc and node code to the same shared frames; an untouched page of B has no frame yet">
+      <defs>
+        <marker id="c09f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-u">Process A · PID 93215</text>
+      <text x="400" y="30" text-anchor="middle" class="t-h">Physical RAM (frames)</text>
+      <text x="776" y="30" text-anchor="end" class="t-u">Process B · PID 93223</text>
+
+      <rect x="24" y="46" width="180" height="44" rx="6" class="b-u"/><text x="38" y="73" class="t-s">stack page</text>
+      <rect x="24" y="128" width="180" height="44" rx="6" class="b-u"/><text x="38" y="147" class="t-s">heap page with box</text><text x="38" y="164" class="t-m mono">0x23143ad24b49</text>
+      <rect x="24" y="214" width="180" height="44" rx="6" class="b-u"/><text x="38" y="241" class="t-s">libc code page</text>
+      <rect x="24" y="280" width="180" height="44" rx="6" class="b-u"/><text x="38" y="307" class="t-s">node code page</text>
+
+      <rect x="596" y="46" width="180" height="44" rx="6" class="b-u"/><text x="610" y="73" class="t-s">stack page</text>
+      <rect x="596" y="128" width="180" height="44" rx="6" class="b-u"/><text x="610" y="147" class="t-s">heap page with box</text><text x="610" y="164" class="t-m mono">0x23143ad24b49</text>
+      <rect x="596" y="214" width="180" height="44" rx="6" class="b-u"/><text x="610" y="241" class="t-s">libc code page</text>
+      <rect x="596" y="280" width="180" height="44" rx="6" class="b-u"/><text x="610" y="307" class="t-s">node code page</text>
+      <rect x="596" y="346" width="180" height="44" rx="6" class="b-m"/><text x="610" y="365" class="t-m t-s">heap page, never touched</text><text x="610" y="382" class="t-d t-s">no frame yet</text>
+
+      <rect x="330" y="48" width="140" height="30" rx="4" class="b"/><text x="400" y="68" text-anchor="middle" class="t-s">frame 9 · A stack</text>
+      <rect x="330" y="88" width="140" height="30" rx="4" class="b"/><text x="400" y="108" text-anchor="middle" class="t-s">frame 301 · B stack</text>
+      <rect x="330" y="138" width="140" height="30" rx="4" class="b"/><text x="400" y="158" text-anchor="middle" class="t-s">frame 87 · value 111</text>
+      <rect x="330" y="178" width="140" height="30" rx="4" class="b"/><text x="400" y="198" text-anchor="middle" class="t-s">frame 412 · value 222</text>
+      <rect x="330" y="228" width="140" height="30" rx="4" class="b-ok"/><text x="400" y="248" text-anchor="middle" class="t-ok t-s">frame 23 · libc</text>
+      <rect x="330" y="288" width="140" height="30" rx="4" class="b-ok"/><text x="400" y="308" text-anchor="middle" class="t-ok t-s">frame 530 · node</text>
+      <rect x="330" y="338" width="140" height="30" rx="4" class="b-m"/><text x="400" y="358" text-anchor="middle" class="t-m t-s">free</text>
+
+      <path d="M204 68 C 270 68, 270 63, 326 63" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M204 150 C 270 150, 270 153, 326 153" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M204 236 C 270 236, 270 243, 326 243" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M204 302 C 270 302, 270 303, 326 303" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M596 68 C 530 68, 530 103, 474 103" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M596 150 C 530 150, 530 193, 474 193" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M596 236 C 530 236, 530 243, 474 243" class="ln-u" marker-end="url(#c09f1-u)"/>
+      <path d="M596 302 C 530 302, 530 303, 474 303" class="ln-u" marker-end="url(#c09f1-u)"/>
+
+      <text x="266" y="398" text-anchor="middle" class="t-m t-s">A's page table</text>
+      <text x="534" y="398" text-anchor="middle" class="t-m t-s">B's page table</text>
+      <text x="400" y="426" text-anchor="middle" class="t-ok t-s">green = one frame, shared</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই process-এর <code>box</code> একই virtual page-এ, কিন্তু দুইজনের page table তাকে আলাদা frame-এ (৮৭ আর ৪১২) পাঠায় — তাই মান আলাদা। Libc আর node-এর code কেউ বদলাতে পারে না, তাই দুজনের page table একই frame দেখায় — RAM-এ একটাই copy। B-এর একটা page কখনো ছোঁয়া হয়নি, তার পেছনে এখনো কোনো frame নেই। (Frame নম্বরগুলো বোঝানোর জন্য বানানো।)</p>
+
+  <h3>MMU আর TLB: প্রতিটা access-এ অনুবাদ</h3>
+  <p>অনুবাদ হয় প্রতিটা memory access-এ — প্রতি সেকেন্ডে শত কোটিবার। Software দিয়ে এটা করলে প্রতিটা load-এর আগে আরও কয়েকটা instruction লাগত; সব program কয়েক গুণ ধীর হয়ে যেত। তাই কাজটা করে CPU-র ভেতরের একটা hardware অংশ: <strong>MMU</strong> (Memory Management Unit)। প্রতিটা access-এ MMU:</p>
+  <ol>
+    <li>Virtual address থেকে page number আলাদা করে;</li>
+    <li>page table-এ সেই page-এর entry খোঁজে, frame number আনে;</li>
+    <li>permission মেলায় — এটা লেখা, অথচ page-টা <code>r-x</code>? এটা user mode, অথচ page-টা kernel-এর?</li>
+    <li>frame number আর অপরিবর্তিত offset জুড়ে physical address বানিয়ে Chapter 8-এর cache/RAM-এর পথে পাঠায়।</li>
+  </ol>
+  <p>ধাপ ২-এ একটা সমস্যা আছে: page table নিজেই RAM-এ থাকে, আর চার স্তরের গাছ মানে একটা অনুবাদের জন্য চারটা memory পড়া। প্রতিটা load-এর আগে চারটা বাড়তি load — অসহনীয়। তাই MMU-র ভেতরে একটা ছোট বিশেষ cache থাকে যেখানে সম্প্রতি ব্যবহৃত অনুবাদগুলো জমা থাকে: <strong>TLB</strong> (Translation Lookaside Buffer)। বেশিরভাগ access-এর অনুবাদ TLB-তেই মিলে যায়, প্রায় বিনামূল্যে; না মিললে MMU গাছ ধরে হেঁটে (<strong>page table walk</strong>) অনুবাদ বের করে আর TLB-তে রেখে দেয়। TLB-র দাম কত আর কখন সেটা সমস্যা হয় — Chapter 10।</p>
+  <p>Chapter 5-এর <code>writecode</code> এখন পুরোপুরি ব্যাখ্যা করা যায়: <code>main</code>-এর code যে page-এ, তার page table entry-তে "লেখা নিষেধ"। Store instruction এল, MMU ধাপ ৩-এ permission ভাঙা পেল, আর অনুবাদ না করে CPU-কে থামিয়ে kernel-কে ডাকল।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="Address translation: the page number of a virtual address goes to the TLB; on a miss the MMU walks the page table in RAM; permissions are checked; the frame number joined with the unchanged offset forms the physical address; a missing entry or a permission violation raises a page fault to the kernel">
+      <defs>
+        <marker id="c09f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c09f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="26" class="t-m t-s">virtual address (what the process uses)</text>
+      <rect x="24" y="36" width="232" height="40" class="b-u"/><text x="140" y="61" text-anchor="middle" class="mono">page no. 0x8c50eb49</text>
+      <rect x="256" y="36" width="120" height="40" class="b-m"/><text x="316" y="61" text-anchor="middle" class="mono">offset 0xb49</text>
+
+      <rect x="24" y="100" width="520" height="136" rx="10" class="b"/>
+      <text x="42" y="124" class="t-h">MMU</text>
+      <text x="158" y="124" class="t-m t-s">inside the CPU, on every load / store / fetch</text>
+      <line x1="140" y1="76" x2="140" y2="138" class="ln" marker-end="url(#c09f2-a)"/>
+      <rect x="44" y="140" width="190" height="72" rx="8" class="b-u"/>
+      <text x="139" y="166" text-anchor="middle" class="t-s">TLB: recent translations</text>
+      <text x="139" y="188" text-anchor="middle" class="t-ok t-s">hit → frame number, ~free</text>
+      <line x1="234" y1="176" x2="274" y2="176" class="ln" marker-end="url(#c09f2-a)"/>
+      <text x="254" y="168" text-anchor="middle" class="t-d t-s">miss</text>
+      <rect x="278" y="140" width="246" height="72" rx="8" class="b"/>
+      <text x="401" y="164" text-anchor="middle" class="t-s">page table walk (tree in RAM,</text>
+      <text x="401" y="182" text-anchor="middle" class="t-s">~4 levels), then fill the TLB</text>
+      <text x="401" y="202" text-anchor="middle" class="t-m t-s">+ check permission bits</text>
+
+      <line x1="140" y1="236" x2="140" y2="264" class="ln" marker-end="url(#c09f2-a)"/>
+      <rect x="24" y="266" width="232" height="40" class="b-k"/><text x="140" y="291" text-anchor="middle" class="mono">frame no. (from table)</text>
+      <rect x="256" y="266" width="120" height="40" class="b-m"/><text x="316" y="291" text-anchor="middle" class="mono">offset 0xb49</text>
+      <text x="390" y="291" class="t-m t-s">= physical address → cache / RAM</text>
+      <line x1="316" y1="76" x2="316" y2="98" class="ln dash"/>
+      <line x1="316" y1="238" x2="316" y2="264" class="ln dash"/>
+
+      <path d="M524 176 H600" class="ln-d dash" marker-end="url(#c09f2-d)"/>
+      <rect x="604" y="130" width="172" height="100" rx="8" class="b-d"/>
+      <text x="690" y="156" text-anchor="middle" class="t-d t-s">no frame, or</text>
+      <text x="690" y="174" text-anchor="middle" class="t-d t-s">permission violated</text>
+      <text x="690" y="200" text-anchor="middle" class="t-s">→ page fault:</text>
+      <text x="690" y="218" text-anchor="middle" class="t-s">CPU calls the kernel</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Page number যায় MMU-তে — আগে TLB, না পেলে RAM-এ রাখা page table-এর গাছ ধরে হাঁটা। Offset (dashed দাগ) অনুবাদ ছাড়াই সোজা নিচে নামে। Entry না থাকলে বা permission না মিললে অনুবাদ হয় না — kernel-কে ডাকা হয়, যেটা পরের section।</p>
 
   <h3>Page fault: illusion-এর সবচেয়ে চালাক অংশ</h3>
-  <p>Page table-এ একটা entry-র "এই page-এর পিছনে এখন কোনো physical frame নেই" অবস্থাও থাকতে পারে। Process সেই address ছুঁলেই MMU হাত তুলে দেয় — CPU একটা <strong>page fault</strong> তোলে, control চলে যায় kernel-এর কাছে। তখন kernel সিদ্ধান্ত নেয়:</p>
+  <p>Process যত memory চায়, সব যদি সঙ্গে সঙ্গে RAM-এ বসাতে হতো, তাহলে ১ GB-র buffer বানালে ১ GB RAM তখনই আটকে যেত, আর ১০৪ MB-র node binary চালু হওয়ার আগেই পুরোটা disk থেকে পড়তে হতো — এমনকি যে অংশ কখনো চলবে না সেটাও।</p>
+  <p>Kernel এখানে চালাকি করে। Process memory চাইলে kernel শুধু লিখে রাখে "এই virtual range বৈধ, এই permission-এ", কিন্তু page table-এ কোনো frame বসায় না — entry-তে লেখা থাকে "present না"। Process প্রথমবার সেই page ছুঁলে MMU entry খালি পায় আর CPU-কে থামিয়ে kernel-কে ডাকে। এর নাম <strong>page fault</strong>। Kernel-এর handler তখন দেখে:</p>
   <ul>
-    <li>Address টা বৈধ, কিন্তু data এখনো আনা হয়নি (যেমন executable-এর যে অংশ এখনো পড়া হয়নি, বা swap-এ পাঠানো page)? → RAM-এ frame জোগাড় করো, data আনো, page table update করো, process-কে আবার চালাও। <strong>Process টেরও পায় না।</strong></li>
-    <li>Address টা আসলেই অবৈধ? → process-কে <strong>segmentation fault</strong> দিয়ে মেরে ফেলো। C-তে ভুল pointer-এর সেই বিখ্যাত <code>segfault</code>, এই ঘটনা।</li>
+    <li><strong>Address বৈধ, শুধু এখনো বসানো হয়নি</strong> — একটা খালি frame নাও, শূন্য দিয়ে ভরো (বা file থেকে দরকারি অংশ পড়ো), page table-এ বসাও, আর যে instruction থেমেছিল সেটা আবার চালাও। Process টেরই পায় না। Disk ছাড়াই মেটানো এমন fault-কে বলে <strong>minor page fault</strong>।</li>
+    <li><strong>Address অবৈধ</strong>, বা permission ভাঙা — process-কে signal পাঠিয়ে মেরে ফেলো। Chapter 5-এর <code>Segmentation fault</code>।</li>
   </ul>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — lazy.js</div>
+    <p><code>process.resourceUsage().minorPageFault</code> বলে এই process-এ এ পর্যন্ত কতগুলো minor fault হয়েছে; RSS (Chapter 6) বলে কতটা RAM আসলে দখলে।</p>
+    <div class="codewrap"><pre><code>const mb = n =&gt; (n / 2 ** 20).toFixed(0).padStart(5) + ' MB';
+const faults = () =&gt; process.resourceUsage().minorPageFault;
+const PAGE = 16384;                                  // macOS-এ 16 KB; Linux-এ 4096 দাও
 
-  <h3>এই design থেকে ফাউ পাওয়া superpower গুলো</h3>
+console.log('start          rss', mb(process.memoryUsage().rss), '| minor faults', faults());
+const buf = new Uint8Array(1024 * 2 ** 20);          // ১ GB চাইলাম
+console.log('after alloc    rss', mb(process.memoryUsage().rss), '| minor faults', faults());
+for (let i = 0; i &lt; buf.length; i += PAGE) buf[i] = 1; // প্রতিটা page-এ মাত্র ১ byte লিখলাম
+console.log('after touching rss', mb(process.memoryUsage().rss), '| minor faults', faults());</code></pre></div>
+    <p>আমার Mac-এ:</p>
+    <div class="codewrap"><pre><code>start          rss    36 MB | minor faults 2655
+after alloc    rss    38 MB | minor faults 2754
+after touching rss  1066 MB | minor faults 68586</code></pre></div>
+  </div>
+  <p>১ GB চাওয়ার পরেও RSS বাড়ল মাত্র ২ MB — kernel শুধু প্রতিশ্রুতি লিখেছে। তারপর প্রতিটা page-এ একটা করে byte লেখায় RSS লাফিয়ে ১ GB, আর minor fault বাড়ল ৬৫,৮৩২টা। হিসাব মেলাও: ১ GB ÷ ১৬ KB = ৬৫,৫৩৬ page — প্রায় প্রতিটা page-এর প্রথম ছোঁয়ায় একটা করে fault, kernel-এর একটা করে frame বসানো। (Linux-এ একই পরীক্ষায় fault অনেক কম আসে — কারণটা Chapter 10-এর huge page।)</p>
+  <p>একই কারণে প্রায় প্রতিটা process-এর "চাওয়া" memory তার "পাওয়া" memory-র চেয়ে অনেক বড়। Linux-এ দুটো পাশাপাশি দেখা যায়:</p>
+  <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "console.log(require('fs').readFileSync('/proc/self/status','utf8').match(/^Vm(Size|RSS).*$/gm).join('\n'))"</code></pre></div>
+  <p>আমার output: <code>VmSize: 421312 kB</code> (virtual address space-এ মোট বৈধ করা range) আর <code>VmRSS: 49816 kB</code> (আসলে frame পাওয়া অংশ) — আটগুণের বেশি পার্থক্য। <code>ps</code>-এর <code>VSZ</code> আর <code>RSS</code> column-ও এই দুই জিনিস।</p>
+
+  <h3>এই design থেকে ফাউ পাওয়া সুবিধা</h3>
+  <p>একবার page table হাতে এলে kernel অনেক কৌশল করতে পারে শুধু table-এর entry সাজিয়ে:</p>
   <ul>
-    <li><strong>Lazy loading:</strong> পুরো executable আগে load করার দরকার নেই — page fault হলে যে অংশ লাগবে সেটাই আসবে। বড় program-ও দ্রুত start হয়।</li>
-    <li><strong>Shared memory:</strong> দুই process-এর page table-এ একই physical frame map করে দাও — ব্যস, memory shared। Shared library (libc) এভাবেই শত process-এ এক কপি থাকে।</li>
-    <li><strong>Copy-on-write (CoW):</strong> Process copy করার সময় (fork, Chapter 15) memory সত্যি সত্যি copy না করে দুজনের page table-ই একই frame-এ point করাও, শুধু read-only mark করো। কেউ <em>লিখতে</em> গেলে তখনই সেই page-টা copy হবে। ফলে fork প্রায় instant।</li>
-    <li><strong>Swap:</strong> RAM ভরে গেলে কম-ব্যবহৃত page disk-এ সরিয়ে frame খালি করা যায়। পরে দরকার হলে page fault-এর মাধ্যমে ফেরত আসবে।</li>
+    <li><strong>Shared memory</strong> — কয়েকটা process-এর page table-এ একই frame বসিয়ে দাও। ওপরের ছবির libc আর node-এর code এভাবেই RAM-এ একবার থাকে।</li>
+    <li><strong>Copy-on-write</strong> — process-এর copy বানানোর সময় memory copy না করে দুজনের page table-এ একই frame বসাও, কিন্তু "লেখা নিষেধ" চিহ্ন দিয়ে; কেউ লিখতে গেলে page fault হবে, তখন শুধু সেই page-টা copy করো। নতুন process বানানোর <code>fork</code> এভাবে প্রায় তাৎক্ষণিক (Chapter 15)।</li>
+    <li><strong>File-কে memory হিসেবে map করা</strong> আর <strong>swap</strong> (RAM ভরে গেলে কম-ব্যবহৃত page disk-এ সরানো) — দুটোই page fault-এর উপর দাঁড়ানো; Chapter 10।</li>
   </ul>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — shared frame-এর প্রমাণ</div>
+    <p>Linux প্রতিটা mapping-এর জন্য <code>/proc/&lt;PID&gt;/smaps</code>-এ দুইটা সংখ্যা দেয়: <code>Rss</code> (এই mapping-এর কতটা RAM-এ আছে) আর <code>Pss</code> (proportional set size — shared page-এর দাম যতজন share করছে তাদের মধ্যে ভাগ করে দেখানো)। একটা <code>sleep</code>-এর libc code দেখো, তারপর আরও তিনটা <code>sleep</code> চালিয়ে আবার দেখো:</p>
+    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim sh -c '
+  sleep 100 &amp; P=$!; sleep 0.3
+  awk "/libc.so.6/ &amp;&amp; /r-xp/ {f=1} f &amp;&amp; /^(Rss|Pss):/ {print} f &amp;&amp; /^Pss/ {exit}" /proc/$P/smaps
+  for i in 1 2 3; do sleep 100 &amp; done; sleep 0.3
+  awk "/libc.so.6/ &amp;&amp; /r-xp/ {f=1} f &amp;&amp; /^(Rss|Pss):/ {print} f &amp;&amp; /^Pss/ {exit}" /proc/$P/smaps'</code></pre></div>
+    <p>আমার output: প্রথমে <code>Rss: 816 kB</code>, <code>Pss: 271 kB</code>; তিনটা বাড়তি process-এর পরে <code>Rss: 816 kB</code>, <code>Pss: 136 kB</code>। প্রথম <code>sleep</code>-এর libc-র জন্য RAM-এ পড়ে থাকা অংশ একই রইল, কিন্তু তার "ভাগের দাম" অর্ধেক হয়ে গেল — কারণ নতুন process গুলো নতুন copy আনেনি, একই frame-এর দিকে নিজেদের page table বসিয়েছে।</p>
+  </div>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"Virtual memory মানে disk-কে RAM হিসেবে ব্যবহার করা।" না — swap শুধু একটা side feature। Virtual memory-র আসল purpose হলো <strong>isolation আর address abstraction</strong>: প্রতিটা process-এর নিজস্ব, সুরক্ষিত, ধারাবাহিক address জগৎ। Swap বন্ধ থাকলেও (অনেক server-এ থাকে) virtual memory পুরোদমে চলে।</p>
+    <p>"Virtual memory মানে disk-কে RAM হিসেবে ব্যবহার করা।" না — সেটা swap, virtual memory-র অনেকগুলো ব্যবহারের একটা মাত্র। Virtual memory-র আসল কাজ তিনটা: প্রতিটা process-কে আলাদা, সুরক্ষিত address-এর জগৎ দেওয়া; page ধরে permission বসানো; আর memory আসলে ছোঁয়ার আগে পর্যন্ত RAM আটকে না রাখা। Swap পুরো বন্ধ রাখা server-এও (অনেক production server-এ তাই থাকে) virtual memory প্রতি nanosecond-এ কাজ করছে।</p>
   </div>
 
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p><code>cat /proc/&lt;PID&gt;/status | grep -i vm</code> চালাও। <code>VmSize</code> (virtual address space-এর মোট size) প্রায়ই <code>VmRSS</code> (আসলে physical RAM-এ বসে থাকা অংশ)-এর চেয়ে অনেক বড় হবে। এটাই lazy allocation-এর evidence — process অনেক address "reserve" করেছে, কিন্তু kernel frame দিয়েছে শুধু যেটুকু ছোঁয়া হয়েছে।</p>
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>প্রতিটা address যা তোমার code কখনো দেখেছে — প্রতিটা pointer, প্রতিটা <code>%DebugPrint</code> — virtual। প্রতিটা access-এ MMU page number-কে (TLB থেকে, না পেলে page table থেকে) frame number-এ বদলায়, offset রেখে দেয়, আর permission যাচাই করে। Frame না থাকলে বা নিয়ম ভাঙলে page fault — kernel হয় চুপচাপ frame বসিয়ে দেয়, নয়তো process মেরে ফেলে। Isolation, lazy allocation, shared library, copy-on-write — সব এই এক কৌশলের ফল।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>প্রতিটা process নিজস্ব virtual address space পায় কেন?</li>
-      <li>Page, page frame, page table — তিনটার সম্পর্ক কী?</li>
-      <li>TLB কী এবং কেন লাগে?</li>
-      <li>Page fault-এর দুই রকম পরিণতি কী কী?</li>
-      <li>Copy-on-write-এ fork এত সস্তা হয় কীভাবে?</li>
+      <li>Process গুলো সরাসরি physical address ব্যবহার করলে কোন তিনটা সমস্যা হতো?</li>
+      <li><code>same-address.js</code>-এ দুইটা জীবিত process-এর <code>box</code> একই address-এ, অথচ মান আলাদা — এটা কী প্রমাণ করে, আর কীভাবে সম্ভব?</li>
+      <li>Page, frame আর page table-এর সম্পর্ক কী? ১৬ KB page-এ <code>0x23143ad24b49</code> ভাঙলে কোন অংশ অনুবাদ হয় আর কোনটা হুবহু থাকে?</li>
+      <li>MMU প্রতিটা access-এ কী কী করে? TLB না থাকলে কী সমস্যা হতো?</li>
+      <li><code>lazy.js</code>-এ ১ GB চেয়েও RSS বাড়ল না কেন, আর ছোঁয়ার পরে ৬৫ হাজারের বেশি minor fault এল কেন? Page fault-এর দুই রকম পরিণতি কী?</li>
     </ul>
   </div>

@@ -1,34 +1,205 @@
   <p class="part-label">PART 4 · CPU</p>
   <h2>Chapter 14 — Pipelining আর Parallelism</h2>
-  <p class="chap-sub">CPU একটা instruction শেষ করে পরেরটা ধরে না — কেন এবং তার মানে কী।</p>
+  <p class="chap-sub">CPU কেন একটা instruction শেষ করে তবে পরেরটা ধরে না: pipeline, একসাথে কয়েকটা instruction, আগাম অনুমান — আর core-এর বাইরে গিয়ে একাধিক core-এ কাজ ভাগ করা।</p>
 
-  <h3>Pipeline: assembly line-এর কৌশল</h3>
-  <p>Chapter 12-র সেই fetch → decode → execute → memory → writeback ধাপগুলো ভাবো একটা garment factory-র line হিসেবে। এক instruction যখন decode হচ্ছে, পরেরটা তখন fetch হতে পারে — ধাপগুলো তো আলাদা যন্ত্রাংশে চলে। এটাই <strong>pipelining</strong>: এক মুহূর্তে pipeline-এর ভিতরে একাধিক instruction, প্রত্যেকে আলাদা stage-এ। ফলে প্রতিটা instruction-এর নিজের সময় না কমলেও প্রতি cycle-এ একটা করে instruction "বের হয়ে আসে"।</p>
-  <p>আসল hardware আরও এক ধাপ এগিয়ে। আধুনিক প্রতিটা core <strong>superscalar</strong> আর <strong>out-of-order</strong> — একাধিক ALU, একাধিক load/store port, তাই এক cycle-এই কয়েকটা স্বাধীন instruction চালিয়ে শেষ করতে পারে। এজন্যই <code>perf stat</code>-এ IPC (instructions per cycle) প্রায়ই ১-এর অনেক উপরে দেখবে। ফলাফল: এক core-এ performance-এর সিলিং ঠিক করে instruction-এর <em>সংখ্যা</em> নয় — ঠিক করে dependency chain (একটা result-এর জন্য পরেরটার অপেক্ষা) আর cache miss।</p>
-  <p>Pipeline-এর শত্রু হলো <strong>branch</strong> — if/else, loop-এর শর্ত। পরের instruction কোনটা, তা তো শর্তের result-এর আগে জানা যায় না! CPU তখন <em>অনুমান</em> করে (branch prediction) আগেভাগে কাজ চালিয়ে যায়; অনুমান ভুল হলে pipeline-এর আধখাওয়া কাজ ফেলে দিতে হয়। এজন্যই খুব unpredictable branching-ওয়ালা code (যেমন unsorted data-র উপর শর্ত) মাঝে মাঝে আশ্চর্যরকম ধীর হয়।</p>
+  <p>Chapter 12-এর দুইটা জিনিস লাগবে: CPU চলে <strong>clock</strong>-এর তালে, এক টিকের নাম <strong>cycle</strong>; আর একটা core-এর ভেতরে আলাদা আলাদা <strong>execution unit</strong> — কয়েকটা ALU, floating-point, load/store, branch। সেই chapter-এর <code>clock.js</code>-এর একটা অদ্ভুত দিক তখন এড়িয়ে গিয়েছিলাম: loop-এর প্রতিটা ধাপে অন্তত চারটা instruction (যোগ, <code>i</code> বাড়ানো, তুলনা, পেছনে লাফ), অথচ প্রতিটা ধাপ শেষ হয়েছে প্রায় এক cycle-এ। এক cycle-এ চারটা instruction? এই chapter সেই রহস্যের ব্যাখ্যা।</p>
 
-  <h3>Parallelism-এর স্তরগুলো</h3>
-  <ul>
-    <li><strong>Pipeline (এক core-এর ভিতরে):</strong> ধাপ overlap — উপরে দেখলাম।</li>
-    <li><strong>Multiple cores:</strong> সত্যিকারের একসাথে একাধিক instruction stream। ৮ core = ৮টা process/thread আক্ষরিকভাবেই simultaneously।</li>
-    <li><strong>SMT / Hyper-threading:</strong> এক physical core দুইটা "hardware thread" সাজে — এক thread memory-র জন্য wait করলে core-এর অলস যন্ত্রাংশ আরেক thread চালায়। দুই core-এর সমান না, কিন্তু utilization বাড়ে। এজন্যই ৪-core laptop-এ <code>nproc</code> ৮ দেখাতে পারে।</li>
-  </ul>
+  <h3>Pipeline: একটার পেছনে আরেকটা</h3>
+  <p>একটা instruction-এর জীবনে কয়েকটা ধাপ: আনা (fetch), ভাঙা (decode), চালানো (execute), দরকার হলে memory ছোঁয়া, আর ফলাফল register-এ লেখা (write back)। প্রতিটা ধাপ core-এর আলাদা অংশে হয়। CPU যদি একটা instruction-এর পাঁচটা ধাপই শেষ করে তবে পরেরটা ধরত, তাহলে যে কোনো মুহূর্তে পাঁচটা অংশের চারটা বসে থাকত — decoder কাজ করছে তো fetch unit অলস।</p>
+  <p>সমাধান কারখানার assembly line-এর মতো: একটা instruction যখন decode হচ্ছে, পরেরটা তখন fetch হচ্ছে; প্রথমটা execute-এ গেলে দ্বিতীয়টা decode-এ আর তৃতীয়টা fetch-এ। এর নাম <strong>pipeline</strong>। কারখানার উপমাটা এখানেই থামাই, আসল ব্যাপারটা সংখ্যায় বলি: প্রতিটা instruction-এর নিজের সময় একটুও কমে না — সে এখনো পাঁচ cycle ধরে pipeline পেরোয়। কিন্তু প্রতি cycle-এ একটা করে instruction শেষ হয়ে বেরিয়ে আসে। Chapter 7-এর ভাষায়: latency একই, throughput পাঁচ গুণ।</p>
 
-  <details><summary>Side note: RISC vs CISC, 32-bit vs 64-bit</summary><div class="d-body">
-    <p><strong>RISC vs CISC:</strong> Instruction set design-এর দুই দর্শন — ছোট-সরল instruction (RISC: ARM, তোমার M-series Mac) বনাম জটিল-শক্তিশালী instruction (CISC: x86)। আজকাল ভিতরের বাস্তবায়ন অনেকটা মিলে গেছে; app developer হিসেবে মূল takeaway: আলাদা instruction set মানে আলাদা machine code — এজন্যই ARM Mac-এ x86 binary সরাসরি চলে না (Rosetta translate করে)।</p>
-    <p><strong>32-bit vs 64-bit:</strong> মূলত address-এর size। 32-bit-এ virtual address space সর্বোচ্চ 4GB — আধুনিক workload-এর জন্য হাস্যকর ছোট; 64-bit-এ বিশাল (x86-64 আসলে ৬৪ না, ৪৮ bit ব্যবহার করে — ২৫৬TB, Linux-এ user space পায় তার অর্ধেক; এজন্যই user pointer সবসময় <code>0x00007fff…</code>-এর নিচে)। Registers-ও চওড়া হয়। ব্যস, এটুকুই দরকার।</p>
-  </div></details>
+  <figure class="fig">
+    <svg viewBox="0 0 800 420" width="100%" role="img" aria-label="Pipeline timeline over eleven cycles: without pipelining, each instruction takes five stages before the next starts, so only two finish; with pipelining, a new instruction enters every cycle and one finishes every cycle after the pipeline fills">
+      <text x="24" y="36" class="t-m t-s">cycle →</text>
+      <text x="140" y="36" text-anchor="middle" class="t-m t-s">1</text><text x="200" y="36" text-anchor="middle" class="t-m t-s">2</text><text x="260" y="36" text-anchor="middle" class="t-m t-s">3</text><text x="320" y="36" text-anchor="middle" class="t-m t-s">4</text><text x="380" y="36" text-anchor="middle" class="t-m t-s">5</text><text x="440" y="36" text-anchor="middle" class="t-m t-s">6</text><text x="500" y="36" text-anchor="middle" class="t-m t-s">7</text><text x="560" y="36" text-anchor="middle" class="t-m t-s">8</text><text x="620" y="36" text-anchor="middle" class="t-m t-s">9</text><text x="680" y="36" text-anchor="middle" class="t-m t-s">10</text><text x="740" y="36" text-anchor="middle" class="t-m t-s">11</text>
+
+      <text x="24" y="64" class="t-h t-s">Without pipelining — one instruction at a time</text>
+      <text x="96" y="93" text-anchor="end" class="mono">I1</text>
+      <rect x="112" y="74" width="56" height="26" rx="3" class="b"/><text x="140" y="92" text-anchor="middle" class="mono">F</text>
+      <rect x="172" y="74" width="56" height="26" rx="3" class="b"/><text x="200" y="92" text-anchor="middle" class="mono">D</text>
+      <rect x="232" y="74" width="56" height="26" rx="3" class="b-u"/><text x="260" y="92" text-anchor="middle" class="mono">E</text>
+      <rect x="292" y="74" width="56" height="26" rx="3" class="b"/><text x="320" y="92" text-anchor="middle" class="mono">M</text>
+      <rect x="352" y="74" width="56" height="26" rx="3" class="b-ok"/><text x="380" y="92" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="123" text-anchor="end" class="mono">I2</text>
+      <rect x="412" y="104" width="56" height="26" rx="3" class="b"/><text x="440" y="122" text-anchor="middle" class="mono">F</text>
+      <rect x="472" y="104" width="56" height="26" rx="3" class="b"/><text x="500" y="122" text-anchor="middle" class="mono">D</text>
+      <rect x="532" y="104" width="56" height="26" rx="3" class="b-u"/><text x="560" y="122" text-anchor="middle" class="mono">E</text>
+      <rect x="592" y="104" width="56" height="26" rx="3" class="b"/><text x="620" y="122" text-anchor="middle" class="mono">M</text>
+      <rect x="652" y="104" width="56" height="26" rx="3" class="b-ok"/><text x="680" y="122" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="153" text-anchor="end" class="mono">I3</text>
+      <rect x="712" y="134" width="56" height="26" rx="3" class="b"/><text x="740" y="152" text-anchor="middle" class="mono">F</text>
+      <text x="704" y="178" text-anchor="end" class="t-d t-s">11 cycles → only 2 instructions finished</text>
+
+      <text x="24" y="210" class="t-h t-s">With pipelining — a new instruction enters every cycle</text>
+      <text x="96" y="239" text-anchor="end" class="mono">I1</text>
+      <rect x="112" y="220" width="56" height="26" rx="3" class="b"/><text x="140" y="238" text-anchor="middle" class="mono">F</text>
+      <rect x="172" y="220" width="56" height="26" rx="3" class="b"/><text x="200" y="238" text-anchor="middle" class="mono">D</text>
+      <rect x="232" y="220" width="56" height="26" rx="3" class="b-u"/><text x="260" y="238" text-anchor="middle" class="mono">E</text>
+      <rect x="292" y="220" width="56" height="26" rx="3" class="b"/><text x="320" y="238" text-anchor="middle" class="mono">M</text>
+      <rect x="352" y="220" width="56" height="26" rx="3" class="b-ok"/><text x="380" y="238" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="267" text-anchor="end" class="mono">I2</text>
+      <rect x="172" y="248" width="56" height="26" rx="3" class="b"/><text x="200" y="266" text-anchor="middle" class="mono">F</text>
+      <rect x="232" y="248" width="56" height="26" rx="3" class="b"/><text x="260" y="266" text-anchor="middle" class="mono">D</text>
+      <rect x="292" y="248" width="56" height="26" rx="3" class="b-u"/><text x="320" y="266" text-anchor="middle" class="mono">E</text>
+      <rect x="352" y="248" width="56" height="26" rx="3" class="b"/><text x="380" y="266" text-anchor="middle" class="mono">M</text>
+      <rect x="412" y="248" width="56" height="26" rx="3" class="b-ok"/><text x="440" y="266" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="295" text-anchor="end" class="mono">I3</text>
+      <rect x="232" y="276" width="56" height="26" rx="3" class="b"/><text x="260" y="294" text-anchor="middle" class="mono">F</text>
+      <rect x="292" y="276" width="56" height="26" rx="3" class="b"/><text x="320" y="294" text-anchor="middle" class="mono">D</text>
+      <rect x="352" y="276" width="56" height="26" rx="3" class="b-u"/><text x="380" y="294" text-anchor="middle" class="mono">E</text>
+      <rect x="412" y="276" width="56" height="26" rx="3" class="b"/><text x="440" y="294" text-anchor="middle" class="mono">M</text>
+      <rect x="472" y="276" width="56" height="26" rx="3" class="b-ok"/><text x="500" y="294" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="323" text-anchor="end" class="mono">I4</text>
+      <rect x="292" y="304" width="56" height="26" rx="3" class="b"/><text x="320" y="322" text-anchor="middle" class="mono">F</text>
+      <rect x="352" y="304" width="56" height="26" rx="3" class="b"/><text x="380" y="322" text-anchor="middle" class="mono">D</text>
+      <rect x="412" y="304" width="56" height="26" rx="3" class="b-u"/><text x="440" y="322" text-anchor="middle" class="mono">E</text>
+      <rect x="472" y="304" width="56" height="26" rx="3" class="b"/><text x="500" y="322" text-anchor="middle" class="mono">M</text>
+      <rect x="532" y="304" width="56" height="26" rx="3" class="b-ok"/><text x="560" y="322" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="351" text-anchor="end" class="mono">I5</text>
+      <rect x="352" y="332" width="56" height="26" rx="3" class="b"/><text x="380" y="350" text-anchor="middle" class="mono">F</text>
+      <rect x="412" y="332" width="56" height="26" rx="3" class="b"/><text x="440" y="350" text-anchor="middle" class="mono">D</text>
+      <rect x="472" y="332" width="56" height="26" rx="3" class="b-u"/><text x="500" y="350" text-anchor="middle" class="mono">E</text>
+      <rect x="532" y="332" width="56" height="26" rx="3" class="b"/><text x="560" y="350" text-anchor="middle" class="mono">M</text>
+      <rect x="592" y="332" width="56" height="26" rx="3" class="b-ok"/><text x="620" y="350" text-anchor="middle" class="mono">W</text>
+      <text x="96" y="379" text-anchor="end" class="mono">I6</text>
+      <rect x="412" y="360" width="56" height="26" rx="3" class="b"/><text x="440" y="378" text-anchor="middle" class="mono">F</text>
+      <rect x="472" y="360" width="56" height="26" rx="3" class="b"/><text x="500" y="378" text-anchor="middle" class="mono">D</text>
+      <rect x="532" y="360" width="56" height="26" rx="3" class="b-u"/><text x="560" y="378" text-anchor="middle" class="mono">E</text>
+      <rect x="592" y="360" width="56" height="26" rx="3" class="b"/><text x="620" y="378" text-anchor="middle" class="mono">M</text>
+      <rect x="652" y="360" width="56" height="26" rx="3" class="b-ok"/><text x="680" y="378" text-anchor="middle" class="mono">W</text>
+      <text x="704" y="264" class="t-ok t-s">after the</text>
+      <text x="704" y="282" class="t-ok t-s">pipeline fills,</text>
+      <text x="704" y="300" class="t-ok t-s">one finishes</text>
+      <text x="704" y="318" class="t-ok t-s">every cycle</text>
+
+      <text x="24" y="410" class="t-m t-s">F fetch · D decode · E execute · M memory · W write back</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একই ১১টা cycle। উপরে প্রতিটা instruction পাঁচ ধাপ শেষ করে তবে পরেরটা শুরু — মাত্র দুইটা শেষ। নিচে ধাপগুলো তির্যকভাবে একে অন্যের উপর বসে — pipeline ভরে যাওয়ার পর প্রতি cycle-এ একটা করে instruction শেষ (সবুজ W)। প্রতিটা instruction-এর নিজের পাঁচ cycle বদলায়নি।</p>
+
+  <h3>একসাথে কয়েকটা: superscalar আর out-of-order</h3>
+  <p>Pipeline দিয়ে বড়জোর প্রতি cycle-এ একটা। কিন্তু Chapter 12-এ দেখেছি একটা core-এ কয়েকটা ALU পাশাপাশি থাকে। তাই আধুনিক core প্রতি cycle-এ কয়েকটা instruction একসাথে pipeline-এ ঢোকায় — এর নাম <strong>superscalar</strong>। প্রতি cycle-এ গড়ে কতগুলো instruction শেষ হচ্ছে, সেই সংখ্যার নাম <strong>IPC</strong> (instructions per cycle); আধুনিক core-এ ভালো code-এ এটা ৩–৬ পর্যন্ত যায়। <code>clock.js</code>-এর রহস্যের উত্তর এটাই: loop-এর চারটা instruction একই cycle-এ আলাদা আলাদা unit-এ চলছিল।</p>
+  <p>কিন্তু একসাথে চালাতে হলে instruction গুলো একে অন্যের উপর নির্ভরশীল হলে চলবে না। <code>b = a + 1</code> আর <code>c = b * 2</code> — দ্বিতীয়টা প্রথমটার ফলাফল ছাড়া শুরুই হতে পারে না। তাই core আরও এক ধাপ চালাক: সামনের কয়েকশো instruction-এ চোখ বুলিয়ে যেগুলোর input তৈরি সেগুলো আগেভাগে চালিয়ে দেয়, লেখা ক্রম না মেনে — এর নাম <strong>out-of-order execution</strong>। (ফলাফল গুলো অবশ্য শেষে লেখা ক্রমেই "পাকা" করা হয়, যাতে বাইরে থেকে সব ঠিকঠাক দেখায়।) তবু একটা সীমা থেকেই যায়: শিকলের মতো পরপর নির্ভরশীল কাজ কোনো কৌশলেই একসাথে চলে না।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — ilp.js</div>
+    <p>একই দুই কোটি গুণ, একবার একটা শিকলে (প্রতিটা গুণ আগেরটার ফলাফলের জন্য অপেক্ষা করে), একবার চারটা স্বাধীন শিকলে ভাগ করে:</p>
+    <div class="codewrap"><pre><code>const N = 20_000_000;
+const a = new Float64Array(N).fill(1.0000001);
+function one(a) {                                   // একটা শিকল
+  let s = 1;
+  for (let i = 0; i &lt; a.length; i++) s = s * a[i];
+  return s;
+}
+function four(a) {                                  // চারটা স্বাধীন শিকল, শেষে জোড়া
+  let s0 = 1, s1 = 1, s2 = 1, s3 = 1;
+  for (let i = 0; i &lt; a.length; i += 4) { s0 *= a[i]; s1 *= a[i + 1]; s2 *= a[i + 2]; s3 *= a[i + 3]; }
+  return s0 * s1 * s2 * s3;
+}
+for (const [label, f] of [['1 chain ', one], ['4 chains', four]]) {
+  f(a);
+  const t = performance.now();
+  for (let k = 0; k &lt; 5; k++) f(a);
+  console.log(label, ((performance.now() - t) / 5).toFixed(1), 'ms');
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>1 chain 15.7 ms</code>, <code>4 chains 4.4 ms</code>।</p>
+  </div>
+  <p>গুণের সংখ্যা একই, তবু সাড়ে তিন গুণ দ্রুত। একটা শিকলে প্রতিটা গুণকে আগের গুণ শেষ হওয়ার জন্য floating-point unit-এর কয়েক cycle অপেক্ষা করতে হয় (Chapter 12-এর <code>units.js</code>); চারটা শিকলে সেই অপেক্ষার ফাঁকে বাকি তিনটা শিকলের গুণ চলে যায়। Memory-র বেলাতেও হুবহু এক গল্প: Chapter 7-এর pointer chase-এ প্রতিটা address আগের load-এর ফলাফল, তাই প্রতি access ১১৯ ns; Chapter 8-এর এলোমেলো যোগে address গুলো আগে থেকে জানা, তাই core একসাথে অনেকগুলো RAM অনুরোধ পাঠিয়ে দেয় — প্রতি access মাত্র ~৫ ns।</p>
+
+  <h3>Branch prediction: আগাম অনুমান</h3>
+  <p>Pipeline-এর একটা বড় শত্রু আছে: শর্তসাপেক্ষ লাফ (Chapter 12)। <code>if</code>-এর শর্তের উত্তর জানা যায় execute ধাপে, কিন্তু pipeline-কে পরের instruction আনতে হয় তার অনেক আগে, fetch ধাপে। উত্তরের জন্য অপেক্ষা করলে প্রতিটা branch-এ pipeline খালি পড়ে থাকবে — আর সাধারণ code-এ প্রতি পাঁচ-ছয়টা instruction-এ একটা branch।</p>
+  <p>তাই core অপেক্ষা করে না, অনুমান করে। Chapter 12-এর front-end-এর <strong>branch predictor</strong> প্রতিটা branch-এর অতীত আচরণ মনে রাখে — "এই loop-এর লাফ প্রায় সবসময় নেওয়া হয়", "এই <code>if</code> পাঁচবারে একবার সত্যি" — আর সেই অনুমানে পরের instruction গুলো আনা আর চালানো শুরু করে দেয়। অনুমান ঠিক হলে কোনো দেরি নেই। ভুল হলে আধা-চালানো সব কাজ ফেলে দিয়ে সঠিক পথ থেকে নতুন করে শুরু — কয়েক ডজন cycle-এর লোকসান।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — branch.js</div>
+    <div class="codewrap"><pre><code>const N = 10_000_000;
+const data = new Int32Array(N);
+for (let i = 0; i &lt; N; i++) data[i] = Math.floor(Math.random() * 256);   // ০–২৫৫ এলোমেলো
+
+function sumBig(arr) {                     // শুধু ১২৮ বা বড় সংখ্যা যোগ করো
+  let s = 0;
+  for (let i = 0; i &lt; arr.length; i++) { if (arr[i] &gt;= 128) s += arr[i]; }
+  return s;
+}
+function run(label, arr) {
+  sumBig(arr);
+  const t = performance.now();
+  for (let k = 0; k &lt; 5; k++) sumBig(arr);
+  console.log(label, ((performance.now() - t) / 5).toFixed(1), 'ms');
+}
+run('unsorted:', data);
+run('sorted:  ', data.slice().sort());     // একই সংখ্যা, সাজানো</code></pre></div>
+    <p>আমার Mac-এ: <code>unsorted: 28.2 ms</code>, <code>sorted: 6.5 ms</code>।</p>
+  </div>
+  <p>একই সংখ্যা, একই যোগফল, একই code — সাজানো data-য় চার গুণ দ্রুত। সাজানো array-তে প্রথম অর্ধেক পুরোটা "না", তারপর পুরোটা "হ্যাঁ" — predictor কয়েকবার দেখেই শিখে ফেলে। এলোমেলো array-তে প্রতিটা <code>if</code> একটা coin toss — অর্ধেক অনুমান ভুল, আর প্রতিটা ভুলে pipeline খালি। (Speculation-এর একটা অন্ধকার দিকও আছে: ২০১৮-এর Spectre আক্রমণ দেখিয়েছিল, ভুল পথে আগাম চালানো কাজের চিহ্ন cache-এ থেকে যায়, আর সেখান থেকে গোপন data চুরি করা যায়। আজকের browser আর OS-এ তার বিরুদ্ধে অনেক পাহারা বসানো।)</p>
+
+  <h3>Core-এর বাইরে: একাধিক core-এ কাজ ভাগ</h3>
+  <p>এতক্ষণের সব কৌশল একটা core-এর ভেতরে, একটা instruction-প্রবাহের জন্য। কিন্তু clock আর বাড়ানো যাচ্ছে না — বেশি clock মানে বেশি তাপ, আর ২০০০-এর দশকের মাঝামাঝি থেকে সেই দেয়ালে ধাক্কা লেগে আছে। তাই chip-নির্মাতারা বাড়াচ্ছে core-এর সংখ্যা। সমস্যা: তোমার Node-এর JS চলে একটা thread-এ, মানে একটা core-এ; বাকি এগারোটা বসে থাকে। বাড়তি core কাজে লাগাতে হলে কাজটাকে ভাগ করে একাধিক thread বা process-এ দিতে হয় (Part 5)।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — parallel.js</div>
+    <p>একই মোট কাজ (২৪০ কোটিবার বর্গমূল যোগ), ১, ২, ৪, ৮, ১২ আর ২৪টা <code>worker_threads</code>-এ সমান ভাগ করে:</p>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData, parentPort } = require('worker_threads');
+const TOTAL = 2_400_000_000;                     // মোট কাজ: ২৪০ কোটি ধাপ
+
+function work(from, to) {                        // শুধু CPU-র কাজ, memory প্রায় ছোঁয় না
+  let s = 0;
+  for (let i = from; i &lt; to; i++) s += Math.sqrt(i);
+  return s;
+}
+
+if (isMainThread) {
+  const run = n =&gt; new Promise(resolve =&gt; {
+    const t = performance.now();
+    const chunk = TOTAL / n;
+    let done = 0;
+    for (let w = 0; w &lt; n; w++) {
+      new Worker(__filename, { workerData: { from: w * chunk, to: (w + 1) * chunk } })
+        .on('message', () =&gt; { if (++done === n) resolve(performance.now() - t); });
+    }
+  });
+  (async () =&gt; {
+    let base;
+    for (const n of [1, 2, 4, 8, 12, 24]) {
+      const ms = await run(n);
+      base ??= ms;
+      console.log(`${String(n).padStart(2)} workers: ${ms.toFixed(0).padStart(5)} ms   speedup ×${(base / ms).toFixed(1)}`);
+    }
+  })();
+} else {
+  parentPort.postMessage(work(workerData.from, workerData.to));
+}</code></pre></div>
+    <p>আমার Mac-এ (৮টা P-core, ৪টা E-core):</p>
+    <div class="codewrap"><pre><code> 1 workers:  1344 ms   speedup ×1.0
+ 2 workers:   672 ms   speedup ×2.0
+ 4 workers:   374 ms   speedup ×3.6
+ 8 workers:   201 ms   speedup ×6.7
+12 workers:   169 ms   speedup ×8.0
+24 workers:   180 ms   speedup ×7.5</code></pre></div>
+  </div>
+  <p>আটটা worker পর্যন্ত প্রায় সরল হারে বাড়ে — প্রত্যেকে একটা P-core পায়। ১২-তে বাকি চারটা worker যায় E-core-এ, যারা ধীর (Chapter 12), তাই লাভ কম। আর ২৪-এ core-এর চেয়ে worker বেশি: OS তাদের পালা করে চালায় (time-sharing, Chapter 1), কাজ বাড়ে না কিন্তু পালা বদলের খরচ বাড়ে — উল্টো ধীর (Chapter 17)। প্রতিটা worker চালু হতে যে সময় লাগে, সেটাও সব ক্ষেত্রে বসে থাকে, তাই আট গুণের জায়গায় ৬.৭ গুণ।</p>
+  <p>Intel আর AMD-এর বেশিরভাগ core আরও একটা কৌশল করে: <strong>SMT</strong> (Intel-এর নাম Hyper-Threading) — একটা physical core নিজেকে দুইটা "hardware thread" হিসেবে দেখায়, যাতে একটা thread memory-র জন্য আটকে থাকলে core-এর অলস unit গুলো অন্যটা চালাতে পারে। দুইটা আসল core-এর সমান না, কিন্তু ব্যবহার বাড়ে। Apple Silicon-এ SMT নেই — <code>sysctl hw.physicalcpu hw.logicalcpu</code> দুটোই <code>12</code>। Linux-এ <code>lscpu | grep "Thread(s) per core"</code> দেখায় সংখ্যাটা।</p>
+
+  <h3>Instruction set নিয়ে দুই টুকরো কথা</h3>
+  <p><strong>RISC বনাম CISC</strong>: instruction set নকশার দুই দর্শন — ছোট, সরল, সমান মাপের instruction (RISC — ARM, তোমার Mac; সব instruction ৪ byte, Chapter 4-এ দেখেছ), বনাম বড়, জটিল, নানা মাপের instruction (CISC — Intel/AMD-এর x86)। আজ ভেতরে দুই ধারাই জটিল instruction ভেঙে ছোট ছোট অংশে চালায়, তাই পার্থক্য আগের চেয়ে কম। App developer-এর জন্য আসল কথা: আলাদা instruction set মানে আলাদা machine code।</p>
+  <div class="codewrap"><pre><code>file /bin/ls</code></pre></div>
+  <p>macOS-এ output: <code>Mach-O universal binary with 2 architectures: [x86_64 ...] [arm64e ...]</code> — একটা file-এর ভেতরে দুইটা পুরো program, দুই instruction set-এর জন্য; loader চালানোর সময় machine-এর সাথে মেলে এমনটা বেছে নেয়। যে program-এ শুধু x86 code আছে, Apple Silicon-এ সেটা চালায় <strong>Rosetta</strong> — x86-এর machine code-কে ARM-এর machine code-এ অনুবাদ করে।</p>
+  <p><strong>৩২-bit বনাম ৬৪-bit</strong>: মূলত register আর address কত চওড়া। ৩২-bit-এ একটা address দিয়ে সর্বোচ্চ ৪ GB বোঝানো যায় — আজকের জন্য হাস্যকর ছোট। <code>getconf LONG_BIT</code> তোমার machine-এ <code>64</code> দেখাবে। তবে আজকের CPU পুরো ৬৪ bit address ব্যবহার করে না, সাধারণত নিচের ৪৮ bit — এজন্যই Chapter 5-এর <code>/proc/self/maps</code>-এর address গুলো ১২ hex digit লম্বা (<code>ffffffee8000</code>): ১২ × ৪ = ৪৮ bit।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Thread বা worker যত বেশি, তত দ্রুত।" CPU-র কাজে worker-এর সংখ্যা core-এর সংখ্যা পেরোলে আর কোনো লাভ নেই — <code>parallel.js</code>-এ ২৪টা worker ১২টার চেয়ে ধীর। আর নির্ভরশীল কাজে (একটা ধাপের ফলাফল পরের ধাপে লাগে) বাড়তি core বা unit কিছুই করতে পারে না — <code>ilp.js</code>-এর এক শিকল যেমন। Parallelism পেতে কাজের ভেতরে স্বাধীনতা থাকতে হয়; hardware শুধু সেটা কাজে লাগায়।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">ENGINEERING TAKEAWAY</div>
-    <p>CPU নিজে ভিতরে ভিতরে প্রচণ্ড parallel — কিন্তু <strong>এক core-এ তোমার single-threaded JS যতই optimize করো, বাকি ৭টা core বসে থাকবে</strong>। Multi-core কাজে লাগাতে হলে process/thread level-এ parallelism আনতে হয় — সেই গল্প Part 5-এ।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>একটা core ভেতরে প্রচণ্ড parallel: pipeline-এ ধাপ গুলো একে অন্যের উপর বসে, superscalar unit গুলো একই cycle-এ কয়েকটা instruction চালায়, out-of-order যন্ত্র স্বাধীন কাজ আগে সেরে ফেলে, আর branch predictor আন্দাজে সামনে দৌড়ায়। এর সবকিছু থেমে যায় দুই জায়গায় — নির্ভরশীল শিকল আর ভুল অনুমান। আর core-এর বাইরে বাড়তি core গুলো ব্যবহার করতে হলে কাজ তোমাকেই ভাগ করে দিতে হয়।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Pipelining কীভাবে throughput বাড়ায় অথচ একক instruction-এর সময় কমায় না?</li>
-      <li>Branch prediction কেন লাগে, ভুল হলে কী দাম?</li>
-      <li>Core আর hardware thread (SMT)-এর পার্থক্য?</li>
+      <li>Pipeline কীভাবে throughput বাড়ায় অথচ একটা instruction-এর নিজের সময় কমায় না? <code>clock.js</code>-এর loop প্রতি ধাপে ~১ cycle নেয় — এর মানে কী?</li>
+      <li><code>ilp.js</code>-এ চারটা স্বাধীন শিকল সাড়ে তিন গুণ দ্রুত কেন? একই যুক্তিতে Chapter 7-এর pointer chase আর Chapter 8-এর এলোমেলো যোগের পার্থক্য ব্যাখ্যা করো।</li>
+      <li>Branch prediction কেন লাগে, আর ভুল অনুমানের দাম কী? <code>branch.js</code>-এ এলোমেলো data চার গুণ ধীর কেন?</li>
+      <li><code>parallel.js</code>-এ ৮টা worker পর্যন্ত প্রায় সরল speedup, ১২-তে কম লাভ, ২৪-এ উল্টো ফল — তিনটারই কারণ কী?</li>
+      <li><code>/bin/ls</code>-এ দুইটা architecture কেন? ৬৪-bit machine-এ address গুলো ১২ hex digit লম্বা কেন?</li>
     </ul>
   </div>

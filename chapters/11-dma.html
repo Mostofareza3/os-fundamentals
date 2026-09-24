@@ -1,30 +1,158 @@
   <p class="part-label">PART 3 · MEMORY</p>
   <h2>Chapter 11 — DMA</h2>
-  <p class="chap-sub">Device আর memory-র মধ্যে data transfer-এ CPU-কে মুক্তি দেওয়ার কৌশল।</p>
+  <p class="chap-sub">Device আর RAM-এর মধ্যে বিশাল data আনা-নেওয়ায় CPU-কে মুক্তি দেওয়ার কৌশল — কীভাবে কাজ করে, প্রতিটা অনুরোধের কী দাম, কী পাহারা লাগে, আর কোথায় তার সীমা।</p>
 
-  <h3>Problem: CPU-কে কুলি বানানো</h3>
-  <p>ধরো disk থেকে 1GB data আনতে হবে। এক উপায়: CPU নিজে device থেকে টুকরো টুকরো data পড়ে RAM-এ লেখে — byte-কুলিগিরি। এতে দুইটা ক্ষতি: (১) দুনিয়ার সবচেয়ে দামি resource-টা (CPU) copy-র মতো বোকা কাজে আটকে থাকে, (২) সেই সময়ে সে আর কোনো process চালাতে পারে না।</p>
+  <p>Chapter 2-এর <code>readFileSync</code>-এর যাত্রায় এক লাইনে বলেছিলাম: SSD controller data সরাসরি RAM-এ লিখে দেয়, CPU-কে byte byte copy করতে হয় না — এর নাম <strong>DMA</strong> (Direct Memory Access)। সেই chapter থেকে আরও দুইটা জিনিস লাগবে: device-এর নিজস্ব <strong>controller</strong>, যার register-এ CPU command লেখে (Chapter 7-এর <code>/proc/iomem</code>-এ দেখেছ এই register গুলোও physical address-এর জায়গা নিয়ে থাকে); আর <strong>interrupt</strong>, যেটা দিয়ে device কাজ শেষে CPU-কে ডাকে। এই chapter-এ DMA-কে খুলে দেখব।</p>
 
-  <h3>Solution: Direct Memory Access</h3>
-  <p><strong>DMA</strong>-তে কাজটা এভাবে ভাগ হয়:</p>
-  <pre class="diagram"><span class="k">1. Kernel/driver: DMA controller-কে বলে —</span>
-   "disk-এর এই block গুলো, RAM-এর এই address-এ, এতটুকু data"
-2. CPU: ততক্ষণে <span class="u">অন্য process চালাতে চলে যায়</span>
-3. DMA engine: device ↔ RAM data transfer নিজে নিজে করে
-4. শেষ হলে device একটা <span class="k">interrupt</span> দেয় — "কাজ শেষ!"
-<span class="k">5. Kernel: interrupt handle করে, waiting process-কে জাগিয়ে দেয়</span></pre>
-  <p>অর্থাৎ CPU-র ভূমিকা এখন শুধু <em>setup</em> আর <em>completion handling</em> — মাঝের ভারী transfer-টা hardware নিজে করে। আধুনিক প্রায় সব serious I/O (disk, network card) DMA-ই ব্যবহার করে।</p>
+  <h3>DMA না থাকলে: CPU যখন কুলি</h3>
+  <p>DMA ছাড়া device-এর data RAM-এ আনার উপায় একটাই: CPU নিজে controller-এর data register থেকে একটা একটা করে word পড়বে, আর প্রতিটা RAM-এ store করবে। এর নাম <strong>programmed I/O</strong> (PIO)। সমস্যা দুইটা। এক, device register পড়া সাধারণ memory পড়ার মতো না — এগুলো cache-এ রাখা যায় না (device-এর মান যেকোনো মুহূর্তে বদলাতে পারে), প্রতিবার bus পেরিয়ে device পর্যন্ত যেতে হয়, একেকটায় কয়েকশো ns। দুই, আজকের NVMe SSD সেকেন্ডে ৭ GB পর্যন্ত data দিতে পারে; PIO-তে সেটা আনতে একাধিক core-কে সারাক্ষণ শুধু এই কুলিগিরিতে লাগিয়ে রাখতে হতো, আর সেই সময় তারা আর কোনো process চালাতে পারত না।</p>
+  <p>"CPU নিজে copy করছে" দেখতে কেমন, তার একটা নমুনা Linux-এ দেখা যায় — file যখন আগে থেকেই page cache-এ আছে (Chapter 2), তখন <code>read</code> মানে kernel page cache থেকে তোমার buffer-এ CPU দিয়ে copy করে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — CPU-র copy</div>
+    <p><code>dd</code> হলো block ধরে ধরে data পড়া-লেখার একটা পুরনো Unix tool; <code>time</code> দেখায় মোট সময় (<code>real</code>) আর তার মধ্যে CPU কতটা user mode আর kernel mode-এ খেটেছে (Chapter 1)। Container-টা খোলা রাখো, পরের experiment-ও এখানেই:</p>
+    <div class="codewrap"><pre><code>docker run --rm -it debian:bookworm-slim bash
+
+# container-এর ভেতরে: ১ GB-র একটা file বানাও (লেখার পরে এটা page cache-এও থাকবে)
+dd if=/dev/urandom of=/root/big.bin bs=1M count=1024 status=none
+
+# file-টা পড়ো — data আসবে page cache থেকে, CPU-র copy দিয়ে
+time dd if=/root/big.bin of=/dev/null bs=1M status=none</code></pre></div>
+    <p>আমার output: <code>real 0m0.033s</code>, <code>user 0m0.000s</code>, <code>sys 0m0.033s</code>। পুরো সময়টাই (<code>sys</code> = <code>real</code>) CPU kernel mode-এ ব্যস্ত ছিল — ১ GB সরাতে একটা core ৩৩ ms পুরোপুরি আটকে। আর এটা RAM থেকে RAM-এ copy; device register থেকে PIO এর চেয়ে বহু গুণ ধীর হতো।</p>
+  </div>
+
+  <h3>DMA: device নিজেই RAM-এ লেখে</h3>
+  <p>সমাধান হলো কাজটা device-কেই দিয়ে দেওয়া। আধুনিক device গুলো <strong>bus master</strong> — মানে CPU-কে জিজ্ঞেস না করেই নিজে bus-এ memory read/write চালাতে পারে। CPU-র কাজ তখন শুধু বলে দেওয়া কী করতে হবে, আর শেষে খবর নেওয়া। ধাপগুলো:</p>
+  <ol>
+    <li><strong>Buffer আর descriptor:</strong> driver RAM-এ data রাখার জন্য একটা buffer ঠিক করে, তারপর RAM-এর একটা নির্দিষ্ট জায়গায় একটা ছোট নির্দেশ-পত্র লেখে — <strong>descriptor</strong>: "disk-এর এই block থেকে, এত byte, RAM-এর এই physical address-এ"। Descriptor গুলো সাজানো থাকে একটা চক্রাকার তালিকায় (<strong>ring</strong>), যাতে একসাথে অনেক কাজ লাইনে রাখা যায়।</li>
+    <li><strong>Doorbell:</strong> driver controller-এর একটা বিশেষ register-এ লিখে জানায় "ring-এ নতুন কাজ আছে"। এটাই CPU আর device-এর মধ্যে একমাত্র সরাসরি কথা।</li>
+    <li><strong>Device নিজে কাজ করে:</strong> controller DMA দিয়ে ring থেকে descriptor পড়ে, disk থেকে data আনে, আর DMA দিয়ে সেটা buffer-এ লিখে দেয়। এই পুরো সময় CPU অন্য process চালাচ্ছে।</li>
+    <li><strong>Completion + interrupt:</strong> কাজ শেষে controller RAM-এ একটা "শেষ হয়েছে" entry লেখে আর interrupt পাঠায়। Driver দেখে কোন কাজ শেষ, আর অপেক্ষায় থাকা process-কে জাগায়।</li>
+  </ol>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="DMA with a descriptor ring: the driver writes a descriptor into a ring in RAM, rings the device doorbell, the device fetches the descriptor, writes the data into the RAM buffer by DMA, then posts a completion and raises an interrupt">
+      <defs>
+        <marker id="c11f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c11f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c11f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c11f1-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="56" width="190" height="64" rx="8" class="b-k"/>
+      <text x="119" y="82" text-anchor="middle" class="t-k">Driver</text>
+      <text x="119" y="102" text-anchor="middle" class="t-m t-s">kernel code, on the CPU</text>
+
+      <rect x="262" y="40" width="270" height="240" rx="10" class="b"/>
+      <text x="280" y="64" class="t-h">RAM</text>
+      <text x="280" y="90" class="t-m t-s">descriptor ring</text>
+      <rect x="280" y="100" width="36" height="34" rx="3" class="b-m"/>
+      <rect x="320" y="100" width="36" height="34" rx="3" class="b-m"/>
+      <rect x="360" y="100" width="120" height="34" rx="3" class="b-k"/>
+      <text x="420" y="122" text-anchor="middle" class="mono">blk 88210, 1 MB</text>
+      <rect x="484" y="100" width="36" height="34" rx="3" class="b-m"/>
+      <text x="280" y="176" class="t-m t-s">data buffer</text>
+      <rect x="280" y="186" width="240" height="60" rx="6" class="b-u"/>
+      <text x="400" y="221" text-anchor="middle" class="t-s">1 MB of file data lands here</text>
+
+      <rect x="580" y="56" width="196" height="200" rx="10" class="b"/>
+      <text x="678" y="82" text-anchor="middle" class="t-h">Device</text>
+      <text x="678" y="100" text-anchor="middle" class="t-m t-s">NVMe controller</text>
+      <rect x="610" y="116" width="136" height="30" rx="4" class="b-k"/>
+      <text x="678" y="136" text-anchor="middle" class="t-s">doorbell register</text>
+
+      <line x1="214" y1="100" x2="356" y2="117" class="ln-k" marker-end="url(#c11f1-k)"/>
+      <text x="136" y="146" class="t-k t-s">① write descriptor</text>
+      <path d="M119 56 V22 H678 V52" class="ln-k" marker-end="url(#c11f1-k)"/>
+      <text x="300" y="16" class="t-k t-s">② ring the doorbell (one register write)</text>
+      <line x1="522" y1="126" x2="578" y2="164" class="ln dash" marker-end="url(#c11f1-a)"/>
+      <text x="536" y="186" class="t-s">③ fetch</text>
+      <line x1="580" y1="216" x2="524" y2="216" class="ln-u" marker-end="url(#c11f1-u)"/>
+      <text x="590" y="240" class="t-u t-s">④ DMA: data → RAM</text>
+      <path d="M678 256 V310 H56 V124" class="ln-d dash" marker-end="url(#c11f1-d)"/>
+      <text x="300" y="304" class="t-d t-s">⑤ completion entry + interrupt → driver wakes the process</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">CPU-র কাজ শুধু ① আর ② — RAM-এ একটা descriptor লেখা আর device-এর একটা register-এ টোকা দেওয়া। ③ আর ④ device নিজে করে, bus master হিসেবে। ⑤-এ interrupt এলে CPU আবার ফেরে। মাঝের পুরো সময় CPU অন্য কাজে।</p>
+
+  <p>এবার মাপো। Linux-এ <code>O_DIRECT</code> নামের একটা flag আছে যেটা page cache এড়িয়ে যায় (বিস্তারিত Chapter 24): device DMA দিয়ে data সরাসরি process-এর নিজের buffer-এ লেখে। তাই CPU-র copy মাপে ঢোকে না — দেখা যায় DMA-র সময় CPU আসলে কতটা খাটে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — DMA-র সময় CPU</div>
+    <div class="codewrap"><pre><code># আগের container-এই
+time dd if=/root/big.bin of=/dev/null bs=1M iflag=direct status=none</code></pre></div>
+    <p>আমার output: <code>real 0m0.234s</code>, <code>user 0m0.002s</code>, <code>sys 0m0.030s</code>।</p>
+  </div>
+  <p>১ GB এল ০.২৩৪ সেকেন্ডে, কিন্তু CPU খেটেছে মোট ০.০৩২ সেকেন্ড — সময়ের সাত ভাগের এক ভাগ। বাকি ~২০০ ms CPU-র হাতে কোনো কাজ ছিল না; data সরাচ্ছিল device, DMA দিয়ে। (এখানে "disk" আসলে Docker VM-এর একটা virtual disk, কিন্তু VM-এর kernel আর driver-এর চোখে ঠিক এই descriptor-doorbell-interrupt-এর খেলাই চলছে।) Queue কত গভীর হতে পারে, সেটাও দেখা যায়: <code>cat /sys/block/vda/queue/nr_requests</code> আমার VM-এ <code>256</code> — একসাথে ২৫৬টা পর্যন্ত অনুরোধ লাইনে থাকতে পারে, আর NVMe standard প্রতিটা device-এ হাজার হাজার ring রাখার সুযোগ দেয়।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 262" width="100%" role="img" aria-label="Timeline comparison: with programmed I/O the CPU is busy for the whole transfer; with DMA the CPU only sets up and handles completion while the device moves the data and the CPU runs other work">
+      <defs>
+        <marker id="c11f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c11f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-h t-s">Programmed I/O</text>
+      <text x="150" y="61" text-anchor="end" class="t-m t-s">CPU</text>
+      <rect x="160" y="40" width="600" height="32" rx="4" class="b-d"/>
+      <text x="460" y="61" text-anchor="middle" class="t-d t-s">busy the whole time: read device register → store to RAM → repeat</text>
+
+      <text x="24" y="104" class="t-h t-s">DMA</text>
+      <text x="150" y="135" text-anchor="end" class="t-m t-s">CPU</text>
+      <rect x="160" y="114" width="56" height="32" rx="4" class="b-k"/>
+      <text x="188" y="135" text-anchor="middle" class="t-k t-s">setup</text>
+      <rect x="216" y="114" width="480" height="32" rx="4" class="b-ok"/>
+      <text x="456" y="135" text-anchor="middle" class="t-ok t-s">free — runs other processes</text>
+      <rect x="696" y="114" width="64" height="32" rx="4" class="b-k"/>
+      <text x="728" y="135" text-anchor="middle" class="t-k t-s">wake up</text>
+      <text x="150" y="177" text-anchor="end" class="t-m t-s">device</text>
+      <rect x="216" y="156" width="480" height="32" rx="4" class="b-u"/>
+      <text x="456" y="177" text-anchor="middle" class="t-u t-s">device writes the data into RAM itself (DMA)</text>
+      <path d="M696 172 C 712 172, 718 160, 720 150" class="ln-d" marker-end="url(#c11f2-d)"/>
+      <text x="704" y="204" class="t-d t-s">interrupt</text>
+
+      <line x1="160" y1="228" x2="760" y2="228" class="ln" marker-end="url(#c11f2-a)"/>
+      <text x="760" y="246" text-anchor="end" class="t-m t-s">time</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একই transfer, দুই পদ্ধতি। PIO-তে CPU পুরো সময় কুলিগিরিতে আটকে। DMA-তে CPU-র ভাগ শুধু শুরু আর শেষের দুইটা ছোট টুকরো — <code>dd</code>-এর <code>user + sys</code> এই দুই টুকরোই মাপছিল; মাঝের সবুজ অংশটা <code>real</code>-এর বাকি সময়।</p>
+
+  <h3>প্রতিটা অনুরোধের নিজস্ব দাম</h3>
+  <p>DMA data-র প্রতি byte-এর খরচ মুছে দেয়, কিন্তু প্রতিটা <em>অনুরোধ</em>-এর খরচ থেকেই যায়: syscall, descriptor লেখা, doorbell, device-এর নিজের প্রস্তুতি, interrupt, completion দেখা, process জাগানো। অনুরোধ যত ছোট, এই স্থির খরচ তত বড় ভাগ খায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — block-এর মাপ</div>
+    <div class="codewrap"><pre><code># একই প্রথম 256 MB, একবার 4 KB টুকরোয় (65536টা অনুরোধ), একবার 1 MB টুকরোয় (256টা)
+time dd if=/root/big.bin of=/dev/null bs=4k count=65536 iflag=direct status=none
+time dd if=/root/big.bin of=/dev/null bs=1M count=256   iflag=direct status=none</code></pre></div>
+    <p>আমার output: 4 KB-তে <code>real 0m2.217s</code> (<code>sys 0m0.395s</code>), 1 MB-তে <code>real 0m0.027s</code>।</p>
+  </div>
+  <p>একই ২৫৬ MB, একই disk — তবু ছোট টুকরোয় ৮০ গুণেরও বেশি সময়। কারণ ৬৫,৫৩৬টা অনুরোধের প্রতিটায় পুরো আনুষ্ঠানিকতা লেগেছে, আর CPU-কেও শুধু সেই আনুষ্ঠানিকতায় ০.৪ সেকেন্ড খাটতে হয়েছে। (১ MB-র সংখ্যাটা আগের ১ GB-র চেয়েও দ্রুত, কারণ এই VM-এর virtual disk-এর পেছনে Mac-এর নিজের cache আছে — কিন্তু অনুপাতের শিক্ষাটা বদলায় না।)</p>
+  <p>Network card-এ এই সমস্যা আরও তীব্র: সেকেন্ডে দশ লাখ packet এলে প্রতি packet-এ একটা interrupt মানে CPU শুধু interrupt সামলাতে সামলাতেই শেষ। দুইটা কৌশল আছে। <strong>Interrupt coalescing</strong> — device কয়েকটা completion জমিয়ে একটা interrupt পাঠায়। আর Linux-এর <strong>NAPI</strong> — চাপ বাড়লে driver interrupt বন্ধ করে দিয়ে নিজেই ring-টা বারবার দেখতে থাকে। Chapter 2-এ polling-কে অপচয় বলেছিলাম; কিন্তু কাজ যখন প্রতি মুহূর্তে আসছে, তখন বারবার ডাক শোনার চেয়ে নিজে দেখে নেওয়াই সস্তা। Interrupt আর polling — দুটোই হাতিয়ার, কোনটা ভালো তা নির্ভর করে কাজের ঘনত্বের উপর।</p>
+
+  <h3>IOMMU: device-কে পাহারা</h3>
+  <p>DMA-র একটা ভয়ংকর দিক আছে। Device physical address-এ সরাসরি লিখতে পারে — Chapter 9-এর MMU আর page table-এর কোনো পাহারা তার উপর নেই, কারণ ওগুলো CPU-র জন্য। তাহলে একটা buggy driver ভুল address দিলে, বা একটা দূষিত Thunderbolt device laptop-এ লাগালে, সে kernel-এর memory পড়ে ফেলতে বা বদলে দিতে পারে। এটা কল্পনা না — "DMA attack" নামে বাস্তবে দেখানো হয়েছে।</p>
+  <p>সমাধান: device-দের জন্য আলাদা একটা MMU — <strong>IOMMU</strong>। Device যে address ব্যবহার করে, IOMMU সেটাকে kernel-এর বানানো একটা page table দিয়ে অনুবাদ করে; kernel শুধু সেই buffer গুলোই map করে দেয় যেগুলো device-কে দেওয়া হয়েছে। Table-এর বাইরের যেকোনো address-এ device-এর লেখা আটকে যায়। Apple এর নাম দিয়েছে DART:</p>
+  <div class="codewrap"><pre><code>ioreg -l | grep -o '"IOClass" = "Apple[A-Z0-9]*DART"' | sort | uniq -c   # macOS
+ls /sys/kernel/iommu_groups                                             # Linux (আসল machine-এ)</code></pre></div>
+  <p>আমার Mac-এ <code>30 "IOClass" = "AppleT8110DART"</code> — ৩০টা IOMMU, একেকটা একেক গোষ্ঠীর device পাহারা দিচ্ছে। Linux-এ IOMMU চালু থাকলে <code>/sys/kernel/iommu_groups</code>-এ প্রতিটা গোষ্ঠীর জন্য একটা folder থাকে (Docker Desktop-এর VM-এ এটা খালি — সেখানে IOMMU নেই)। Virtual machine-কে একটা আসল device সরাসরি দিতে চাইলেও (Chapter 35) IOMMU লাগে।</p>
+
+  <h3>DMA-র পরেও একটা copy বাকি</h3>
+  <p>সাধারণ <code>fs.readFile</code>-এ DMA data আনে kernel-এর page cache পর্যন্ত; সেখান থেকে তোমার buffer-এ আনে CPU-র copy (প্রথম experiment-এর <code>sys</code> = <code>real</code>)। একটা file server-এর কথা ভাবো যে disk থেকে পড়ে network-এ পাঠায়: disk → (DMA) → page cache → (CPU copy) → Node-এর buffer → (CPU copy) → socket-এর buffer → (DMA) → network card। মাঝের দুইটা copy সম্পূর্ণ অপ্রয়োজনীয় — data তো Node কখনো দেখছেই না।</p>
+  <p>এজন্য "zero-copy" কৌশল গুলো আছে: <code>O_DIRECT</code> (DMA সরাসরি process-এর buffer-এ, database-রা ব্যবহার করে), <code>mmap</code> (Chapter 10 — page cache-এর frame-ই process-এর page), আর <code>sendfile</code> (kernel-কে বলো "এই file-টা ওই socket-এ পাঠাও" — data user space-এ ঢোকেই না; nginx এভাবে static file পাঠায়)। বিস্তারিত Chapter 24 আর 27-এ।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"DMA মানে I/O-তে CPU-র কোনো খরচ নেই।" Data সরানোর খরচ নেই, ঠিক। কিন্তু প্রতিটা অনুরোধের setup, interrupt, completion আর process জাগানোর খরচ আছে — ৪ KB-র experiment-এ সেটাই ০.৪ সেকেন্ড CPU খেয়েছে। আর page cache থেকে user buffer-এ copy DMA করে না, CPU করে। "I/O-bound" কাজেও তাই বেশি ছোট ছোট অনুরোধ CPU-কে ব্যস্ত রাখতে পারে।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>এই chapter-টা আসলে একটা বড় সত্যের ছোট উদাহরণ: <strong>I/O চলাকালীন CPU সাধারণত বসে থাকে না — সে অন্য কাজ করে।</strong> "Disk read হচ্ছে" মানে CPU busy না; মানে <em>তোমার process</em> waiting, আর CPU অন্য কাউকে সময় দিচ্ছে। Async I/O, event loop, "I/O-bound vs CPU-bound" — এই সব আলোচনার ভিত্তি এখানেই।</p>
+    <p>DMA-তে CPU হলো ম্যানেজার, device হলো কুলি: CPU একটা নির্দেশ-পত্র (descriptor) রাখে, একবার ঘণ্টা বাজায় (doorbell), তারপর অন্য কাজে চলে যায়; device নিজে RAM-এ data রেখে interrupt দিয়ে জানায়। খরচ গোনা হয় অনুরোধ ধরে, byte ধরে না — তাই বড় টুকরো, batching, coalescing। আর device-এর হাতে RAM-এর চাবি দেওয়ার আগে IOMMU দিয়ে ঠিক করে দিতে হয় সে কোন ঘরে ঢুকতে পারবে।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>DMA ছাড়া বড় I/O-তে কী ক্ষতি হতো?</li>
-      <li>DMA transfer-এ CPU-র ভূমিকা ঠিক কতটুকু?</li>
-      <li>Transfer শেষ হয়েছে — kernel জানে কীভাবে?</li>
+      <li>DMA না থাকলে (programmed I/O) সেকেন্ডে ৭ GB দেওয়া একটা SSD-র data আনতে CPU-র কী দশা হতো? Device register পড়া সাধারণ memory পড়ার চেয়ে ধীর কেন?</li>
+      <li>DMA-র পাঁচ ধাপে driver, device আর CPU — কে কোনটা করে? Descriptor, ring আর doorbell কী?</li>
+      <li><code>O_DIRECT</code>-এর <code>dd</code>-তে <code>real</code> ০.২৩৪ s কিন্তু <code>user + sys</code> ০.০৩২ s — বাকি সময় কী হচ্ছিল? Page cache থেকে পড়ায় <code>sys</code> ≈ <code>real</code> কেন?</li>
+      <li>একই ২৫৬ MB ৪ KB block-এ পড়লে ৮০ গুণ ধীর কেন? Interrupt coalescing আর NAPI কোন সমস্যার সমাধান?</li>
+      <li>IOMMU না থাকলে একটা দূষিত Thunderbolt device কী করতে পারত? IOMMU সেটা কীভাবে আটকায়?</li>
     </ul>
   </div>

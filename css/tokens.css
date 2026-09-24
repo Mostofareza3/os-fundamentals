@@ -13,6 +13,7 @@
   --danger:#E58F8F; --danger-dim:rgba(229,143,143,.10);
   --border:#28323E; --border-soft:#1F2833;
   --code-bg:#0A0F14; --shadow:rgba(0,0,0,.45);
+  --series:#4F97E0;   /* data-series colour for charts (validated against the dark chart surface) */
   --sidebar-w:302px; --rail-w:220px;
   --radius:12px; --radius-sm:8px;
   --font-bn:"Kohinoor Bangla","Noto Sans Bengali","Nirmala UI","Bangla MN",-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -28,4 +29,5 @@ html[data-theme="light"]{
   --danger:#A94545; --danger-dim:rgba(169,69,69,.07);
   --border:#DCE3EA; --border-soft:#E8EDF2;
   --code-bg:#141C25; --shadow:rgba(30,45,60,.10);
+  --series:#2A6CA8;
 }

@@ -1,41 +1,167 @@
   <p class="part-label">PART 4 · CPU</p>
   <h2>Chapter 12 — CPU-র ভিতরে</h2>
-  <p class="chap-sub">যেখানে আসল "কাজ" হয় — সেই যন্ত্রটার minimum viable mental model।</p>
+  <p class="chap-sub">Fetch–decode–execute loop-এর পেছনের যন্ত্রপাতি: সবাইকে এক তালে রাখা ঘড়ি, একটা core-এর ভেতরে কে কী করে, তোমার <code>if</code> কীভাবে তুলনা আর লাফে বদলায়, আর এক chip-এ দুই রকম core কেন।</p>
 
-  <h3>ভিতরের যন্ত্রপাতি</h3>
+  <p>এতদূর CPU-কে আমরা দেখেছি বাইরে থেকে। Chapter 2: CPU চালায় <strong>instruction</strong>, কাজ করে ছোট দ্রুত <strong>register</strong> নিয়ে। Chapter 4: <strong>program counter</strong> (PC) দেখায় পরের instruction কোথায়, আর CPU অবিরাম fetch → decode → execute করে। Chapter 8: memory ছোঁয়া হয় load/store দিয়ে, cache হয়ে। এবার ঢাকনা খুলি — কোন যন্ত্র এই loop চালায়, আর কোন তালে।</p>
+
+  <h3>Clock আর cycle: সবাই একই তালে</h3>
+  <p>একটা CPU-তে কয়েকশো কোটি transistor। একটা যোগ করতে signal কিছু circuit-এর ভেতর দিয়ে যায়, আর প্রতিটা পথের দৈর্ঘ্য আলাদা, সময়ও আলাদা। প্রতিটা অংশ যদি নিজের সুবিধামতো ফলাফল পরের অংশে ঠেলে দিত, তাহলে কোনো অংশ অর্ধেক-তৈরি ফলাফল পড়ে ফেলত — কখন একটা মান "প্রস্তুত", কেউ জানত না।</p>
+  <p>সমাধান হলো একটা কেন্দ্রীয় ছন্দ: <strong>clock</strong> — একটা signal যেটা নির্দিষ্ট হারে ওঠানামা করে। প্রতিটা টিকে CPU-র সব অংশ একসাথে এক ধাপ এগোয়: আগের ধাপের ফলাফল ধরে রাখে, পরের কাজ শুরু করে। এক টিকের নাম <strong>cycle</strong>। সেকেন্ডে কতগুলো cycle, সেটাই clock-এর গতি — ৪ GHz মানে সেকেন্ডে ৪০০ কোটি cycle, এক cycle ০.২৫ ns। কোনো circuit-এর কাজ এক cycle-এর মধ্যে শেষ না হলে সেটা একাধিক cycle নেয়।</p>
+  <p>তোমার CPU-র clock মোটামুটি মাপা যায় JS দিয়েই। কৌশলটা: এমন একটা শিকল বানাও যেখানে প্রতিটা যোগ আগের যোগের ফলাফলের জন্য অপেক্ষা করে। একটা integer যোগ কমপক্ষে এক cycle নেয়, আর শিকলের যোগ গুলো পাশাপাশি চালানো যায় না — তাই প্রতি ধাপ কমপক্ষে এক cycle।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — clock.js</div>
+    <div class="codewrap"><pre><code>// প্রতিটা যোগ আগের যোগের ফলাফলের উপর নির্ভর করে,
+// তাই CPU এগুলো একসাথে চালাতে পারে না — প্রতি ধাপে কমপক্ষে এক cycle।
+function chain(n) { let x = 0; for (let i = 0; i &lt; n; i++) x = (x + i) | 0; return x; }
+chain(1e7);                                  // JIT গরম করো
+const N = 1e9;
+const t = process.hrtime.bigint();
+chain(N);
+const ns = Number(process.hrtime.bigint() - t);
+console.log(`${(ns / N).toFixed(3)} ns per step  →  clock is at least ~${(N / ns).toFixed(1)} GHz`);</code></pre></div>
+    <p>আমার Mac-এ কয়েকবার চালিয়ে এসেছে <code>0.225</code> থেকে <code>0.28 ns per step</code> — সবচেয়ে ভালো run-এ <code>clock is at least ~4.5 GHz</code>।</p>
+  </div>
+  <p>প্রতি ধাপ যেহেতু <em>কমপক্ষে</em> এক cycle, আসল clock এই সংখ্যার সমান বা বেশি। M4 Pro-র performance core-এর ঘোষিত সর্বোচ্চ গতি প্রায় ৪.৫ GHz — সবচেয়ে ভালো run-এর সাথে হুবহু মিলে যায়, মানে সেই run-এ প্রতি ধাপ ঠিক এক cycle নিয়েছে। (<code>node -p "require('os').cpus()[0].speed"</code> আমার Mac-এ দেখায় <code>2400</code> — Apple Silicon-এ এই সংখ্যা বিশ্বাসযোগ্য না। Linux-এ <code>lscpu | grep MHz</code> ভালো উৎস।) আর run-ভেদে পার্থক্য কেন? আধুনিক CPU চাপ, তাপমাত্রা আর বিদ্যুতের হিসাব দেখে clock নিজেই বাড়ায়-কমায় — তাই একই মাপ দুইবার চালালে সংখ্যা একটু আলাদা আসে।</p>
+
+  <h3>Core-এর ভেতরে: কে কী করে</h3>
+  <p>Fetch-decode-execute একটা যন্ত্রের কাজ না — প্রতিটা ধাপের জন্য আলাদা বিশেষজ্ঞ circuit, আর execute ধাপে কাজের ধরন অনুযায়ী আলাদা আলাদা unit। একটা core-এর ভেতরে মোটা দাগে:</p>
   <ul>
-    <li><strong>ALU</strong> (Arithmetic Logic Unit): যোগ-বিয়োগ-তুলনা-bitwise — actual হিসাবের জায়গা।</li>
-    <li><strong>Control Unit:</strong> Instruction পড়ে ঠিক করে কোন যন্ত্রাংশ কী করবে — অর্কেস্ট্রার conductor।</li>
-    <li><strong>Registers:</strong> CPU-র ভিতরের হাতেগোনা কয়েকটা ultra-fast storage slot। যেকোনো হিসাবের operand আগে register-এ আসে। এর মধ্যে দুটো special:
-      <ul>
-        <li><strong>Program Counter (PC):</strong> পরের instruction-এর address। "Program চলছে" মানে এই register এগোচ্ছে।</li>
-        <li><strong>Stack Pointer (SP):</strong> stack-এর এই মুহূর্তের চূড়া কোথায়। Chapter 6-এর সেই "stack pointer একটু সরানো" — সেটা এই register-টাই।</li>
-        <li><strong>Instruction Register:</strong> এই মুহূর্তে execute হওয়া instruction।</li>
-      </ul>
-    </li>
-    <li><strong>Cores:</strong> আধুনিক CPU আসলে এক chip-এ একাধিক স্বাধীন CPU — প্রতিটা core-এর নিজস্ব ALU, registers, L1/L2 cache। 8-core মানে সত্যিকারের ৮টা কাজ একসাথে।</li>
-    <li><strong>Clock speed:</strong> প্রতি second-এ কত cycle (3GHz = ৩০০ কোটি)। প্রতি cycle-এ CPU-র যন্ত্রপাতি এক ধাপ এগোয়।</li>
+    <li><strong>Front-end</strong> — PC দেখে <strong>L1 instruction cache</strong> থেকে instruction আনে (fetch), সংখ্যাটা ভেঙে বোঝে কী করতে হবে (decode), আর সামনে কোন দিকে লাফ আসতে পারে তা আন্দাজ করে (branch predictor — Chapter 14)।</li>
+    <li><strong>Register file</strong> — সব register একসাথে। সাধারণ register (ARM-এ <code>x0</code>–<code>x30</code>), PC, SP, আর কিছু বিশেষ register: শেষ তুলনার ফলাফল (<strong>flags</strong>), আর CPU এখন user mode নাকি kernel mode (Chapter 1) — সেটাও এখানেই লেখা।</li>
+    <li><strong>ALU</strong> (Arithmetic Logic Unit) — integer যোগ, বিয়োগ, তুলনা, bit-এর কাজ। একটা core-এ কয়েকটা ALU পাশাপাশি থাকে।</li>
+    <li><strong>FPU / SIMD unit</strong> — দশমিক সংখ্যার হিসাব (floating point), আর একসাথে অনেকগুলো সংখ্যায় একই কাজ (vector)।</li>
+    <li><strong>Load/store unit</strong> — memory-র সাথে লেনদেন: MMU আর TLB দিয়ে address অনুবাদ (Chapter 9), তারপর L1 data cache (Chapter 8)।</li>
+    <li><strong>Branch unit</strong> — লাফের instruction চালায়: শর্ত মিললে PC-তে নতুন address বসায়।</li>
   </ul>
+  <p>Chapter 4-এর <code>hello</code>-র instruction গুলো মনে করো: <code>mov x8, #0x2a</code> আর <code>add x0, x0, #0x4ac</code> যায় ALU-তে; <code>str x8, [x9]</code> আর <code>ldr w0, [sp, #0x8]</code> যায় load/store unit-এ; <code>bl _printf</code> যায় branch unit-এ। আর আলাদা unit মানে আলাদা গতি — নিজে মাপো:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — units.js</div>
+    <div class="codewrap"><pre><code>// দুইটা শিকল: একটায় integer যোগ (ALU), আরেকটায় দশমিক যোগ (floating-point unit)
+function intChain(n)   { let x = 0;   for (let i = 0; i &lt; n; i++) x = (x + i) | 0; return x; }
+function floatChain(n) { let x = 0.5; for (let i = 0; i &lt; n; i++) x = x + 0.25;    return x; }
+const N = 1e9;
+for (const [label, fn] of [['integer add', intChain], ['float add  ', floatChain]]) {
+  fn(1e7);
+  const t = process.hrtime.bigint();
+  fn(N);
+  console.log(label, (Number(process.hrtime.bigint() - t) / N).toFixed(3), 'ns per step');
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>integer add 0.262 ns</code>, <code>float add 0.552 ns</code>।</p>
+  </div>
+  <p>দুইটাই "একটা যোগ", কিন্তু দশমিক যোগের শিকল দ্বিগুণ ধীর। কারণ কাজটা করে আলাদা একটা unit — floating-point unit — যার একটা যোগ শেষ করতে কয়েক cycle লাগে, integer ALU-র লাগে এক। (V8 ছোট integer-এর জন্য integer instruction ব্যবহার করে আর দশমিকের জন্য floating-point — Chapter 6-এর Smi আর HeapNumber-এর ভাগ এখানেও কাজে লাগে।)</p>
 
-  <h3>একটা instruction-এর জীবনচক্র</h3>
-  <pre class="diagram">Fetch    → PC যেখানে দেখাচ্ছে, memory থেকে সেই instruction আনো
-Decode   → instruction-টা কী বলছে বোঝো (add? load? jump?)
-Execute  → ALU দিয়ে কাজটা করো
-Memory   → দরকার হলে memory read/write করো
-Writeback→ result register-এ লেখো
-   ↺ PC বাড়াও (বা jump হলে নতুন address বসাও), আবার Fetch</pre>
-  <p>তোমার পুরো career-এর সব code — React component থেকে SQL query — শেষ বিচারে এই লুপ: fetch, decode, execute, কোটি কোটি বার প্রতি second-এ। High-level ভাষা যত জাদুই দেখাক, নিচে নেমে সবকিছু এই সরল চক্রে দাঁড়ায়।</p>
+  <figure class="fig">
+    <svg viewBox="0 0 800 400" width="100%" role="img" aria-label="Inside one CPU core: the front-end fetches from the L1 instruction cache using the PC, decodes and predicts branches; decoded work goes to execution units — ALUs, floating point and SIMD, load and store, and the branch unit — which read and write the register file; the load/store unit talks to the L1 data cache and beyond">
+      <defs>
+        <marker id="c12f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="10" y="10" width="780" height="380" rx="12" class="b-m"/>
+      <text x="26" y="34" class="t-m t-s">one performance core (Apple M4 Pro)</text>
+
+      <rect x="26" y="46" width="748" height="92" rx="10" class="b"/>
+      <text x="42" y="68" class="t-h t-s">FRONT-END</text>
+      <rect x="42" y="78" width="190" height="48" rx="6" class="b-u"/>
+      <text x="137" y="99" text-anchor="middle" class="t-s">L1 instruction cache</text>
+      <text x="137" y="116" text-anchor="middle" class="t-m t-s">192 KB</text>
+      <rect x="262" y="78" width="140" height="48" rx="6" class="b"/>
+      <text x="332" y="99" text-anchor="middle" class="t-s">Fetch</text>
+      <text x="332" y="116" text-anchor="middle" class="t-m t-s">at address = PC</text>
+      <rect x="432" y="78" width="140" height="48" rx="6" class="b"/>
+      <text x="502" y="99" text-anchor="middle" class="t-s">Decode</text>
+      <text x="502" y="116" text-anchor="middle" class="t-m t-s">bytes → operations</text>
+      <rect x="602" y="78" width="156" height="48" rx="6" class="b"/>
+      <text x="680" y="99" text-anchor="middle" class="t-s">Branch predictor</text>
+      <text x="680" y="116" text-anchor="middle" class="t-m t-s">guesses next PC</text>
+      <line x1="232" y1="102" x2="260" y2="102" class="ln" marker-end="url(#c12f1-a)"/>
+      <line x1="402" y1="102" x2="430" y2="102" class="ln" marker-end="url(#c12f1-a)"/>
+
+      <line x1="502" y1="126" x2="502" y2="164" class="ln" marker-end="url(#c12f1-a)"/>
+      <text x="512" y="152" class="t-m t-s">decoded operations</text>
+
+      <rect x="26" y="168" width="200" height="200" rx="10" class="b-k"/>
+      <text x="126" y="192" text-anchor="middle" class="t-k">Register file</text>
+      <text x="44" y="220" class="mono">x0 … x30</text>
+      <text x="44" y="244" class="mono">PC   SP</text>
+      <text x="44" y="268" class="mono">flags</text>
+      <text x="100" y="268" class="t-m t-s">last compare</text>
+      <text x="44" y="292" class="mono">mode</text>
+      <text x="100" y="292" class="t-m t-s">user / kernel</text>
+      <text x="44" y="330" class="t-m t-s">all execution units</text>
+      <text x="44" y="348" class="t-m t-s">read and write here</text>
+
+      <rect x="250" y="168" width="330" height="200" rx="10" class="b"/>
+      <text x="266" y="192" class="t-h t-s">EXECUTION UNITS</text>
+      <rect x="266" y="204" width="146" height="70" rx="6" class="b-u"/>
+      <text x="339" y="228" text-anchor="middle" class="t-s">ALUs (several)</text>
+      <text x="339" y="246" text-anchor="middle" class="t-m t-s">int add, compare,</text>
+      <text x="339" y="262" text-anchor="middle" class="t-m t-s">bit ops · 1 cycle</text>
+      <rect x="420" y="204" width="146" height="70" rx="6" class="b-u"/>
+      <text x="493" y="228" text-anchor="middle" class="t-s">FP / SIMD</text>
+      <text x="493" y="246" text-anchor="middle" class="t-m t-s">float math, vectors</text>
+      <text x="493" y="262" text-anchor="middle" class="t-m t-s">a few cycles</text>
+      <rect x="266" y="284" width="146" height="70" rx="6" class="b-u"/>
+      <text x="339" y="308" text-anchor="middle" class="t-s">Branch unit</text>
+      <text x="339" y="326" text-anchor="middle" class="t-m t-s">sets PC on a jump</text>
+      <text x="339" y="342" text-anchor="middle" class="t-m t-s">b, bl, ret</text>
+      <rect x="420" y="284" width="146" height="70" rx="6" class="b-u"/>
+      <text x="493" y="308" text-anchor="middle" class="t-s">Load / store</text>
+      <text x="493" y="326" text-anchor="middle" class="t-m t-s">TLB, then L1 data</text>
+      <text x="493" y="342" text-anchor="middle" class="t-m t-s">ldr, str</text>
+      <line x1="228" y1="268" x2="248" y2="268" class="ln" marker-start="url(#c12f1-a)" marker-end="url(#c12f1-a)"/>
+
+      <rect x="604" y="248" width="170" height="60" rx="8" class="b"/>
+      <text x="689" y="272" text-anchor="middle" class="t-s">L1 data cache</text>
+      <text x="689" y="290" text-anchor="middle" class="t-m t-s">128 KB</text>
+      <path d="M566 318 H588 V280 H602" class="ln" marker-end="url(#c12f1-a)"/>
+      <text x="689" y="334" text-anchor="middle" class="t-m t-s">↓ L2 (16 MB, shared) → RAM</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা performance core-এর ভেতরের মোটা দাগের নকশা (মাপ গুলো <code>sysctl</code> থেকে)। উপরের সারি PC ধরে instruction আনে আর ভাঙে; নিচে বিশেষজ্ঞ unit গুলো আসল কাজ করে, সবাই register file থেকে পড়ে আর সেখানেই লেখে। Load/store unit একাই memory-র দিকে যায়।</p>
+
+  <h3>তোমার <code>if</code> কীভাবে তুলনা আর লাফ হয়</h3>
+  <p>CPU instruction চালায় একটার পর একটা, PC + ৪ করে। তাহলে "যদি এটা হয় তবে ওটা করো" — এই সিদ্ধান্ত সে নেয় কীভাবে? উত্তরটা দুই ধাপে:</p>
+  <ol>
+    <li>একটা <strong>compare</strong> instruction দুইটা মান তুলনা করে, আর ফলাফল (বড়? ছোট? সমান?) register file-এর <strong>flags</strong>-এ লিখে রাখে।</li>
+    <li>একটা <strong>conditional branch</strong> instruction flags দেখে: শর্ত মিললে branch unit PC-তে লাফের গন্তব্য বসায়; না মিললে PC স্বাভাবিকভাবে পরের instruction-এ যায়।</li>
+  </ol>
+  <p><code>if</code>, <code>else</code>, <code>for</code>, <code>while</code>, <code>switch</code>, <code>&amp;&amp;</code> — সব শেষে এই দুই ধাপে নামে। Loop মানে শুধু একটা পেছনের দিকে লাফ, যতক্ষণ শর্ত মেলে। তোমার JS-এ এটা দেখা যায় V8-এর <strong>bytecode</strong>-এ — V8-এর নিজের বানানো একটা instruction set, যেটা তার interpreter চালায় (Chapter 4), দেখতে অনেকটা CPU-র instruction-এর মতো:</p>
+  <div class="codewrap"><pre><code>node --print-bytecode --print-bytecode-filter=check -e "function check(x) { if (x &gt; 5) return 'big'; return 'small'; } check(7)"</code></pre></div>
+  <p>লম্বা output-এর মাঝখানে <code>check</code>-এর পুরো দেহ (address গুলো ছেঁটে):</p>
+  <div class="codewrap"><pre><code>@ 0 : LdaSmi [5]                 ; 5 নাও
+@ 2 : TestGreaterThan a0, [0]    ; argument x কি 5-এর চেয়ে বড়? ফলাফল রাখো
+@ 5 : JumpIfFalse [5] (@ 10)     ; না হলে @10-এ লাফ দাও
+@ 7 : LdaConstant [0]            ; 'big'
+@ 9 : Return
+@10 : LdaConstant [1]            ; 'small'
+@12 : Return</code></pre></div>
+  <p>ঠিক ওপরের দুই ধাপ: <code>TestGreaterThan</code> তুলনা করে, <code>JumpIfFalse</code> ফলাফল দেখে লাফ দেয় বা দেয় না। <code>check</code> গরম হয়ে উঠলে (Chapter 4-এর JIT) TurboFan এটাকে ARM-এর আসল <code>cmp</code> আর শর্তসাপেক্ষ <code>b.</code>-জাতীয় instruction-এ বদলে দেয় — তখন কাজটা করে core-এর ALU (তুলনা) আর branch unit (লাফ)।</p>
+
+  <h3>এক chip-এ দুই রকম core</h3>
+  <p>দ্রুত core বানাতে বড় circuit, উঁচু clock, আর প্রচুর বিদ্যুৎ লাগে। অথচ laptop বা phone-এর বেশিরভাগ কাজ — mail sync, backup, index বানানো — তাড়ার কিছু না। সব কাজ বড় core-এ চালালে battery অকারণে শেষ হয়।</p>
+  <p>তাই আজকের অনেক chip-এ দুই রকম core থাকে: <strong>performance core</strong> (P-core — বড়, দ্রুত, বেশি বিদ্যুৎ খায়) আর <strong>efficiency core</strong> (E-core — ছোট, ধীর, খুব কম বিদ্যুৎ)। Apple Silicon, Intel-এর নতুন chip, আর phone-এর ARM chip — সবাই এই পথে। কোন কাজ কোন core-এ যাবে, সেটা ঠিক করে OS-এর scheduler (Chapter 15)।</p>
+  <div class="codewrap"><pre><code>sysctl hw.perflevel0.name hw.perflevel0.physicalcpu hw.perflevel1.name hw.perflevel1.physicalcpu</code></pre></div>
+  <p>আমার Mac-এ: <code>Performance 8</code>, <code>Efficiency 4</code>। দুই দলের cache-ও আলাদা মাপের: P-core-এর L1 data cache ১২৮ KB, E-core-এর ৬৪ KB; P-core-দের ভাগ করা L2 ১৬ MB, E-core-দের ৪ MB। macOS-এ একটা command দিয়ে কোনো process-কে "background" চিহ্ন দেওয়া যায় — তখন সে E-core-এ চলে। একই <code>clock.js</code> দুইভাবে চালাও:</p>
+  <div class="codewrap"><pre><code>time node clock.js                  # সাধারণ — P-core-এ
+time taskpolicy -b node clock.js    # background — E-core-এ</code></pre></div>
+  <p>আমার Mac-এ প্রথমটা <code>0.225 ns per step</code>, মোট <code>0.245 total</code>; দ্বিতীয়টা <code>2.046 ns per step</code>, মোট <code>2.166 total</code>। একই code, একই machine — প্রায় নয় গুণ ধীর, কারণ কাজটা ছোট core-এ গেছে, যে কম clock-এ আর কম শক্তিতে চলে। (Linux-এ hybrid Intel chip থাকলে <code>lscpu -e</code>-তে দেখবে বিভিন্ন CPU-র <code>MAXMHZ</code> আলাদা।) Benchmark চালানোর সময় এটা মনে রেখো: তোমার কাজ কোন core-এ পড়ল, তার উপর ফল বদলে যেতে পারে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"যার GHz বেশি, সে দ্রুত।" GHz শুধু বলে সেকেন্ডে কতগুলো cycle; প্রতিটা cycle-এ কতটা কাজ হয় — সেটা বলে না। একটা core এক cycle-এ কয়েকটা instruction শেষ করতে পারে (কীভাবে, Chapter 14), আরেকটা হয়তো একটাই। ওপরের E-core-এর নয় গুণ ধীরতার একটা অংশ কম clock, বাকিটা ছোট core — প্রতি cycle-এ কম কাজ। দুইটা CPU-র তুলনা করতে হয় আসল কাজ চালিয়ে, সংখ্যার লেবেল দেখে না।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">CONNECTION</div>
-    <p>Chapter 6-এর stack pointer, Chapter 4-এর entry point, সামনের Chapter 17-এর context switch — সবকিছু ঘোরে registers-এর চারপাশে। <strong>"Execution state" মানে মূলত: registers + PC + stack pointer-এর snapshot।</strong> এই বাক্যটা মনে রেখো, context switching-এ কাজে লাগবে। (রাষ্ট্রটা আসলে কার — process না thread — সেই সূক্ষ্মতা Chapter 16-এ।)</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>একটা core হলো ঘড়ির তালে চলা একটা কারখানা: front-end PC ধরে instruction আনে আর ভাঙে; বিশেষজ্ঞ unit গুলো (ALU, floating point, load/store, branch) আসল কাজ করে, register file-এ পড়ে-লেখে। প্রতিটা <code>if</code> হলো একটা তুলনা আর একটা শর্তসাপেক্ষ লাফ। আর একই chip-এ বড় আর ছোট core থাকতে পারে — তোমার কাজ কোনটায় পড়ল, তা ঠিক করে OS।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Program counter কী, আর jump/if-else এর সাথে এর সম্পর্ক কী?</li>
-      <li>Fetch-decode-execute চক্রটা নিজের ভাষায়?</li>
-      <li>Core আর clock speed — কে কী বাড়ায়?</li>
+      <li>CPU-তে clock কেন লাগে? <code>clock.js</code>-এর সংখ্যা কেন clock-এর নিচের সীমা দেয়, উপরের না?</li>
+      <li>একটা core-এর ভেতরের প্রধান অংশ গুলো কী কী? <code>hello</code>-র <code>mov</code>, <code>str</code> আর <code>bl</code> কোনটা কোন unit-এ যায়?</li>
+      <li><code>units.js</code>-এ দশমিক যোগের শিকল integer যোগের চেয়ে দ্বিগুণ ধীর কেন?</li>
+      <li>CPU "সিদ্ধান্ত" নেয় কোন দুই ধাপে? V8-এর bytecode-এ <code>TestGreaterThan</code> আর <code>JumpIfFalse</code> কী করছে?</li>
+      <li>একই chip-এ P-core আর E-core কেন? <code>taskpolicy -b</code> দিলে একই loop প্রায় নয় গুণ ধীর কেন, আর GHz দিয়ে CPU তুলনা করা কেন ভুল?</li>
     </ul>
   </div>

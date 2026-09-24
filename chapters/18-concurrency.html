@@ -1,51 +1,257 @@
   <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
   <h2>Chapter 18 — Concurrency</h2>
-  <p class="chap-sub">Shared state + একাধিক thread = software engineering-এর সবচেয়ে কুখ্যাত bug-দের জন্মভূমি।</p>
+  <p class="chap-sub">একাধিক thread একই data ছুঁলে কী ভাঙে — race condition, atomic, lock, deadlock, semaphore — আর কেন single-threaded JS-ও এই রোগ থেকে মুক্ত না।</p>
 
-  <h3>Concurrency vs parallelism</h3>
-  <p>দুটো আলাদা জিনিস, প্রায়ই গুলিয়ে যায়:</p>
-  <ul>
-    <li><strong>Concurrency:</strong> একাধিক কাজ <em>overlapping সময়ে এগোচ্ছে</em> — এক core-ও হতে পারে, context switch করে করে। Structure-এর ব্যাপার।</li>
-    <li><strong>Parallelism:</strong> একাধিক কাজ <em>আক্ষরিক একই মুহূর্তে</em> চলছে — একাধিক core লাগবেই। Execution-এর ব্যাপার।</li>
-  </ul>
-  <p>একজন waiter ১০টা টেবিল সামলাচ্ছে = concurrency। ১০ জন waiter = parallelism। Node.js event loop হলো এক waiter-এর master class; multi-core কাজে লাগানো মানে waiter বাড়ানো।</p>
+  <p>যা লাগবে: এক process-এর thread-রা একই memory ভাগ করে (Chapter 16); CPU memory ছোঁয় load আর store দিয়ে, আর হিসাব করে register-এ (Chapter 8); একাধিক core একই cache line-এ লিখলে hardware সেটাকে এক core থেকে আরেক core-এ চালাচালি করে (Chapter 13); আর <code>Atomics.wait</code>/<code>notify</code> দিয়ে thread ঘুমাতে-জাগাতে পারে (Chapter 17)। এই chapter-এর সব experiment Node-এর <code>worker_threads</code> আর <code>SharedArrayBuffer</code> দিয়ে — Chapter 16-এ দেখেছ, শুধু <code>SharedArrayBuffer</code>-এর memory-ই worker-রা সত্যিই ভাগ করে।</p>
 
-  <h3>Race condition: কুখ্যাত counter++</h3>
-  <p>দুই thread একই shared counter বাড়াচ্ছে। Source code-এ <code>counter++</code> এক লাইন, কিন্তু CPU-র চোখে তিনটা আলাদা instruction:</p>
-  <div class="codewrap"><pre><code>1. LOAD   counter → register     (পড়ো)
-2. ADD    register + 1           (বাড়াও)
-3. STORE  register → counter     (লেখো)</code></pre></div>
-  <p>এখন এই interleaving-টা দেখো (counter = 5 থেকে শুরু):</p>
-  <pre class="diagram">Thread A                    Thread B
-LOAD  → 5
-                            LOAD  → 5      <span class="dim">← A এখনো লেখেনি!</span>
-ADD   → 6
-                            ADD   → 6
-STORE → 6
-                            STORE → 6      <span class="dim">← A-র কাজ মুছে গেল</span>
+  <h3>Concurrency বনাম parallelism</h3>
+  <p>দুইটা শব্দ প্রায়ই গুলিয়ে যায়, অথচ সমস্যা আর সমাধান দুইটার আলাদা। <strong>Concurrency</strong> মানে একাধিক কাজ একই সময়-পরিসরে এগোচ্ছে — একটা core-এও সম্ভব, পালা করে (Chapter 15-এর scheduling timeline)। এটা কাজ <em>সাজানোর</em> ব্যাপার। <strong>Parallelism</strong> মানে একাধিক কাজ আক্ষরিক অর্থে একই মুহূর্তে চলছে — একাধিক core লাগবেই। এটা কাজ <em>চালানোর</em> ব্যাপার। একজন waiter দশটা টেবিল সামলাচ্ছে: concurrency। দশজন waiter: parallelism। এর বাস্তব রূপ তোমার Node-এই:</p>
+  <div class="codewrap"><pre><code>node -e "
+const t = performance.now();
+Promise.all(Array.from({ length: 1000 }, () =&gt; new Promise(r =&gt; setTimeout(r, 100))))
+  .then(() =&gt; console.log('1000 waits of 100 ms each, one thread:', (performance.now() - t).toFixed(0), 'ms'));"</code></pre></div>
+  <p>আমার Mac-এ: <code>103 ms</code>। এক হাজারটা অপেক্ষা, প্রতিটা ১০০ ms, একটাই thread — তবু মোট ১০৩ ms, কারণ অপেক্ষা গুলো একসাথে চলছে (concurrency), কিন্তু কোনো মুহূর্তেই একাধিক JS instruction চলছে না (parallelism নেই)। উল্টো দিকে Chapter 14-এর <code>parallel.js</code> ছিল parallelism: বারোটা core-এ একই মুহূর্তে হিসাব।</p>
 
-দুইবার increment, কিন্তু ফলাফল 6 — 7 না।</pre>
-  <p>এটাই <strong>race condition</strong>: ফলাফল নির্ভর করছে কে-কখন-চললো তার timing-এর উপর। ভয়ংকর দিকটা হলো — বেশিরভাগ সময় ঠিকঠাক চলে; হাজারে একবার ভুল হয়, সেটাও production-এ, load-এর সময়, আর reproduce করা প্রায় অসম্ভব।</p>
+  <h3>Race condition: কুখ্যাত <code>counter++</code></h3>
+  <p>Source code-এ <code>counter++</code> একটা লাইন। কিন্তু Chapter 8-এর ভাষায় CPU-র কাছে এটা তিন ধাপ: memory থেকে <strong>load</strong> করে register-এ আনো, register-এ ১ <strong>যোগ</strong> করো, register থেকে memory-তে <strong>store</strong> করো। দুইটা thread যদি একই counter-এ একসাথে এটা করে, আর এক thread-এর load আর store-এর মাঝখানে অন্যজনের load ঢুকে পড়ে, তাহলে একজনের কাজ মুছে যায়:</p>
 
-  <h3>রক্ষার অস্ত্র</h3>
-  <p>যে code shared state ছোঁয়, সেই অংশটার নাম <strong>critical section</strong>। নিয়ম: এক সময়ে এক thread-ই সেখানে ঢুকবে (mutual exclusion)। Tools:</p>
-  <ul>
-    <li><strong>Mutex (lock):</strong> Critical section-এর দরজার তালা। ঢোকার আগে lock নাও, বেরিয়ে ছাড়ো; অন্যরা lock না পাওয়া পর্যন্ত block থাকে। সরল, সর্বাধিক ব্যবহৃত। বিপদ: দুই thread দুই lock ধরে পরস্পরেরটার জন্য বসে থাকলে <strong>deadlock</strong> — কেউই আর নড়ে না। (এর mathematical treatment-এ যাচ্ছি না; "lock নেওয়ার order সব জায়গায় এক রাখো" — এই practical নিয়মটাই বেশিরভাগ deadlock ঠেকায়।)</li>
-    <li><strong>Semaphore:</strong> Counter-ওয়ালা তালা — "সর্বোচ্চ N জন একসাথে"। যেমন DB connection pool: ১০টা connection, ১১তম আবেদনকারী অপেক্ষা করবে।</li>
-    <li><strong>Atomic operations:</strong> Hardware-এর দেওয়া বিশেষ instruction যা load-modify-store-কে একটা অবিভাজ্য ধাপে করে — ছোট কাজে (counter!) lock-এর চেয়ে সস্তা।</li>
-  </ul>
+  <figure class="fig">
+    <svg viewBox="0 0 800 290" width="100%" role="img" aria-label="Two threads interleave the load, add and store steps of counter plus plus: both load 5, both compute 6, both store 6, so one of the two increments is lost">
+      <text x="150" y="30" text-anchor="middle" class="t-m t-s">1</text>
+      <text x="260" y="30" text-anchor="middle" class="t-m t-s">2</text>
+      <text x="370" y="30" text-anchor="middle" class="t-m t-s">3</text>
+      <text x="480" y="30" text-anchor="middle" class="t-m t-s">4</text>
+      <text x="590" y="30" text-anchor="middle" class="t-m t-s">5</text>
+      <text x="700" y="30" text-anchor="middle" class="t-m t-s">6</text>
+      <text x="24" y="30" class="t-m t-s">time →</text>
 
-  <div class="box kern">
-    <div class="box-title">"JS-এ তো race condition নেই!" — সত্যি?</div>
-    <p>Memory-level race (উপরের counter++) single-threaded JS-এ হয় না, ঠিক। কিন্তু <strong>logical race</strong> দিব্যি হয়: দুইটা async request-ই আগে DB থেকে balance পড়লো, তারপর দুজনেই লিখলো — একই lost-update গল্প, শুধু interleaving-টা instruction level-এ না, await point-এ। Race-এর মূল কারণ thread না — <strong>shared mutable state + non-atomic read-modify-write</strong>। সেটা DB row-তেও হয়।</p>
+      <text x="24" y="70" class="t-h t-s">Thread A</text>
+      <rect x="100" y="48" width="100" height="40" rx="6" class="b-u"/><text x="150" y="67" text-anchor="middle" class="mono">LOAD</text><text x="150" y="82" text-anchor="middle" class="t-m t-s">reg = 5</text>
+      <rect x="320" y="48" width="100" height="40" rx="6" class="b-u"/><text x="370" y="67" text-anchor="middle" class="mono">ADD</text><text x="370" y="82" text-anchor="middle" class="t-m t-s">reg = 6</text>
+      <rect x="540" y="48" width="100" height="40" rx="6" class="b-u"/><text x="590" y="67" text-anchor="middle" class="mono">STORE</text><text x="590" y="82" text-anchor="middle" class="t-m t-s">write 6</text>
+
+      <text x="24" y="138" class="t-h t-s">Thread B</text>
+      <rect x="210" y="116" width="100" height="40" rx="6" class="b-k"/><text x="260" y="135" text-anchor="middle" class="mono">LOAD</text><text x="260" y="150" text-anchor="middle" class="t-m t-s">reg = 5</text>
+      <rect x="430" y="116" width="100" height="40" rx="6" class="b-k"/><text x="480" y="135" text-anchor="middle" class="mono">ADD</text><text x="480" y="150" text-anchor="middle" class="t-m t-s">reg = 6</text>
+      <rect x="650" y="116" width="100" height="40" rx="6" class="b-k"/><text x="700" y="135" text-anchor="middle" class="mono">STORE</text><text x="700" y="150" text-anchor="middle" class="t-m t-s">write 6</text>
+
+      <text x="24" y="206" class="t-h t-s">counter</text>
+      <text x="24" y="222" class="t-m t-s">in memory</text>
+      <rect x="120" y="188" width="60" height="32" rx="4" class="b"/><text x="150" y="209" text-anchor="middle" class="mono">5</text>
+      <rect x="230" y="188" width="60" height="32" rx="4" class="b"/><text x="260" y="209" text-anchor="middle" class="mono">5</text>
+      <rect x="340" y="188" width="60" height="32" rx="4" class="b"/><text x="370" y="209" text-anchor="middle" class="mono">5</text>
+      <rect x="450" y="188" width="60" height="32" rx="4" class="b"/><text x="480" y="209" text-anchor="middle" class="mono">5</text>
+      <rect x="560" y="188" width="60" height="32" rx="4" class="b"/><text x="590" y="209" text-anchor="middle" class="mono">6</text>
+      <rect x="670" y="188" width="60" height="32" rx="4" class="b-d"/><text x="700" y="209" text-anchor="middle" class="mono">6</text>
+      <text x="776" y="262" text-anchor="end" class="t-d t-s">two increments, but counter went 5 → 6: A's update was overwritten</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই thread-এর তিন ধাপ একে অন্যের ফাঁকে ঢুকে গেছে। B ধাপ ২-এ ৫ পড়েছে — A তখনো লেখেনি। দুজনেই ৬ হিসাব করল, দুজনেই ৬ লিখল। দুইবার বাড়ানো হলো, ফল একবারের।</p>
+
+  <p>এমন bug-এর নাম <strong>race condition</strong>: ফলাফল নির্ভর করছে কে কখন চলল তার উপর। শর্ত দুইটা — একাধিক thread-এর মধ্যে <strong>ভাগাভাগি করা, বদলানো যায় এমন data</strong> (shared mutable state), আর সেই data-র উপর <strong>পড়ো-বদলাও-লেখো</strong> ধরনের এমন কাজ যেটা মাঝপথে ভাঙা যায়। নিজে ঘটাও:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — race.js</div>
+    <p>চারটা worker, প্রত্যেকে একই shared counter ১০ লাখবার বাড়ায় — তিনভাবে: সাধারণ <code>++</code>, <code>Atomics.add</code>, আর একটা নিজের বানানো lock দিয়ে (দুইটাই নিচের section-এ):</p>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+const WORKERS = 4, N = 1_000_000;
+
+// একটা খুব সরল lock: 0 = খোলা, 1 = কেউ ধরে আছে
+function lock(m)   { while (Atomics.compareExchange(m, 0, 0, 1) !== 0) Atomics.wait(m, 0, 1); }
+function unlock(m) { Atomics.store(m, 0, 0); Atomics.notify(m, 0, 1); }
+
+if (isMainThread) {
+  const run = mode =&gt; new Promise(resolve =&gt; {
+    const counter = new Int32Array(new SharedArrayBuffer(4));
+    const mutex = new Int32Array(new SharedArrayBuffer(4));
+    const t = performance.now();
+    let done = 0;
+    for (let w = 0; w &lt; WORKERS; w++) {
+      new Worker(__filename, { workerData: { counter, mutex, mode } }).on('exit', () =&gt; {
+        if (++done === WORKERS) resolve([counter[0], performance.now() - t]);
+      });
+    }
+  });
+  (async () =&gt; {
+    for (const mode of ['plain', 'atomic', 'lock']) {
+      const [value, ms] = await run(mode);
+      console.log(`${mode.padEnd(6)} counter = ${String(value).padStart(7)}  (expected ${WORKERS * N})  ${ms.toFixed(0)} ms`);
+    }
+  })();
+} else {
+  const { counter, mutex, mode } = workerData;
+  for (let i = 0; i &lt; N; i++) {
+    if (mode === 'plain') counter[0]++;                         // পড়ো, বাড়াও, লেখো — তিন ধাপ
+    else if (mode === 'atomic') Atomics.add(counter, 0, 1);     // এক অবিভাজ্য ধাপ
+    else { lock(mutex); counter[0]++; unlock(mutex); }          // তালা দিয়ে একজন একজন করে
+  }
+}</code></pre></div>
+    <p>আমার Mac-এ:</p>
+    <div class="codewrap"><pre><code>plain  counter = 1103127  (expected 4000000)  19 ms
+atomic counter = 4000000  (expected 4000000)  117 ms
+lock   counter = 4000000  (expected 4000000)  426 ms</code></pre></div>
+  </div>
+  <p>চল্লিশ লাখ বাড়ানোর মধ্যে প্রায় ত্রিশ লাখ হারিয়ে গেছে। (সন্দেহ হতে পারে V8-এর optimizer মানটা register-এ ধরে রাখছে কি না — <code>node --jitless race.js</code> দিয়ে শুধু interpreter-এ চালালেও আমার চালানোয় এসেছে <code>1254776</code>। আর <code>WORKERS = 1</code> করলে ঠিক <code>1000000</code> — একা থাকলে race নেই।) সবচেয়ে ভয়ংকর দিক হলো: কম চাপে, কম thread-এ, ছোট loop-এ এই bug প্রায়ই চোখেই পড়ে না। Test pass করে, production-এর চাপের দিনে হঠাৎ হিসাব গরমিল — আর আবার ঘটানো প্রায় অসম্ভব।</p>
+
+  <h3>Atomic operation: ভাঙা যায় না এমন এক ধাপ</h3>
+  <p>সমস্যার মূল ছিল তিন ধাপের মাঝের ফাঁক। Hardware এর জন্য বিশেষ instruction দেয়, যেটা পড়া-বদলানো-লেখা একসাথে এমনভাবে করে যে মাঝখানে কেউ ঢুকতে পারে না — <strong>atomic operation</strong> (ARM-এ যেমন <code>LDADD</code>, x86-এ <code>LOCK XADD</code>)। কাজটা হয় Chapter 13-এর cache coherence দিয়ে: core-টা cache line-এর একক মালিকানা নিয়ে তিন ধাপ শেষ না করা পর্যন্ত ছাড়ে না। JS-এ এটা <code>Atomics.add</code>, <code>Atomics.compareExchange</code> ইত্যাদি। ওপরে <code>atomic</code> ঠিক ৪০,০০,০০০ দিল।</p>
+  <p>দামটাও লক্ষ করো: ১৯ ms থেকে ১১৭ ms। প্রতিটা atomic-এ line-টা core থেকে core-এ ছোটে (Chapter 13-এর false sharing-এর মতোই, এবার সত্যিকারের sharing)। নির্ভুলতার দাম আছে — আর এক counter-এ হাজার thread ঠেলাঠেলি করলে সেই দাম বাড়ে। (Chapter 13-এর সমাধান এখানেও খাটে: প্রতিটা thread নিজের আলাদা counter বাড়াক, শেষে যোগ।)</p>
+
+  <h3>Critical section আর mutex</h3>
+  <p>Atomic instruction একটা সংখ্যার উপর এক ধাপের কাজ পারে। কিন্তু অনেক কাজ এর চেয়ে বড়: "balance দেখো, যথেষ্ট থাকলে কমাও আর log-এ লেখো" — কয়েকটা data, কয়েকটা ধাপ, মাঝে সিদ্ধান্ত। এমন কোনো একক instruction নেই। দরকার এমন ব্যবস্থা যাতে এই পুরো অংশে এক সময়ে একটাই thread থাকে। Shared data ছোঁয়া code-এর এই অংশের নাম <strong>critical section</strong>, আর "এক সময়ে একজন" নিয়মের নাম <strong>mutual exclusion</strong>। এটা নিশ্চিত করার হাতিয়ার <strong>mutex</strong> (lock): ঢোকার আগে lock নাও, বেরিয়ে ছাড়ো; অন্য কেউ ধরে থাকলে ছাড়া পর্যন্ত অপেক্ষা করো।</p>
+  <p>ওপরের <code>race.js</code>-এর lock-টা একটা আসল mutex-এর কঙ্কাল: <code>Atomics.compareExchange(m, 0, 0, 1)</code> — "মান যদি ০ (খোলা) হয়, তবে ১ (ধরা) বানাও", এক অবিভাজ্য ধাপে; না পারলে <code>Atomics.wait</code> দিয়ে ঘুম (Chapter 17-এর <code>futex</code>-এর মতো)। ছাড়ার সময় ০ লিখে একজন অপেক্ষমাণকে জাগাও। ফল নির্ভুল, কিন্তু ৪২৬ ms — atomic-এর চারগুণ, কারণ প্রতিবার lock-এর জন্য লড়াই, অনেক সময় ঘুম আর জাগা। শিক্ষা: critical section যত ছোট সম্ভব রাখো, আর একটা সংখ্যা বাড়ানোর মতো কাজে lock না, atomic।</p>
+
+  <h3>Deadlock: সবাই সবার অপেক্ষায়</h3>
+  <p>একাধিক lock এলে নতুন বিপদ। Thread 1 lock A ধরে আছে আর lock B চায়; ঠিক তখন Thread 2 lock B ধরে আছে আর lock A চায়। কেউ নিজেরটা ছাড়বে না যতক্ষণ না অন্যেরটা পায় — দুজনেই চিরকাল ঘুমিয়ে। এর নাম <strong>deadlock</strong>।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — deadlock.js</div>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+
+function lock(m)   { while (Atomics.compareExchange(m, 0, 0, 1) !== 0) Atomics.wait(m, 0, 1); }
+function unlock(m) { Atomics.store(m, 0, 0); Atomics.notify(m, 0, 1); }
+const pause = ms =&gt; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+if (isMainThread) {
+  const sameOrder = process.argv[2] === 'same';
+  const A = new Int32Array(new SharedArrayBuffer(4));   // lock A
+  const B = new Int32Array(new SharedArrayBuffer(4));   // lock B
+  let finished = 0, gaveUp = false;
+  const workers = [
+    new Worker(__filename, { workerData: { first: A, second: B, name: 'T1' } }),
+    new Worker(__filename, { workerData: sameOrder ? { first: A, second: B, name: 'T2' } : { first: B, second: A, name: 'T2' } }),
+  ];
+  workers.forEach(w =&gt; w.on('exit', () =&gt; { if (++finished === 2 &amp;&amp; !gaveUp) console.log('both finished'); }));
+  setTimeout(() =&gt; {
+    if (finished &lt; 2) { gaveUp = true; console.log('DEADLOCK: after 2 s nobody has finished'); workers.forEach(w =&gt; w.terminate()); }
+  }, 2000);
+} else {
+  const { first, second, name } = workerData;
+  lock(first);  console.log(name, 'holds its first lock');
+  pause(100);                                         // একটু দেরি — যাতে অন্যজনও নিজের প্রথম lock ধরে ফেলে
+  lock(second); console.log(name, 'got its second lock');
+  unlock(second); unlock(first);
+}</code></pre></div>
+    <p><code>node deadlock.js opposite</code> (T1 নেয় A তারপর B, T2 নেয় B তারপর A):</p>
+    <div class="codewrap"><pre><code>T1 holds its first lock
+T2 holds its first lock
+DEADLOCK: after 2 s nobody has finished</code></pre></div>
+    <p><code>node deadlock.js same</code> (দুজনেই আগে A, তারপর B): চারটা "holds/got" লাইন, তারপর <code>both finished</code>।</p>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 280" width="100%" role="img" aria-label="Deadlock cycle: thread 1 holds lock A and waits for lock B; thread 2 holds lock B and waits for lock A; the waits form a cycle so neither can proceed">
+      <defs>
+        <marker id="c18f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c18f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="60" y="30" width="150" height="50" rx="8" class="b-k"/>
+      <text x="135" y="61" text-anchor="middle" class="t-k">lock A</text>
+      <rect x="360" y="30" width="150" height="50" rx="8" class="b-k"/>
+      <text x="435" y="61" text-anchor="middle" class="t-k">lock B</text>
+      <rect x="60" y="190" width="150" height="50" rx="8" class="b-u"/>
+      <text x="135" y="221" text-anchor="middle" class="t-u">Thread 1</text>
+      <rect x="360" y="190" width="150" height="50" rx="8" class="b-u"/>
+      <text x="435" y="221" text-anchor="middle" class="t-u">Thread 2</text>
+
+      <line x1="135" y1="188" x2="135" y2="84" class="ln-u" marker-end="url(#c18f2-u)"/>
+      <text x="126" y="140" text-anchor="end" class="t-u t-s">holds</text>
+      <line x1="435" y1="188" x2="435" y2="84" class="ln-u" marker-end="url(#c18f2-u)"/>
+      <text x="444" y="140" class="t-u t-s">holds</text>
+      <line x1="180" y1="188" x2="392" y2="84" class="ln-d dash" marker-end="url(#c18f2-d)"/>
+      <line x1="390" y1="188" x2="178" y2="84" class="ln-d dash" marker-end="url(#c18f2-d)"/>
+      <text x="285" y="180" text-anchor="middle" class="t-d t-s">waits for</text>
+
+      <text x="560" y="70" class="t-h t-s">The cycle</text>
+      <text x="560" y="94" class="t-s">T1 → waits for B → held by T2</text>
+      <text x="560" y="114" class="t-s">T2 → waits for A → held by T1</text>
+      <text x="560" y="152" class="t-ok t-s">Fix: every thread takes</text>
+      <text x="560" y="172" class="t-ok t-s">A before B — then a cycle</text>
+      <text x="560" y="192" class="t-ok t-s">can never form</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">নীল তীর: কে কোন lock ধরে আছে। লাল dashed তীর: কে কোনটার অপেক্ষায়। অপেক্ষার তীর গুলো একটা বৃত্ত বানিয়েছে — T1 দাঁড়িয়ে T2-র জন্য, T2 দাঁড়িয়ে T1-এর জন্য। সবাই একই ক্রমে lock নিলে এমন বৃত্ত তৈরিই হতে পারে না।</p>
+  <p>Deadlock-এর তত্ত্ব অনেক গভীর, কিন্তু বাস্তবে সবচেয়ে কাজের নিয়ম একটাই: <strong>সব জায়গায় lock নেওয়ার ক্রম এক রাখো</strong>। যদি প্রতিটা thread সবসময় আগে A, পরে B নেয়, তাহলে "B ধরে A-র অপেক্ষা" অবস্থা কখনো আসবেই না — <code>same</code> version যেমন দেখাল। Database-এ দুইটা transaction দুইটা row উল্টো ক্রমে update করলেও ঠিক এই জিনিস ঘটে; database তখন একটা transaction-কে বাতিল করে deadlock ভাঙে, আর তুমি error পাও।</p>
+
+  <h3>Semaphore: সর্বোচ্চ N জন</h3>
+  <p>কখনো "এক সময়ে একজন" না, দরকার "এক সময়ে সর্বোচ্চ N জন" — ধরো database-এর মাত্র ৩টা connection, অথচ একসাথে ১০টা request এসেছে। চতুর্থ request-কে কেউ একজন connection ফেরত না দেওয়া পর্যন্ত অপেক্ষা করতে হবে। এর হাতিয়ার <strong>semaphore</strong>: একটা counter-ওয়ালা lock — ঢোকার সময় counter এক কমাও (শূন্য হলে অপেক্ষা), বেরোনোর সময় এক বাড়াও। Mutex আসলে N = ১-এর semaphore। একই ধারণা async JS-এও কাজে লাগে — একসাথে কয়টা query বা HTTP call চলবে, সেটা বাঁধতে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — semaphore.js</div>
+    <div class="codewrap"><pre><code>// Semaphore: একসাথে সর্বোচ্চ N জন ঢুকতে পারবে — যেমন DB connection pool
+function semaphore(n) {
+  const waiting = [];
+  return {
+    async acquire() { if (n &gt; 0) { n--; return; } await new Promise(r =&gt; waiting.push(r)); },
+    release()       { const next = waiting.shift(); if (next) next(); else n++; },
+  };
+}
+const sem = semaphore(3);
+const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
+let inFlight = 0, maxInFlight = 0;
+
+async function query(i) {
+  await sem.acquire();
+  inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+  try { await sleep(100); }                  // একটা ১০০ ms-এর query
+  finally { inFlight--; sem.release(); }
+}
+
+(async () =&gt; {
+  const t = performance.now();
+  await Promise.all(Array.from({ length: 10 }, (_, i) =&gt; query(i)));
+  console.log(`10 queries, max 3 at once → ${(performance.now() - t).toFixed(0)} ms, max in flight = ${maxInFlight}`);
+})();</code></pre></div>
+    <p>আমার Mac-এ: <code>10 queries, max 3 at once → 404 ms, max in flight = 3</code> — দশটা query তিন-তিন-তিন-একের চার দফায়, প্রতিটা ১০০ ms।</p>
+  </div>
+
+  <h3>"JS-এ তো race condition নেই!" — সত্যি?</h3>
+  <p>ওপরের <code>counter++</code>-এর মতো memory-র স্তরের race তোমার সাধারণ Node code-এ হয় না, কারণ তোমার সব JS একটা thread-এ চলে — এক function চলার মাঝখানে আরেকটা ঢুকতে পারে না। কিন্তু একটা জায়গায় ঢুকতে পারে: <code>await</code>। প্রতিটা <code>await</code>-এ তোমার function থেমে যায়, আর event loop তখন অন্য request-এর code চালায়। পড়া আর লেখার মাঝখানে যদি একটা <code>await</code> থাকে, সেটাই ঠিক ওপরের LOAD আর STORE-এর মাঝের ফাঁক:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — withdraw.js</div>
+    <div class="codewrap"><pre><code>// একটা নকল database: পড়া আর লেখায় কিছুটা সময় লাগে (network-এর মতো)
+const db = { balance: 1000 };
+const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
+async function getBalance()     { await sleep(10); return db.balance; }
+async function setBalance(v)    { await sleep(10); db.balance = v; }
+
+async function withdraw(amount) {
+  const balance = await getBalance();        // ১) পড়ো
+  if (balance &lt; amount) throw new Error('insufficient funds');
+  await setBalance(balance - amount);        // ২) লেখো — মাঝখানে অন্য request ঢুকে পড়তে পারে
+}
+
+(async () =&gt; {
+  await Promise.all([withdraw(700), withdraw(700)]);   // একই মুহূর্তে দুইটা request
+  console.log('both withdrawals succeeded; balance =', db.balance);
+})().catch(e =&gt; console.log('error:', e.message));</code></pre></div>
+    <p>আমার output: <code>both withdrawals succeeded; balance = 300</code>।</p>
+  </div>
+  <p>১০০০ টাকার account থেকে দুইবার ৭০০ তোলা হলো, আর balance দাঁড়াল ৩০০ — ব্যাংক ৭০০ টাকা হারাল। দুইটা request-ই প্রথম <code>await</code>-এ ১০০০ দেখেছে, দুটোই যাচাই পেরিয়েছে, দুটোই ৩০০ লিখেছে। Thread নেই, shared memory-র কারসাজি নেই — তবু হুবহু ওপরের lost update। Race-এর আসল কারণ thread না; কারণ <strong>ভাগাভাগি করা data-র উপর ভাঙা যায় এমন পড়ো-বদলাও-লেখো</strong>।</p>
+  <p>সমাধানও একই পরিবারের। এক process-এর ভেতরে একটা async lock দিয়ে কাজ গুলোকে লাইনে দাঁড় করানো যায় — একই code, শুধু <code>withdraw</code>-কে এর ভেতরে মুড়ে:</p>
+  <div class="codewrap"><pre><code>let tail = Promise.resolve();
+function withLock(fn) {
+  const run = tail.then(fn);
+  tail = run.catch(() =&gt; {});                // আগেরটা fail করলেও লাইন চলতে থাকুক
+  return run;
+}
+const withdraw = amount =&gt; withLock(async () =&gt; { /* আগের মতোই পড়ো, যাচাই করো, লেখো */ });</code></pre></div>
+  <p>এবার দুইটা request <code>Promise.allSettled</code>-এ চালালে আমার output: <code>fulfilled | rejected: insufficient funds | balance = 300</code> — দ্বিতীয়টা ঠিকমতো প্রত্যাখ্যাত। কিন্তু সাবধান: এই lock শুধু একটা Node process-এর ভেতরে কাজ করে। Production-এ তোমার server-এর চারটা instance থাকলে তারা একে অন্যের lock দেখে না। তখন কাজটা দিতে হয় database-কে, এক অবিভাজ্য ধাপে — যেমন <code>UPDATE accounts SET balance = balance - 700 WHERE id = 1 AND balance &gt;= 700</code> (তারপর দেখো কয়টা row বদলাল), বা একটা transaction-এর ভেতরে <code>SELECT ... FOR UPDATE</code> দিয়ে row-টা lock করে। মানে atomic operation আর lock — শুধু এক স্তর উপরে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Test-এ ঠিক ফল আসছে, মানে race নেই।" Race condition timing-নির্ভর: কম চাপে, কম thread-এ, ছোট loop-এ প্রায় কখনো দেখা দেয় না — <code>race.js</code>-এ একটা worker দিলে প্রতিবার নির্ভুল। Race খুঁজতে হয় code পড়ে: কোথায় ভাগাভাগি করা data, আর কোথায় তার উপর পড়া আর লেখার মাঝে একটা ফাঁক (আরেকটা thread, বা একটা <code>await</code>)?</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Race = ভাগাভাগি করা data + মাঝপথে ভাঙা যায় এমন পড়ো-বদলাও-লেখো। প্রতিকারের সিঁড়ি: আগে ভাগাভাগিই কমাও (প্রতিটা thread নিজের data); একটা সংখ্যা হলে atomic; বড় কাজ হলে mutex দিয়ে ছোট্ট critical section; একাধিক lock হলে সবসময় একই ক্রম; সংখ্যা বাঁধতে semaphore। আর single-threaded JS-এ প্রতিটা <code>await</code> একটা সম্ভাব্য ফাঁক — একাধিক instance থাকলে atomic-তা database-কে দাও।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Concurrency আর parallelism-এর পার্থক্য একটা analogy দিয়ে?</li>
-      <li>counter++ কেন atomic না, আর সেটা থেকে bug কীভাবে জন্মায়?</li>
-      <li>Mutex আর semaphore-এর পার্থক্য?</li>
-      <li>Race condition ধরা এত কঠিন কেন?</li>
+      <li>Concurrency আর parallelism-এর পার্থক্য কী? এক thread-এ ১০০০টা ১০০ ms-এর অপেক্ষা ১০৩ ms-এ শেষ হওয়া কোনটার উদাহরণ?</li>
+      <li><code>counter++</code> CPU-র কাছে কোন তিন ধাপ? <code>race.js</code>-এ ৪০ লাখের বদলে ~১১ লাখ এল কেন, আর একটা worker দিলে ঠিক কেন?</li>
+      <li>Atomic operation সমস্যাটা কীভাবে মেটায়, আর তার দাম কোথা থেকে আসে? কখন atomic যথেষ্ট না, mutex লাগে?</li>
+      <li><code>deadlock.js</code>-এ deadlock কীভাবে তৈরি হলো? Lock নেওয়ার একই ক্রম কেন সেটা অসম্ভব করে দেয়?</li>
+      <li><code>withdraw.js</code>-এ একটাই thread, তবু টাকা হারাল কেন? একাধিক server instance থাকলে এটা কীভাবে ঠিক করবে?</li>
     </ul>
   </div>

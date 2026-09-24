@@ -1,50 +1,298 @@
   <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
   <h2>Chapter 15 — Process Management</h2>
-  <p class="chap-sub">Process-এর জীবনচক্র, state, আর জন্ম-রহস্য: fork।</p>
+  <p class="chap-sub">Kernel প্রতিটা process-কে কোন অবস্থায় রাখে, কাকে কখন CPU দেয়, আর নতুন process কীভাবে জন্মায়, অন্য program হয়ে যায়, আর মারা যায় — <code>fork</code>, <code>exec</code>, <code>wait</code>।</p>
 
-  <h3>Process-এর state</h3>
-  <p>Kernel-এর খাতায় প্রতিটা process যেকোনো মুহূর্তে একটা state-এ থাকে:</p>
-  <pre class="diagram">          <span class="dim">জন্ম</span>
-           ↓
-        [Ready] ←──────────────┐
-           ↓ <span class="dim">scheduler CPU দিলো</span>  │ <span class="dim">সময় শেষ / বড় কেউ এলো</span>
-        [Running] ─────────────┘
-           ↓ <span class="dim">I/O চাইলো (disk, network, sleep...)</span>
-        [Waiting / Blocked]
-           ↓ <span class="dim">I/O শেষ → আবার Ready</span>
-           
-        [Terminated] <span class="dim">← exit করলে</span></pre>
+  <p>যা লাগবে, এক লাইনে: <strong>process</strong> হলো চলমান program, যার জন্য kernel একটা <strong>PCB</strong> রাখে — PID, parent-এর PID, memory, খোলা file, CPU-র register-এর সেভ করা মান (Chapter 3)। Kernel কয়েক millisecond পরপর <strong>timer interrupt</strong> পেয়ে নিয়ন্ত্রণ ফিরে পায় (Chapter 2), আর <code>execve</code> একই process-এর ভেতরের program বদলে দেয়, PID না বদলে (Chapter 4)। এই chapter-এ এই টুকরোগুলো দিয়ে process-এর পুরো জীবনচক্র সাজাব।</p>
+
+  <h3>Process-এর অবস্থা: কে CPU চায়, কে চায় না</h3>
+  <p>তোমার Mac-এ এই মুহূর্তে সাড়ে সাতশোর বেশি process, অথচ core বারোটা। Kernel যদি পালা করে সবাইকে CPU দিত, বেশিরভাগ পালা নষ্ট হতো — কারণ বেশিরভাগ process-এর এই মুহূর্তে করার কিছুই নেই: কেউ keyboard-এর অপেক্ষায়, কেউ network-এর, কেউ timer-এর। গুনে দেখো:</p>
+  <div class="codewrap"><pre><code>ps -Ao stat | tail -n +2 | cut -c1 | sort | uniq -c</code></pre></div>
+  <p>আমার Mac-এ: <code>755 S</code>, <code>4 R</code>, <code>3 U</code> — প্রায় সবাই ঘুমিয়ে। তাই kernel প্রতিটা process-এর PCB-তে একটা <strong>state</strong> লিখে রাখে:</p>
   <ul>
-    <li><strong>Running:</strong> এই মুহূর্তে কোনো core-এ চলছে। একটা core-এ একসাথে একটাই।</li>
-    <li><strong>Ready:</strong> চলতে প্রস্তুত, কিন্তু CPU খালি নেই — লাইনে দাঁড়িয়ে।</li>
-    <li><strong>Waiting/Blocked:</strong> কিছুর জন্য অপেক্ষা করছে (disk data, network packet, timer)। <strong>CPU চাইছেই না।</strong> তোমার server-এর বেশিরভাগ process দিনের বেশিরভাগ সময় এখানেই কাটায়।</li>
-    <li><strong>Terminated:</strong> শেষ। Kernel exit code ইত্যাদি রেখে দেয় parent-এর জন্য।</li>
+    <li><strong>Running</strong> — এই মুহূর্তে কোনো একটা core-এ চলছে।</li>
+    <li><strong>Ready</strong> (runnable) — চলতে চায়, কিন্তু core খালি নেই; kernel-এর একটা লাইনে (<strong>run queue</strong>) অপেক্ষা করছে।</li>
+    <li><strong>Blocked</strong> (sleeping, waiting) — কোনো ঘটনার অপেক্ষায়: disk-এর data, network packet, timer, একটা lock, বা child-এর মৃত্যু। এখন CPU দিলেও কিছু করতে পারবে না, তাই CPU চাইছেও না। Chapter 2-এর <code>readFileSync</code>-এর "process sleeps" এই অবস্থা।</li>
+    <li><strong>New</strong> আর <strong>Zombie</strong> — জন্মের মুহূর্ত আর মৃত্যুর পরের এক বিশেষ অবস্থা (নিচে আলাদা section)।</li>
   </ul>
-  <p>এই state machine চালায় kernel-এর <strong>scheduler</strong> — কে Ready থেকে Running-এ যাবে সেই সিদ্ধান্ত তার। (Scheduling algorithm-এর academic জঙ্গলে আমরা ঢুকবো না; "fairness আর priority মিলিয়ে kernel সিদ্ধান্ত নেয়" — এই model-ই যথেষ্ট।)</p>
-
-  <h3>fork(): process-এর জন্ম</h3>
-  <p>Unix-এ নতুন process বানানোর মৌলিক উপায়টা মজার — "নতুন বানাও" না, বরং <strong>"নিজের কপি বানাও"</strong>:</p>
-  <div class="codewrap"><pre><code>pid_t pid = fork();
-
-if (pid == 0) {
-    // এখানে child process চলছে
-} else {
-    // এখানে parent — pid-এ child-এর PID
-}</code></pre></div>
-  <p><code>fork()</code> call করলে kernel চলমান process-এর একটা প্রায়-হুবহু copy বানায়: একই code, memory-র copy (আসলে copy-on-write — Chapter 9 মনে আছে? তাই প্রায় instant), একই open file গুলো — খেয়াল রেখো, প্রত্যেকে নিজের কপি পায় না; দুজনে <em>একই</em> open file description ভাগ করে, তাই file offset-ও এক। এজন্যই fork-এর পর দুজনেই একই fd-তে লিখলে লেখাগুলো একে অন্যের উপর না পড়ে পরপর বসে (আর buffered stdio flush না করে fork করলে output দুবার ছাপা হয়)। মজাটা হলো — <strong>একই fork() call দুই process-এ দুইবার return করে</strong>: parent পায় child-এর PID, child পায় 0। ওই if/else দিয়েই দুজনের রাস্তা আলাদা হয়।</p>
-  <p>তারপর child সাধারণত <code>exec()</code> family-র একটা call দিয়ে নিজের ভিতরে নতুন executable load করে — পুরনো memory ছবি মুছে নতুন program বসে। Shell ঠিক এটাই করে: তুমি <code>ls</code> লিখলে shell fork করে, child-এ exec("ls") হয়, parent (shell) child শেষ হওয়ার wait করে। এই fork+exec ভাগাভাগির সুবিধা: fork আর exec-এর মাঝখানে child নিজের setup বদলাতে পারে (যেমন output redirect — <code>ls &gt; file.txt</code> এভাবেই কাজ করে)।</p>
-  <p>এভাবেই পুরো system-এ process-দের একটা <strong>parent-child tree</strong> তৈরি হয় — সবার আদি পূর্বপুরুষ PID 1 (init/systemd)।</p>
-
   <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p><code>ps -ef | head</code> চালিয়ে PPID (parent PID) column দেখো। Linux-এ <code>pstree | head -30</code> চালালে পুরো family tree দেখা যায় — systemd থেকে নেমে তোমার terminal, তার child shell, তার child তোমার command।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <p>তিন রকম process চালিয়ে <code>ps</code>-এর <code>STAT</code> column দেখো — একটা ঘুমন্ত (<code>sleep</code>), একটা অবিরাম হিসাব করা, আর একটা যার child মারা গেছে কিন্তু parent খোঁজ নেয়নি:</p>
+    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq procps python3 &gt;/dev/null 2&gt;&amp;1
+  sleep 300 &amp;
+  python3 -c "while True: pass" &amp;
+  python3 -c "import os,time; pid=os.fork(); os._exit(0) if pid==0 else time.sleep(300)" &amp;
+  sleep 1; ps -o pid,ppid,stat,command'</code></pre></div>
+    <p>আমার output (দরকারি লাইন):</p>
+    <div class="codewrap"><pre><code>  PID  PPID STAT COMMAND
+ 3161     1 S    sleep 300
+ 3162     1 R    python3 -c while True: pass
+ 3163     1 S    python3 -c import os,time; pid=os.fork(); ...
+ 3165  3163 Z    [python3] &lt;defunct&gt;</code></pre></div>
+  </div>
+  <p><code>S</code> = blocked (Linux-এর ভাষায় sleeping), <code>R</code> = runnable, <code>Z</code> = zombie। একটা সূক্ষ্মতা: Linux ready আর running দুটোকেই <code>R</code> দেখায় — দুইজনেই "CPU চায়", ফারাক শুধু এই মুহূর্তে পেয়েছে কি না। আরেকটা অক্ষর দেখতে পারো <code>D</code> — এমন ঘুম যেটা ভাঙানো যায় না, সাধারণত disk I/O-র মাঝখানে; সেই সময় <code>kill -9</code>-ও অপেক্ষা করে। macOS-এর <code>U</code> প্রায় একই জিনিস, আর <code>I</code> মানে ২০ সেকেন্ডের বেশি ধরে ঘুমন্ত।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 370" width="100%" role="img" aria-label="Process state diagram: new to ready; ready to running when the scheduler picks it; running back to ready when the time slice ends; running to blocked when it waits for an event; blocked to ready when the event happens; running to zombie on exit; zombie removed when the parent waits">
+      <defs>
+        <marker id="c15f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c15f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c15f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="30" width="120" height="52" rx="26" class="b-m"/>
+      <text x="84" y="61" text-anchor="middle" class="t-h">New</text>
+
+      <rect x="200" y="140" width="160" height="66" rx="12" class="b"/>
+      <text x="280" y="168" text-anchor="middle" class="t-h">Ready</text>
+      <text x="280" y="190" text-anchor="middle" class="t-m t-s">in the run queue · ps: R</text>
+
+      <rect x="520" y="140" width="160" height="66" rx="12" class="b-u"/>
+      <text x="600" y="168" text-anchor="middle" class="t-u">Running</text>
+      <text x="600" y="190" text-anchor="middle" class="t-m t-s">on a core · ps: R</text>
+
+      <rect x="350" y="284" width="190" height="66" rx="12" class="b-k"/>
+      <text x="445" y="312" text-anchor="middle" class="t-k">Blocked</text>
+      <text x="445" y="334" text-anchor="middle" class="t-m t-s">waiting for an event · ps: S / D</text>
+
+      <rect x="640" y="30" width="136" height="52" rx="12" class="b-d"/>
+      <text x="708" y="54" text-anchor="middle" class="t-d">Zombie</text>
+      <text x="708" y="72" text-anchor="middle" class="t-m t-s">ps: Z &lt;defunct&gt;</text>
+
+      <path d="M144 62 C 200 70, 230 100, 250 136" class="ln" marker-end="url(#c15f1-a)"/>
+      <text x="176" y="116" text-anchor="end" class="t-m t-s">created</text>
+
+      <path d="M362 158 H516" class="ln-u" marker-end="url(#c15f1-u)"/>
+      <text x="440" y="150" text-anchor="middle" class="t-s">scheduler picks it</text>
+      <path d="M518 192 H364" class="ln" marker-end="url(#c15f1-a)"/>
+      <text x="440" y="214" text-anchor="middle" class="t-s">time slice over</text>
+      <text x="440" y="230" text-anchor="middle" class="t-m t-s">(timer interrupt)</text>
+
+      <path d="M620 208 C 620 260, 580 300, 544 308" class="ln-k" marker-end="url(#c15f1-k)"/>
+      <text x="632" y="262" class="t-s">waits: read(), sleep,</text>
+      <text x="632" y="280" class="t-s">a lock, a child …</text>
+
+      <path d="M348 312 C 290 300, 270 260, 272 210" class="ln" marker-end="url(#c15f1-a)"/>
+      <text x="264" y="262" text-anchor="end" class="t-s">event happens</text>
+      <text x="264" y="280" text-anchor="end" class="t-m t-s">(often an interrupt)</text>
+
+      <path d="M640 140 C 660 120, 690 100, 700 86" class="ln-d" marker-end="url(#c15f1-a)"/>
+      <text x="700" y="120" class="t-s">exit()</text>
+      <text x="776" y="18" text-anchor="end" class="t-m t-s">gone once the parent calls wait()</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা process-এর জীবনের অবস্থা আর তাদের মাঝের রাস্তা। CPU পায় শুধু Running; Ready লাইনে দাঁড়িয়ে, Blocked লাইনেই নেই। Running থেকে বেরোনোর তিন পথ: সময় শেষ (Ready-তে ফেরা), কিছুর অপেক্ষা (Blocked), বা মৃত্যু (Zombie)।</p>
+
+  <h3>Scheduler: কে কখন CPU পাবে</h3>
+  <p>Run queue-তে কয়েকজন দাঁড়িয়ে থাকলে কাকে আগে দেবে, কতক্ষণের জন্য? এই সিদ্ধান্ত নেয় kernel-এর যে অংশ, তার নাম <strong>scheduler</strong>। সে চলে তিনটা মুহূর্তে: timer interrupt এলে (চলমান process-এর পালা শেষ হলো কি?), চলমান process নিজে block হলে (core খালি হলো), আর কেউ ঘুম থেকে জেগে ready হলে (তাকে এখনই বসানো উচিত কি?)।</p>
+  <p>প্রতিটা পালার একটা সর্বোচ্চ মাপ আছে — <strong>time slice</strong>, সাধারণত কয়েক millisecond। পালা শেষ হওয়ার আগে process নিজে ছেড়ে না দিলে timer interrupt তাকে জোর করে নামায় — এর নাম <strong>preemption</strong>। এজন্যই Chapter 1-এর <code>while(true){}</code> কখনো syscall না করেও পুরো machine আটকে রাখতে পারেনি। ভালো scheduler একসাথে কয়েকটা জিনিস মেলায়: সবাই ন্যায্য ভাগ পাক, যে process মানুষের সাথে কাজ করে (editor, browser) সে ডাক পেলেই দ্রুত জাগুক, আর পালা বদলের খরচ (Chapter 17) যেন বেশি না হয়।</p>
+  <p>Linux-এর scheduler (২০২৩ থেকে যার নাম EEVDF, আগে CFS) প্রতিটা process কতটা CPU সময় পেয়েছে তার হিসাব রাখে, আর মোটা দাগে যে কম পেয়েছে তাকে আগে বসায়। সেই হিসাবে ওজন দেওয়া যায় <strong><code>nice</code></strong> দিয়ে — -২০ (সবচেয়ে গুরুত্বপূর্ণ) থেকে ১৯ (সবচেয়ে ভদ্র); প্রতি ধাপে মোটামুটি সোয়া গুণ ওজনের পার্থক্য।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — nice</div>
+    <p><code>taskset -c 0</code> একটা process-কে শুধু CPU 0-তে চলতে বাধ্য করে — তাই দুইটা অবিরাম loop-কে একই core-এর জন্য লড়তে হবে; একটার nice ০, আরেকটার ১০:</p>
+    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq procps python3 &gt;/dev/null 2&gt;&amp;1
+  taskset -c 0 python3 -c "while True: pass" &amp;             A=$!
+  taskset -c 0 nice -n 10 python3 -c "while True: pass" &amp;  B=$!
+  sleep 5; ps -o pid,ni,pcpu,command -p $A,$B; kill $A $B'</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>  PID  NI %CPU COMMAND
+ 3168   0 89.8 python3 -c while True: pass
+ 3169  10  9.5 python3 -c while True: pass</code></pre></div>
+  </div>
+  <p>একই কাজ, একই core — nice ১০ দেওয়ায় ভাগ হলো প্রায় ৯০:১০। Linux-এর ভেতরের ওজনের table-এ nice ০ মানে ১০২৪, nice ১০ মানে ১১০ — আর ১০২৪ : ১১০ ঠিক ৯০ : ১০। Background-এর ভারী কাজ (backup, report বানানো) <code>nice</code> দিয়ে চালালে সেটা CPU খালি থাকলে পুরোটাই পায়, কিন্তু জরুরি কাজ এলে সরে দাঁড়ায়। (macOS nice মানে, কিন্তু সেখানে বেশি কার্যকর Chapter 12-এর QoS — <code>taskpolicy</code>।)</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Scheduling timeline over 40 milliseconds on one core for three processes: A and C are CPU-bound and alternate in 4 ms slices; B runs briefly, blocks on a disk read, becomes ready when the disk interrupt arrives, runs briefly again and blocks again">
+      <text x="24" y="34" class="t-m t-s">one core, 40 ms</text>
+      <text x="96" y="79" text-anchor="end" class="t-h t-s">A (CPU-bound)</text>
+      <text x="96" y="129" text-anchor="end" class="t-h t-s">B (does I/O)</text>
+      <text x="96" y="179" text-anchor="end" class="t-h t-s">C (CPU-bound)</text>
+
+      <rect x="110" y="62" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="176" y="62" width="99" height="26" rx="3" class="b-m"/>
+      <rect x="275" y="62" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="341" y="62" width="66" height="26" rx="3" class="b-m"/>
+      <rect x="407" y="62" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="473" y="62" width="99" height="26" rx="3" class="b-m"/>
+      <rect x="572" y="62" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="638" y="62" width="66" height="26" rx="3" class="b-m"/>
+      <rect x="704" y="62" width="66" height="26" rx="3" class="b-u"/>
+
+      <rect x="110" y="112" width="66" height="26" rx="3" class="b-m"/>
+      <rect x="176" y="112" width="33" height="26" rx="3" class="b-u"/>
+      <rect x="209" y="112" width="231" height="26" rx="3" class="b-k"/>
+      <text x="324" y="130" text-anchor="middle" class="t-k t-s">blocked: waiting for the disk</text>
+      <rect x="440" y="112" width="33" height="26" rx="3" class="b-m"/>
+      <rect x="473" y="112" width="33" height="26" rx="3" class="b-u"/>
+      <rect x="506" y="112" width="264" height="26" rx="3" class="b-k"/>
+      <text x="638" y="130" text-anchor="middle" class="t-k t-s">blocked again</text>
+
+      <rect x="110" y="162" width="99" height="26" rx="3" class="b-m"/>
+      <rect x="209" y="162" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="275" y="162" width="66" height="26" rx="3" class="b-m"/>
+      <rect x="341" y="162" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="407" y="162" width="99" height="26" rx="3" class="b-m"/>
+      <rect x="506" y="162" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="572" y="162" width="66" height="26" rx="3" class="b-m"/>
+      <rect x="638" y="162" width="66" height="26" rx="3" class="b-u"/>
+      <rect x="704" y="162" width="66" height="26" rx="3" class="b-m"/>
+
+      <line x1="110" y1="206" x2="770" y2="206" class="axis"/>
+      <line x1="110" y1="206" x2="110" y2="212" class="axis"/><text x="110" y="226" text-anchor="middle" class="t-m t-s">0</text>
+      <line x1="275" y1="206" x2="275" y2="212" class="axis"/><text x="275" y="226" text-anchor="middle" class="t-m t-s">10</text>
+      <line x1="440" y1="206" x2="440" y2="212" class="axis"/><text x="440" y="226" text-anchor="middle" class="t-m t-s">20</text>
+      <line x1="605" y1="206" x2="605" y2="212" class="axis"/><text x="605" y="226" text-anchor="middle" class="t-m t-s">30</text>
+      <line x1="770" y1="206" x2="770" y2="212" class="axis"/><text x="770" y="226" text-anchor="middle" class="t-m t-s">40 ms</text>
+
+      <text x="209" y="52" text-anchor="middle" class="t-s">B calls read() → blocks</text>
+      <text x="440" y="252" text-anchor="middle" class="t-s">disk interrupt → B is ready</text>
+      <line x1="440" y1="140" x2="440" y2="202" class="ln dash"/>
+      <rect x="110" y="266" width="14" height="14" rx="2" class="b-u"/><text x="130" y="278" class="t-m t-s">running</text>
+      <rect x="210" y="266" width="14" height="14" rx="2" class="b-m"/><text x="230" y="278" class="t-m t-s">ready (in the run queue)</text>
+      <rect x="400" y="266" width="14" height="14" rx="2" class="b-k"/><text x="420" y="278" class="t-m t-s">blocked (not asking for CPU)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা core-এ তিনটা process-এর ৪০ ms। প্রতিটা মুহূর্তে ঠিক একজন নীল (running)। A আর C পালা করে ৪ ms-এর time slice পায়; B অল্প চলেই disk-এর অপেক্ষায় block হয় — তখন তার কোনো পালাই লাগে না। Disk-এর interrupt আসার পরে B ready হয়, লাইনে দাঁড়ায়, আর ছোট্ট একটা পালা পায়। (ছক বোঝানোর জন্য বানানো, মাপা না।)</p>
+
+  <h3><code>fork</code>: process-এর জন্ম</h3>
+  <p>Chapter 3-এ বলেছিলাম নতুন process বানাতে একটা চলমান process-কে kernel-এর কাছে চাইতে হয়। কিন্তু নতুন process-কে তো একগাদা জিনিস দিয়ে শুরু করতে হবে — memory, খোলা file, environment, working folder। প্রতিটা আলাদা করে বলে দেওয়ার বদলে Unix একটা চতুর পথ নিয়েছে: "আমার একটা হুবহু copy বানাও।" এই syscall-এর নাম <strong><code>fork</code></strong>।</p>
+  <p><code>fork</code>-এর পরে দুইটা process: একই code, memory-র একই বিষয়বস্তু, একই খোলা file, একই জায়গায় থেমে — এমনকি দুজনেই <code>fork</code> call থেকে ফিরছে। পার্থক্য দুইটা: নতুনটার (child) আলাদা PID, আর <code>fork</code>-এর ফেরত মান — child পায় <code>0</code>, parent পায় child-এর PID। এই একটা সংখ্যা দেখেই দুজন আলাদা পথে যায়। Node-এ সরাসরি <code>fork</code> নেই (Node-এর <code>child_process.fork</code> নামে এক হলেও আসলে একটা নতুন node process চালু করে), তাই এখানে Python — পড়তে JS-এর মতোই সহজ:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — fork.py</div>
+    <div class="codewrap"><pre><code>import os
+
+x = 1
+pid = os.fork()                 # এই লাইন থেকে দুইটা process — দুজনেই এখান থেকে এগোবে
+if pid == 0:                    # child-এ fork() ফেরত দেয় 0
+    x = 99
+    print("child : my pid", os.getpid(), "| x =", x, flush=True)
+    os._exit(7)                 # exit code 7
+else:                           # parent-এ fork() ফেরত দেয় child-এর PID
+    _, status = os.waitpid(pid, 0)
+    print("parent: my pid", os.getpid(), "| child was", pid, "| exit code", os.waitstatus_to_exitcode(status), "| x =", x)</code></pre></div>
+    <p><code>python3 fork.py</code> — আমার Mac-এ:</p>
+    <div class="codewrap"><pre><code>child : my pid 97478 | x = 99
+parent: my pid 97477 | child was 97478 | exit code 7 | x = 1</code></pre></div>
+  </div>
+  <p>একটা <code>fork()</code> call, দুইটা ফেরত — দুইটা আলাদা process-এ। Child <code>x</code>-কে ৯৯ বানাল, parent-এর <code>x</code> তবু ১: copy মানে আলাদা memory (Chapter 9-এর দুই page table)। আর parent child-এর exit code ৭ হাতে পেল।</p>
+  <p>কিন্তু parent যদি কয়েক GB memory ধরে থাকে, সেটা copy করতে তো অনেক সময়? এখানেই Chapter 9-এর <strong>copy-on-write</strong>: kernel কিছুই copy করে না, শুধু child-এর page table-এ parent-এর frame গুলোই বসায়, আর দুইজনের জন্যই "লেখা নিষেধ" চিহ্ন দেয়। কেউ কোনো page-এ লিখতে গেলে page fault — তখন শুধু সেই page-টা copy।</p>
+  <div class="codewrap"><pre><code>python3 -c "
+import os, time
+big = bytearray(1024 * 1024 * 1024)            # ১ GB
+for i in range(0, len(big), 16384): big[i] = 1 # সত্যিই ছুঁয়ে দিলাম — RSS ~১ GB
+t = time.perf_counter()
+pid = os.fork()
+if pid == 0: os._exit(0)
+ms = (time.perf_counter() - t) * 1000
+os.waitpid(pid, 0)
+print(f'fork of a process holding 1 GB took {ms:.1f} ms')"</code></pre></div>
+  <p>আমার Mac-এ: <code>fork of a process holding 1 GB took 2.4 ms</code>। ১ GB copy করতে Chapter 7-এর ~৫৮ GB/s-এও ~১৭ ms লাগত; এখানে লাগল তার সাত ভাগের এক ভাগ, কারণ copy হয়ইনি — শুধু page table সাজানো হয়েছে।</p>
+
+  <h3><code>exec</code> আর fork + exec: shell কীভাবে command চালায়</h3>
+  <p><code>fork</code> শুধু নিজের copy বানায়। কিন্তু shell-এ <code>ls</code> লিখলে তো চাই <code>ls</code> চলুক, আরেকটা shell না। এর জন্য দ্বিতীয় ধাপ: child <code>execve</code> দিয়ে নিজের ভেতরের program বদলে <code>ls</code> হয়ে যায় (Chapter 4-এর loader)। আর parent — shell নিজে — <code>wait</code> syscall দিয়ে ঘুমিয়ে থাকে, যতক্ষণ না child শেষ হয়।</p>
+  <p>দুই ধাপ আলাদা কেন, এক syscall-এ "এই program চালাও" কেন না? কারণ <code>fork</code> আর <code>exec</code>-এর মাঝখানের মুহূর্তটা সোনার খনি: child তখনো shell-এর code চালাচ্ছে, কিন্তু আলাদা process — সে নিজের খোলা file, folder, environment ইচ্ছামতো সাজিয়ে নিতে পারে, তারপর নতুন program হয়। নতুন program সেই সাজানো অবস্থাই উত্তরাধিকার হিসেবে পায়, কিছু না জেনেই। <code>ls / &gt; out.txt</code> ঠিক এভাবে কাজ করে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — shell-এর ভেতরে</div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
+  strace -f -e trace=clone,execve,openat,dup3,wait4 bash -c "ls / &gt; /tmp/out.txt; true" 2&gt;&amp;1 | grep -E "clone|out.txt|dup3|execve|wait4"'</code></pre></div>
+    <p>আমার output (একটু ছেঁটে; <code>[pid 129]</code> হলো child):</p>
+    <div class="codewrap"><pre><code>execve("/usr/bin/bash", ["bash", "-c", "ls / &gt; /tmp/out.txt; true"], ...) = 0
+clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, ...) = 129
+[pid   128] wait4(-1,  &lt;unfinished ...&gt;
+[pid   129] openat(AT_FDCWD, "/tmp/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
+[pid   129] dup3(3, 1, 0)               = 1
+[pid   129] execve("/usr/bin/ls", ["ls", "/"], ...) = 0
+&lt;... wait4 resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 129</code></pre></div>
+  </div>
+  <p>Linux-এ <code>fork</code>-এর আধুনিক রূপের নাম <code>clone</code>। পড়ো: bash (<code>128</code>) clone করল, আর <code>wait4</code>-এ ঘুমিয়ে পড়ল। Child (<code>129</code>) তখনো bash — সে <code>out.txt</code> খুলে fd <code>3</code> পেল, তারপর <code>dup3(3, 1)</code> দিয়ে fd <code>1</code>-কে (stdout, Chapter 3) সেই file-এর দিকে ঘুরিয়ে দিল, তারপর <code>execve</code> দিয়ে <code>ls</code> হয়ে গেল। <code>ls</code> জানেই না তার output কোথায় যাচ্ছে — সে শুধু fd ১-এ লেখে। শেষে parent-এর <code>wait4</code> ফিরল child-এর exit code ০ নিয়ে।</p>
+  <p>Node-এর <code>child_process.spawn</code>-ও ভেতরে একই কাজ করে। <code>strace -f -e trace=clone,execve node -e "require('child_process').spawnSync('ls', ['/'])"</code> চালালে দেখবে <code>clone(... flags=SIGCHLD)</code>, তারপর child একের পর এক <code>execve("/usr/local/sbin/ls")</code>, <code>execve("/usr/local/bin/ls")</code>… চেষ্টা করছে, সবগুলো <code>ENOENT</code> — যতক্ষণ না <code>execve("/bin/ls") = 0</code>। এটা <code>PATH</code> environment variable-এর folder গুলোয় ক্রমানুসারে খোঁজা।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 270" width="100%" role="img" aria-label="fork, exec and wait over time: the parent shell clones a child and sleeps in wait4; the child opens out.txt, points file descriptor 1 at it, execs ls, ls runs and exits; the parent is woken with the exit status">
+      <defs>
+        <marker id="c15f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c15f3-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-u t-s">PARENT · bash (PID 128)</text>
+      <rect x="24" y="40" width="140" height="52" rx="8" class="b-u"/>
+      <text x="94" y="62" text-anchor="middle" class="t-s">clone()</text>
+      <text x="94" y="80" text-anchor="middle" class="t-m t-s">returns 129</text>
+      <rect x="190" y="40" width="440" height="52" rx="8" class="b-k"/>
+      <text x="410" y="62" text-anchor="middle" class="t-s">wait4() — the parent sleeps (blocked)</text>
+      <text x="410" y="80" text-anchor="middle" class="t-m t-s">until its child changes state</text>
+      <rect x="656" y="40" width="120" height="52" rx="8" class="b-u"/>
+      <text x="716" y="62" text-anchor="middle" class="t-s">wakes up:</text>
+      <text x="716" y="80" text-anchor="middle" class="t-m t-s">exit code 0</text>
+
+      <text x="24" y="148" class="t-u t-s">CHILD · PID 129</text>
+      <path d="M94 92 C 94 130, 150 170, 188 176" class="ln" marker-end="url(#c15f3-a)"/>
+      <text x="44" y="128" class="t-m t-s">fork</text>
+      <rect x="190" y="150" width="120" height="56" rx="8" class="b"/>
+      <text x="250" y="174" text-anchor="middle" class="t-s">still bash</text>
+      <text x="250" y="192" text-anchor="middle" class="t-m t-s">(a copy)</text>
+      <rect x="320" y="150" width="140" height="56" rx="8" class="b"/>
+      <text x="390" y="174" text-anchor="middle" class="t-s">open out.txt → 3</text>
+      <text x="390" y="192" text-anchor="middle" class="t-m t-s">dup3(3, 1)</text>
+      <rect x="470" y="150" width="90" height="56" rx="8" class="b"/>
+      <text x="515" y="174" text-anchor="middle" class="t-s">execve</text>
+      <text x="515" y="192" text-anchor="middle" class="t-m t-s">→ ls</text>
+      <rect x="570" y="150" width="80" height="56" rx="8" class="b-u"/>
+      <text x="610" y="174" text-anchor="middle" class="t-s">ls runs,</text>
+      <text x="610" y="192" text-anchor="middle" class="t-m t-s">exit(0)</text>
+      <path d="M650 176 C 690 170, 716 130, 716 96" class="ln-d dash" marker-end="url(#c15f3-d)"/>
+      <text x="728" y="146" class="t-d t-s">SIGCHLD</text>
+      <text x="190" y="236" class="t-m t-s">between fork and exec the child rearranges its own files — ls inherits fd 1 → out.txt</text>
+      <text x="190" y="254" class="t-m t-s">without knowing anything about it</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">উপরে parent, নিচে child, বাঁ থেকে ডানে সময়। Parent clone করেই <code>wait4</code>-এ ঘুমিয়ে পড়ে (Blocked)। Child প্রথমে bash-এর copy হিসেবে নিজের stdout-কে file-এর দিকে ঘোরায়, তারপর <code>ls</code> হয়ে যায়। Child শেষ হলে kernel parent-কে <code>SIGCHLD</code> signal দিয়ে জাগায়, সঙ্গে exit code।</p>
+
+  <h3><code>wait</code>, zombie আর অনাথ</h3>
+  <p>Child শেষ হলে তার memory, খোলা file সব kernel ফেরত নেয়। কিন্তু Chapter 3-এর কথা মনে করো: parent-এর জানা দরকার child কীভাবে শেষ হলো — exit code। সেই সংখ্যা কোথায় থাকবে যতক্ষণ না parent খোঁজ নেয়? তাই kernel child-এর PCB-র একটা ছোট অংশ রেখে দেয় — শুধু PID আর exit status। এই অবস্থার নাম <strong>zombie</strong>: মৃত, কিন্তু কবর হয়নি। Parent <code>wait</code> (বা <code>waitpid</code>) ডাকলে kernel exit status দিয়ে zombie-টা মুছে ফেলে — একে বলে <strong>reap</strong> করা।</p>
+  <p>Parent যদি কখনো <code>wait</code> না ডাকে, zombie জমতে থাকে। একেকটা ছোট, কিন্তু প্রতিটা একটা PID আটকে রাখে, আর PID-এর সংখ্যা সীমিত। ওপরের state experiment-এ <code>[python3] &lt;defunct&gt;</code> ঠিক এমন একটা — parent ৩০০ সেকেন্ড ঘুমাচ্ছে, খোঁজ নিচ্ছে না।</p>
+  <p>উল্টো ঘটনাও ঘটে: parent আগে মারা গেলে child হয়ে যায় <strong>অনাথ</strong> (orphan)। তখন kernel তাকে PID 1-এর হাতে তুলে দেয় (Chapter 3-এর গাছের গোড়া), আর PID 1-এর দায়িত্ব এমন দত্তক child-দের মৃত্যুর পরে <code>wait</code> করা। <code>systemd</code> বা <code>launchd</code> এটা জানে। কিন্তু Docker container-এ PID 1 হয় container-এর প্রথম command — প্রায়ই <code>node</code> নিজে, যে এই দায়িত্বের কথা জানেই না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker) — pid1.js</div>
+    <div class="codewrap"><pre><code>const { spawn, execSync } = require('child_process');
+console.log('my pid:', process.pid);
+// sh একটা background sleep চালিয়েই শেষ হয়ে যায় → sleep অনাথ হয়ে PID 1-এর কাছে যায়
+spawn('sh', ['-c', 'sleep 1 &amp;']);
+setTimeout(() =&gt; console.log(execSync('ps -o pid,ppid,stat,comm').toString()), 3000);</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm        -v "$PWD":/w node:22-alpine node /w/pid1.js
+docker run --rm --init -v "$PWD":/w node:22-alpine node /w/pid1.js</code></pre></div>
+    <p>আমার output — প্রথমটা:</p>
+    <div class="codewrap"><pre><code>my pid: 1
+PID   PPID  STAT COMMAND
+    1     0 S    node
+   15     1 Z    sleep
+   16     1 R    ps</code></pre></div>
+    <p>দ্বিতীয়টা (<code>--init</code>):</p>
+    <div class="codewrap"><pre><code>my pid: 7
+PID   PPID  STAT COMMAND
+    1     0 S    docker-init
+    7     1 S    node
+   17     7 R    ps</code></pre></div>
+  </div>
+  <p>প্রথম container-এ node-ই PID 1; অনাথ <code>sleep</code> তার কাছে এল, মরল, আর কেউ <code>wait</code> করল না — <code>Z</code> হয়ে পড়ে আছে। দীর্ঘ সময় চলা একটা server যদি বারবার child process চালায়, এমন zombie জমতেই থাকে। দ্বিতীয় container-এ <code>--init</code> একটা ছোট program (<code>docker-init</code>) কে PID 1 বানিয়েছে, যার একমাত্র কাজ অনাথদের <code>wait</code> করা আর signal ঠিকমতো পৌঁছে দেওয়া — zombie নেই। (Signal-এর কথা উঠল বলে: PID 1 হলে process-এর উপর kernel-এর default signal ব্যবস্থা খাটে না, তাই node PID 1 হলে <code>docker stop</code>-এর <code>SIGTERM</code> উপেক্ষা করে, আর Docker ১০ সেকেন্ড অপেক্ষা করে জোর করে মারে। <code>--init</code> সেটাও সারায়।)</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Zombie process memory খাচ্ছে, <code>kill -9</code> দিয়ে মেরে দাও।" Zombie আগেই মৃত — তার memory, code, file সব ফেরত গেছে, আছে শুধু PCB-র একটা ছোট অংশ। মৃতকে আবার মারা যায় না; <code>kill -9</code> কিছুই করবে না। সমাধান হলো parent-কে দিয়ে <code>wait</code> করানো, বা parent-কে থামানো — তাহলে zombie-রা PID 1-এর কাছে যায় আর সে তাদের reap করে।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>প্রতিটা process সবসময় একটা অবস্থায় — running, ready (লাইনে), blocked (অপেক্ষায়), বা zombie। Scheduler শুধু ready-দের মধ্য থেকে বাছে, time slice শেষে বা কেউ block হলে। জীবনচক্র চারটা syscall-এ: <code>fork</code> (copy বানাও, copy-on-write দিয়ে সস্তায়) → মাঝখানে নিজেকে সাজাও → <code>exec</code> (অন্য program হয়ে যাও) → <code>exit</code>; আর parent-এর <code>wait</code> তার কবর দেয়।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Ready আর Waiting state-এর পার্থক্য কী — কে CPU চায়, কে চায় না?</li>
-      <li>fork() "দুইবার return করে" — মানে কী?</li>
-      <li>fork+exec আলাদা দুই ধাপ রাখার সুবিধা কী?</li>
+      <li>Running, ready আর blocked-এর পার্থক্য কী — কে CPU চায়, কে চায় না? Linux-এর <code>ps</code> কেন ready আর running দুটোকেই <code>R</code> দেখায়?</li>
+      <li>Scheduler কোন তিন মুহূর্তে চলে? Nice ১০ দেওয়া loop একই core-এ মাত্র ~১০% CPU পেল কেন?</li>
+      <li><code>fork()</code> "দুইবার ফেরে" — মানে কী? Child-এ <code>x = 99</code> করলেও parent-এর <code>x</code> ১ কেন, আর ১ GB-র process fork করতে মাত্র ২.৪ ms কেন?</li>
+      <li><code>fork</code> আর <code>exec</code> আলাদা দুই ধাপ হওয়ায় <code>ls / &gt; out.txt</code> কীভাবে কাজ করে, অথচ <code>ls</code> redirect-এর কথা কিছুই জানে না?</li>
+      <li>Zombie কী, কেন থাকে, আর কীভাবে সরে? Docker-এ node PID 1 হলে কী দুইটা সমস্যা হয়, আর <code>--init</code> কী করে?</li>
     </ul>
   </div>

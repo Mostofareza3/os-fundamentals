@@ -1,43 +1,276 @@
   <p class="part-label">PART 4 · CPU</p>
   <h2>Chapter 13 — CPU Cache</h2>
-  <p class="chap-sub">Memory wall-এর জবাব — এবং তোমার code-এর speed-এর অন্যতম নীরব নিয়ন্ত্রক।</p>
+  <p class="chap-sub">Memory wall-এর জবাব: cache-এর স্তরগুলো নিজের machine-এ মেপে দেখা, locality কেন সব ঠিক করে দেয়, data সাজানোর ধরন কীভাবে গতি বদলায়, আর একাধিক core একই line নিয়ে টানাটানি করলে কী হয়।</p>
 
-  <h3>Cache কেন exists করে</h3>
-  <p>Chapter 7-এ দেখেছি RAM CPU-র তুলনায় বহুগুণ ধীর। প্রতিটা instruction-এ RAM-এ গেলে 3GHz CPU-র বেশিরভাগ সময় কাটতো অপেক্ষায়। সমাধান: CPU-র গা ঘেঁষে ছোট কিন্তু অতি দ্রুত memory রাখো, আর সেখানে <em>সম্ভবত-আবার-লাগবে</em> data রাখো।</p>
-  <p>"সম্ভবত আবার লাগবে" — এটা অনুমান করা যায় কারণ program-দের behavior-এ দুইটা দারুণ predictable pattern আছে, একসাথে যাদের নাম <strong>locality</strong>:</p>
+  <p>Chapter 8-এর কথা এক লাইনে: CPU-র গা ঘেঁষে থাকা ছোট দ্রুত memory — <strong>cache</strong> — সম্প্রতি ব্যবহৃত data রাখে; পাওয়া গেলে <strong>hit</strong>, না পেলে <strong>miss</strong>; আর data আসে-যায় পুরো <strong>cache line</strong> ধরে (Apple Silicon-এ ১২৮ byte, Intel/AMD-এ ৬৪)। সেই chapter একটা প্রশ্ন ঝুলিয়ে রেখেছিল: প্রতিটা core-এর নিজের cache-এ একই line-এর আলাদা copy থাকলে, একজন লিখলে অন্যজন জানবে কীভাবে? এই chapter-এ তার উত্তর, আর তার আগে cache-কে পুরো মাপজোখ করে দেখা।</p>
+
+  <h3>এক স্তর না, কয়েক স্তর কেন</h3>
+  <p>একটা বিশাল দ্রুত cache বানালেই তো হতো? হয় না, কারণ physics। SRAM যত বড়, তার ভেতরে খুঁজতে তত বেশি circuit পেরোতে হয়, তারও লম্বা হয় — আর signal-এর যাতায়াতে সময় লাগে। বড় cache তাই অনিবার্যভাবে ধীর, আর বেশি জায়গা ও বিদ্যুৎ খায়। সমাধান হলো সিঁড়ি: core-এর একদম পাশে খুব ছোট আর খুব দ্রুত স্তর, তার পেছনে একটু বড় আর একটু ধীর, তার পেছনে আরও বড়। প্রতিটা স্তর আগের স্তরের বেশিরভাগ miss ধরে ফেলে, তাই RAM পর্যন্ত যেতে হয় কম।</p>
+  <div class="codewrap"><pre><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize hw.perflevel1.l1dcachesize hw.perflevel1.l2cachesize   # macOS
+lscpu --caches                                                                                                     # Linux</code></pre></div>
+  <p>আমার M4 Pro-তে: প্রতিটা performance core-এর নিজস্ব L1 data cache ১২৮ KB (efficiency core-এর ৬৪ KB); আটটা performance core মিলে একটা ১৬ MB-র L2 ভাগ করে (চারটা efficiency core-এর নিজেদের ৪ MB)। তার পেছনে পুরো chip-এর একটা SLC (system level cache) — Apple যার মাপ প্রকাশ করে না — তারপর RAM। Intel/AMD-এ সাধারণত L1 আর L2 core-প্রতি, আর সবার ভাগের একটা বড় L3।</p>
+
+  <h3>নিজের machine-এর সিঁড়ি মাপো</h3>
+  <p>Chapter 7-এর pointer chase মনে করো — এলোমেলো একটা শিকল, যেখানে প্রতিটা ধাপ আগের ফলাফলের উপর নির্ভর করে, তাই প্রতিটা access-এর পুরো দেরি মাপা যায়। এবার শিকলের মাপ ছোট থেকে বড় করতে থাকো। যতক্ষণ পুরো শিকলটা কোনো একটা স্তরে আঁটে, access-এর দাম সেই স্তরের দাম; আঁটা বন্ধ হলেই দাম লাফিয়ে পরের স্তরে।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — staircase.js (কয়েক মিনিট লাগে)</div>
+    <div class="codewrap"><pre><code>function chase(bytes, steps) {
+  const n = bytes / 4;
+  const next = new Int32Array(n), order = new Int32Array(n);
+  for (let i = 0; i &lt; n; i++) order[i] = i;
+  for (let i = n - 1; i &gt; 0; i--) {                        // এলোমেলো ক্রম
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  for (let i = 0; i &lt; n; i++) next[order[i]] = order[(i + 1) % n];
+  let p = 0;
+  for (let i = 0; i &lt; 1_000_000; i++) p = next[p];          // গরম করো
+  const t = process.hrtime.bigint();
+  for (let i = 0; i &lt; steps; i++) p = next[p];
+  return Number(process.hrtime.bigint() - t) / steps;
+}
+const sizesKB = [8, 16, 32, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096, 8192,
+                 12288, 16384, 24576, 32768, 49152, 65536, 131072, 262144, 524288, 1048576];
+for (const kb of sizesKB) console.log(kb, 'KB', chase(kb * 1024, 20_000_000).toFixed(2), 'ns');</code></pre></div>
+    <p>আমার Mac-এ দুইবার চালিয়ে গড় করা ফল নিচের chart-এ।</p>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 380" width="100%" role="img" aria-label="Line chart of memory access latency against working-set size, both on log scales: about 1.3 nanoseconds up to 128 KB (L1), 3 to 12 nanoseconds up to 16 MB (L2), then rising to about 121 nanoseconds at 1 GB (RAM)">
+      <rect x="90" y="52" width="171.4" height="260" class="band"/>
+      <rect x="538.9" y="52" width="225.1" height="260" class="band"/>
+      <text x="175.7" y="42" text-anchor="middle" class="t-m t-s">fits in L1 (128 KB)</text>
+      <text x="400.1" y="42" text-anchor="middle" class="t-m t-s">fits in L2 (16 MB)</text>
+      <text x="651.4" y="42" text-anchor="middle" class="t-m t-s">beyond L2: SLC, then RAM</text>
+      <line x1="90" y1="312.0" x2="764" y2="312.0" class="grid"/>
+      <text x="80" y="316.0" text-anchor="end" class="t-m t-s">1</text>
+      <line x1="90" y1="276.0" x2="764" y2="276.0" class="grid"/>
+      <text x="80" y="280.0" text-anchor="end" class="t-m t-s">2</text>
+      <line x1="90" y1="228.5" x2="764" y2="228.5" class="grid"/>
+      <text x="80" y="232.5" text-anchor="end" class="t-m t-s">5</text>
+      <line x1="90" y1="192.5" x2="764" y2="192.5" class="grid"/>
+      <text x="80" y="196.5" text-anchor="end" class="t-m t-s">10</text>
+      <line x1="90" y1="156.6" x2="764" y2="156.6" class="grid"/>
+      <text x="80" y="160.6" text-anchor="end" class="t-m t-s">20</text>
+      <line x1="90" y1="109.0" x2="764" y2="109.0" class="grid"/>
+      <text x="80" y="113.0" text-anchor="end" class="t-m t-s">50</text>
+      <line x1="90" y1="73.0" x2="764" y2="73.0" class="grid"/>
+      <text x="80" y="77.0" text-anchor="end" class="t-m t-s">100</text>
+      <line x1="90.0" y1="312" x2="90.0" y2="317" class="axis"/>
+      <text x="90.0" y="334" text-anchor="middle" class="t-m t-s">8 KB</text>
+      <line x1="208.9" y1="312" x2="208.9" y2="317" class="axis"/>
+      <text x="208.9" y="334" text-anchor="middle" class="t-m t-s">64 KB</text>
+      <line x1="327.9" y1="312" x2="327.9" y2="317" class="axis"/>
+      <text x="327.9" y="334" text-anchor="middle" class="t-m t-s">512 KB</text>
+      <line x1="446.8" y1="312" x2="446.8" y2="317" class="axis"/>
+      <text x="446.8" y="334" text-anchor="middle" class="t-m t-s">4 MB</text>
+      <line x1="565.8" y1="312" x2="565.8" y2="317" class="axis"/>
+      <text x="565.8" y="334" text-anchor="middle" class="t-m t-s">32 MB</text>
+      <line x1="684.7" y1="312" x2="684.7" y2="317" class="axis"/>
+      <text x="684.7" y="334" text-anchor="middle" class="t-m t-s">256 MB</text>
+      <line x1="764.0" y1="312" x2="764.0" y2="317" class="axis"/>
+      <text x="764.0" y="334" text-anchor="middle" class="t-m t-s">1 GB</text>
+      <line x1="90" y1="312" x2="764" y2="312" class="axis"/>
+      <text x="427" y="362" text-anchor="middle" class="t-m t-s">size of the array being chased (log scale)</text>
+      <text x="26" y="182" text-anchor="middle" class="t-m t-s" transform="rotate(-90 26 182)">ns per access (log scale)</text>
+      <polyline points="90.0,292.7 129.6,296.4 169.3,296.8 208.9,297.0 232.1,296.8 248.6,296.0 271.8,250.7 288.2,239.3 327.9,225.5 367.5,220.3 407.2,217.2 446.8,207.0 486.5,201.9 509.7,196.6 526.1,184.5 549.3,157.3 565.8,126.7 589.0,102.5 605.4,89.0 645.1,73.4 684.7,68.1 724.4,64.8 764.0,63.0" class="ln-s"/>
+      <circle cx="90.0" cy="292.7" r="4.5" class="dot-s"><title>8 KB: 1.5 ns</title></circle>
+      <circle cx="129.6" cy="296.4" r="4.5" class="dot-s"><title>16 KB: 1.4 ns</title></circle>
+      <circle cx="169.3" cy="296.8" r="4.5" class="dot-s"><title>32 KB: 1.3 ns</title></circle>
+      <circle cx="208.9" cy="297.0" r="4.5" class="dot-s"><title>64 KB: 1.3 ns</title></circle>
+      <circle cx="232.1" cy="296.8" r="4.5" class="dot-s"><title>96 KB: 1.3 ns</title></circle>
+      <circle cx="248.6" cy="296.0" r="4.5" class="dot-s"><title>128 KB: 1.4 ns</title></circle>
+      <circle cx="271.8" cy="250.7" r="4.5" class="dot-s"><title>192 KB: 3.3 ns</title></circle>
+      <circle cx="288.2" cy="239.3" r="4.5" class="dot-s"><title>256 KB: 4.1 ns</title></circle>
+      <circle cx="327.9" cy="225.5" r="4.5" class="dot-s"><title>512 KB: 5.3 ns</title></circle>
+      <circle cx="367.5" cy="220.3" r="4.5" class="dot-s"><title>1 MB: 5.8 ns</title></circle>
+      <circle cx="407.2" cy="217.2" r="4.5" class="dot-s"><title>2 MB: 6.2 ns</title></circle>
+      <circle cx="446.8" cy="207.0" r="4.5" class="dot-s"><title>4 MB: 7.6 ns</title></circle>
+      <circle cx="486.5" cy="201.9" r="4.5" class="dot-s"><title>8 MB: 8.3 ns</title></circle>
+      <circle cx="509.7" cy="196.6" r="4.5" class="dot-s"><title>12 MB: 9.2 ns</title></circle>
+      <circle cx="526.1" cy="184.5" r="4.5" class="dot-s"><title>16 MB: 11.7 ns</title></circle>
+      <circle cx="549.3" cy="157.3" r="4.5" class="dot-s"><title>24 MB: 19.7 ns</title></circle>
+      <circle cx="565.8" cy="126.7" r="4.5" class="dot-s"><title>32 MB: 35.5 ns</title></circle>
+      <circle cx="589.0" cy="102.5" r="4.5" class="dot-s"><title>48 MB: 56.6 ns</title></circle>
+      <circle cx="605.4" cy="89.0" r="4.5" class="dot-s"><title>64 MB: 73.5 ns</title></circle>
+      <circle cx="645.1" cy="73.4" r="4.5" class="dot-s"><title>128 MB: 99.4 ns</title></circle>
+      <circle cx="684.7" cy="68.1" r="4.5" class="dot-s"><title>256 MB: 110.1 ns</title></circle>
+      <circle cx="724.4" cy="64.8" r="4.5" class="dot-s"><title>512 MB: 117.2 ns</title></circle>
+      <circle cx="764.0" cy="63.0" r="4.5" class="dot-s"><title>1 GB: 121.3 ns</title></circle>
+      <text x="208.9" y="283.0" text-anchor="middle" class="t-h t-s">~1.3 ns</text>
+      <text x="446.8" y="193.0" text-anchor="middle" class="t-h t-s">~7.6 ns</text>
+      <text x="764.0" y="85.0" text-anchor="end" class="t-h t-s">~121 ns</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই অক্ষই log scale। ১২৮ KB পর্যন্ত প্রতি access ~১.৩ ns (L1); ১৯২ KB-তেই লাফ — ঠিক L1-এর মাপ পেরোনোর জায়গায়। ১৬ MB পর্যন্ত ৩–১২ ns (L2); ২৪ MB-তে আবার লাফ, তারপর SLC আর TLB miss (Chapter 10) পেরিয়ে ১ GB-তে ~১২১ ns (RAM)। বিন্দুর উপর mouse রাখলে সংখ্যা দেখায়।</p>
+  <details>
+    <summary>সব সংখ্যা (table)</summary>
+    <div class="d-body">
+      <div class="table-wrap"><table>
+        <tr><th>শিকলের মাপ</th><th>ns প্রতি access</th></tr>
+        <tr><td>8 KB</td><td>1.5</td></tr>
+        <tr><td>16 KB</td><td>1.4</td></tr>
+        <tr><td>32 KB</td><td>1.3</td></tr>
+        <tr><td>64 KB</td><td>1.3</td></tr>
+        <tr><td>96 KB</td><td>1.3</td></tr>
+        <tr><td>128 KB</td><td>1.4</td></tr>
+        <tr><td>192 KB</td><td>3.3</td></tr>
+        <tr><td>256 KB</td><td>4.1</td></tr>
+        <tr><td>512 KB</td><td>5.3</td></tr>
+        <tr><td>1 MB</td><td>5.8</td></tr>
+        <tr><td>2 MB</td><td>6.2</td></tr>
+        <tr><td>4 MB</td><td>7.6</td></tr>
+        <tr><td>8 MB</td><td>8.3</td></tr>
+        <tr><td>12 MB</td><td>9.2</td></tr>
+        <tr><td>16 MB</td><td>11.7</td></tr>
+        <tr><td>24 MB</td><td>19.7</td></tr>
+        <tr><td>32 MB</td><td>35.5</td></tr>
+        <tr><td>48 MB</td><td>56.6</td></tr>
+        <tr><td>64 MB</td><td>73.5</td></tr>
+        <tr><td>128 MB</td><td>99.4</td></tr>
+        <tr><td>256 MB</td><td>110.1</td></tr>
+        <tr><td>512 MB</td><td>117.2</td></tr>
+        <tr><td>1 GB</td><td>121.3</td></tr>
+      </table></div>
+    </div>
+  </details>
+  <p>ছবিটা থেকে সবচেয়ে বড় শিক্ষা: hardware-এর মাপ গুলো software-এর সময়ের মধ্যে দেখা যায়। <code>sysctl</code> বলেছিল L1 ১২৮ KB — আর ঠিক ১২৮ KB থেকে ১৯২ KB-তে যাওয়ার সময় দাম আড়াই গুণ। L2 ১৬ MB — আর ১৬ MB থেকে ২৪ MB-তে গিয়ে দাম প্রায় দ্বিগুণ। তোমার data যদি এক সিঁড়ি নিচে নামিয়ে আনতে পারো (ছোট করে, বা ঘন করে), সেটা প্রায়ই কোনো algorithm বদলানোর চেয়ে বড় জয়।</p>
+
+  <h3>Locality: cache কেন আদৌ কাজ করে</h3>
+  <p>Cache শুধু অতীত মনে রাখে; ভবিষ্যৎ জানে না। তবু কাজ করে, কারণ বাস্তব program-দের আচরণে দুইটা অভ্যাস প্রায় সবসময় থাকে, যাদের একসাথে বলে <strong>locality</strong>:</p>
   <ul>
-    <li><strong>Temporal locality:</strong> এইমাত্র যে data ছুঁয়েছ, শিগগিরই আবার ছোঁবে (loop-এর counter, hot object)।</li>
-    <li><strong>Spatial locality:</strong> যে address ছুঁয়েছ, তার <em>পাশের</em> address-ও ছোঁবে (array-র পরের element, struct-এর পরের field)।</li>
+    <li><strong>Temporal locality</strong> — যা এইমাত্র ছুঁয়েছ, শিগগিরই আবার ছোঁবে। Loop-এর counter, বারবার ডাকা function-এর code, একটা hot object। ওপরের chart-এর বাঁ দিক এটাই: ছোট শিকল বারবার ঘোরা হচ্ছে, তাই সব সময় L1-এ।</li>
+    <li><strong>Spatial locality</strong> — যা ছুঁয়েছ, তার পাশেরটাও ছোঁবে। Array-র পরের element, object-এর পরের field। Cache line এই অভ্যাসের পুরস্কার: একটা miss-এ ১২৮ byte আসে, পরের অনেকগুলো access ফ্রি।</li>
   </ul>
+  <p>একই data, একই হিসাব, শুধু পড়ার ক্রম বদলে দেখো locality কতটা গুরুত্বপূর্ণ। একটা বড় 2D grid memory-তে থাকে সারির পর সারি পাশাপাশি — <code>[row][col]</code> আসলে <code>grid[row * N + col]</code>:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — grid2d.js</div>
+    <div class="codewrap"><pre><code>const N = 4096;                                   // 4096 × 4096 টা সংখ্যা = 128 MB
+const grid = new Float64Array(N * N).fill(1);     // সারির পর সারি, পাশাপাশি রাখা: [row][col] = grid[row * N + col]
 
-  <h3>Hierarchy</h3>
-  <pre class="diagram">CPU core
-  │
-  ├─ L1  <span class="dim">— ক্ষুদ্র (KB-স্কেল), দ্রুততম, প্রতি core-এ নিজস্ব</span>
-  ├─ L2  <span class="dim">— বড়, একটু ধীর, সাধারণত core-প্রতি</span>
-  ├─ L3  <span class="dim">— আরও বড় (MB-স্কেল), সব core-এ shared</span>
-  ↓
- RAM   <span class="dim">— বিশাল, সবচেয়ে ধীর</span></pre>
-  <p>আর আগের অধ্যায়ের সেই কথা: data আনা-নেওয়া হয় <strong>cache line</strong> (~64 bytes) ধরে। একটা <code>int</code> চাইলে আশেপাশের আরও ১৫টা ফাউ আসে।</p>
+function byRows() {                               // এক সারি শেষ করে পরের সারি
+  let s = 0;
+  for (let r = 0; r &lt; N; r++) for (let c = 0; c &lt; N; c++) s += grid[r * N + c];
+  return s;
+}
+function byColumns() {                            // এক কলাম শেষ করে পরের কলাম
+  let s = 0;
+  for (let c = 0; c &lt; N; c++) for (let r = 0; r &lt; N; r++) s += grid[r * N + c];
+  return s;
+}
+for (const [label, fn] of [['row by row      ', byRows], ['column by column', byColumns]]) {
+  fn();
+  const t = performance.now();
+  const s = fn();
+  console.log(label, (performance.now() - t).toFixed(0).padStart(5), 'ms   sum =', s);
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>row by row 11 ms</code>, <code>column by column 55 ms</code> — একই যোগফল (<code>16777216</code>), পাঁচ গুণ পার্থক্য।</p>
+  </div>
+  <p>সারি ধরে পড়লে address গুলো পরপর — প্রতিটা ১২৮ byte-এর line থেকে ১৬টা সংখ্যা কাজে লাগে, আর prefetcher (Chapter 8) পরের line আগেই আনে। কলাম ধরে পড়লে প্রতিটা access আগেরটার চেয়ে ৪০৯৬ × ৮ = ৩২ KB দূরে: প্রতিবার নতুন line, প্রতি দুই access-এ নতুন page (TLB-র উপর চাপ), আর line থেকে মাত্র একটা সংখ্যা কাজে লাগে; পরের কলামে ফিরে আসার আগেই সেই line cache থেকে বেরিয়ে গেছে। পার্থক্য ১৬ গুণ না হয়ে পাঁচ গুণ, কারণ prefetcher নিয়মিত লাফের ধরনও কিছুটা ধরতে পারে।</p>
 
-  <h3>Sequential vs random: পার্থক্যটা কোথা থেকে আসে</h3>
-  <p>একটা বড় array-র সব element sum করছো — দুইভাবে:</p>
-  <ul>
-    <li><strong>Sequential (index 0,1,2,3...):</strong> প্রথম access-এ এক cache line এলো — পরের ১৫টা element-ও সাথে এলো। ১৬টার মধ্যে ১৫টা access-ই cache hit। Spatial locality-র জয়।</li>
-    <li><strong>Random (এলোমেলো index):</strong> প্রায় প্রতিটা access নতুন cache line — miss, miss, miss। একই পরিমাণ কাজ, কিন্তু বাস্তবে কয়েকগুণ ধীর হতে পারে।</li>
-  </ul>
-  <p>এজন্যই linked list বনাম array-র পার্থক্য শুধু Big-O-তে ধরা পড়ে না: linked list-এর node গুলো heap-এ ছড়িয়ে থাকে (pointer chase = random access), array cache-এর প্রিয় বন্ধু। Big-O সমান হলেও বাস্তব ঘড়িতে array প্রায়ই জেতে।</p>
+  <h3>Data layout: তোমার code-এর সাজসজ্জা</h3>
+  <p>JS-এ আমরা data structure বাছি API দেখে — array নাকি Map, object নাকি class। কিন্তু cache-এর চোখে প্রশ্ন একটাই: যে byte গুলো একসাথে লাগবে, সেগুলো কি memory-তে একসাথে আছে?</p>
+  <p>Chapter 6-এর <code>locality.js</code> এখন cache line-এর ভাষায় পড়া যায়। একই পঞ্চাশ লাখ সংখ্যা যোগ: <code>Float64Array</code>-তে ২.৮ ms, সৃষ্টির ক্রমে রাখা <code>{ v: 1 }</code> object-এ ৪.০ ms, এলোমেলো ক্রমের object-এ ৩০ ms। <code>Float64Array</code>-তে সংখ্যা গুলো ঠাসাঠাসি — ১২৮ byte-এর একটা line-এ ১৬টা। প্রতিটা object-এর নিজের একটা header থাকে (V8-এর বানানো, object-এর ধরন বোঝাতে) — ফলে একটা line-এ গোটা কয়েক object, আর যে ৮ byte দরকার তার পাশে অনেক byte অদরকারি। আর এলোমেলো ক্রমে প্রতিটা object আলাদা line-এ, আলাদা page-এ — কার্যত Chapter 7-এর pointer chase।</p>
+  <p>একই কারণে linked list প্রায় সবসময় array-র কাছে হারে, এমনকি যেখানে Big-O দুটোর সমান: list-এর পরের node কোথায় আছে সেটা আগের node পড়ার আগে জানা যায় না, আর node গুলো heap-এ ছড়ানো। Game engine আর database-এর মতো গতি-সচেতন software তাই প্রায়ই "array of objects" বাদ দিয়ে "প্রতিটা field-এর জন্য আলাদা typed array" সাজায় — যে field নিয়ে loop চলছে, শুধু সেটাই cache-এ আসে।</p>
+
+  <h3>একাধিক core, একই line: coherence আর false sharing</h3>
+  <p>এবার Chapter 8-এর ঝুলে থাকা প্রশ্ন। Core 0 একটা মান লিখল — write-back-এর কারণে নতুন মানটা আপাতত শুধু core 0-এর L1-এ। Core 1-এর L1-এ সেই line-এর একটা পুরনো copy আছে। Core 1 এখন পড়লে পুরনো মান পাবে, আর দুই thread দুই রকম বাস্তবতা দেখবে। কোনো multi-threaded program তাহলে নির্ভরযোগ্যভাবে চলতেই পারত না।</p>
+  <p>তাই hardware একটা নিয়ম মেনে চলে, যার নাম <strong>cache coherence</strong>। মোটা দাগে: একটা line একই সময়ে অনেক core-এর কাছে "শুধু পড়ার" copy হিসেবে থাকতে পারে, কিন্তু কেউ লিখতে চাইলে তাকে আগে line-টার একক মালিকানা নিতে হয় — বাকি সব core-এর copy বাতিল (invalidate) করে। অন্য কেউ পরে পড়তে চাইলে মালিকের কাছ থেকে নতুন মান আনিয়ে নেয়। (প্রচলিত protocol-এর নাম MESI — প্রতিটা line-এর চার অবস্থা: Modified, Exclusive, Shared, Invalid।) এটা নিখুঁতভাবে কাজ করে, কিন্তু দাম আছে: দুইটা core যদি পালাক্রমে একই line-এ লিখতে থাকে, line-টা core থেকে core-এ ছোটাছুটি করে, আর প্রতিবার কয়েক দশ ns।</p>
+  <p>ফাঁদটা হলো: coherence কাজ করে <em>line</em> ধরে, variable ধরে না। দুইটা thread যদি সম্পূর্ণ আলাদা দুইটা variable বদলায়, কিন্তু variable দুইটা ঘটনাক্রমে একই ১২৮ byte-এর line-এ পড়ে — hardware-এর চোখে তারা একই জিনিস নিয়ে কাড়াকাড়ি করছে। এর নাম <strong>false sharing</strong>।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — falseshare.js</div>
+    <p>Node-এর <code>worker_threads</code> আলাদা thread-এ JS চালায় (Chapter 16); <code>SharedArrayBuffer</code> এমন memory যেটা সব worker একসাথে দেখে; <code>Atomics.add</code> একটা মান নিরাপদে বাড়ায়, যাতে একসাথে দুইজন বাড়ালেও কিছু হারায় না (Chapter 18)। চারটা worker, প্রত্যেকে <em>শুধু নিজের</em> counter ২ কোটি বার বাড়ায়:</p>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+const THREADS = 4, N = 20_000_000;
+
+if (isMainThread) {
+  // প্রতিটা worker নিজের counter বাড়ায়; কেউ কারও counter ছোঁয় না।
+  // শুধু বদলাচ্ছি counter গুলো memory-তে কত দূরে দূরে বসানো।
+  const run = gapBytes =&gt; new Promise(resolve =&gt; {
+    const shared = new SharedArrayBuffer(THREADS * gapBytes);
+    const t = performance.now();
+    let done = 0;
+    for (let w = 0; w &lt; THREADS; w++) {
+      new Worker(__filename, { workerData: { shared, index: (w * gapBytes) / 4 } })
+        .on('exit', () =&gt; { if (++done === THREADS) resolve(performance.now() - t); });
+    }
+  });
+  (async () =&gt; {
+    console.log('4 counters side by side  :', (await run(4)).toFixed(0), 'ms');    // সবাই একই cache line-এ
+    console.log('4 counters 128 bytes apart:', (await run(128)).toFixed(0), 'ms'); // প্রত্যেকে নিজের line-এ
+  })();
+} else {
+  const counters = new Int32Array(workerData.shared);
+  const i = workerData.index;
+  for (let k = 0; k &lt; N; k++) Atomics.add(counters, i, 1);
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>side by side: 1772 ms</code>, <code>128 bytes apart: 107 ms</code>। (x86-এ ৬৪ byte দূরত্বই যথেষ্ট।)</p>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 290" width="100%" role="img" aria-label="Left: two cores each hold a copy of one cache line containing four counters; every write by one core invalidates the other core's copy so the line bounces back and forth. Right: each counter sits in its own line, so each core keeps its line and there is no traffic">
+      <defs>
+        <marker id="c13f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-h t-s">Counters side by side — one shared line</text>
+      <rect x="24" y="44" width="150" height="150" rx="10" class="b"/>
+      <text x="99" y="68" text-anchor="middle" class="t-h t-s">Core 0 · L1</text>
+      <rect x="39" y="96" width="30" height="30" class="b-u"/><text x="54" y="116" text-anchor="middle" class="mono">c0</text>
+      <rect x="69" y="96" width="30" height="30" class="b"/><text x="84" y="116" text-anchor="middle" class="mono">c1</text>
+      <rect x="99" y="96" width="30" height="30" class="b"/><text x="114" y="116" text-anchor="middle" class="mono">c2</text>
+      <rect x="129" y="96" width="30" height="30" class="b"/><text x="144" y="116" text-anchor="middle" class="mono">c3</text>
+      <text x="99" y="150" text-anchor="middle" class="t-m t-s">writes only c0</text>
+      <rect x="236" y="44" width="150" height="150" rx="10" class="b"/>
+      <text x="311" y="68" text-anchor="middle" class="t-h t-s">Core 1 · L1</text>
+      <rect x="251" y="96" width="30" height="30" class="b"/><text x="266" y="116" text-anchor="middle" class="mono">c0</text>
+      <rect x="281" y="96" width="30" height="30" class="b-u"/><text x="296" y="116" text-anchor="middle" class="mono">c1</text>
+      <rect x="311" y="96" width="30" height="30" class="b"/><text x="326" y="116" text-anchor="middle" class="mono">c2</text>
+      <rect x="341" y="96" width="30" height="30" class="b"/><text x="356" y="116" text-anchor="middle" class="mono">c3</text>
+      <text x="311" y="150" text-anchor="middle" class="t-m t-s">writes only c1</text>
+      <path d="M182 150 C 196 176, 216 176, 228 152" class="ln-d" marker-end="url(#c13f2-d)"/>
+      <path d="M228 90 C 214 64, 196 64, 182 88" class="ln-d" marker-end="url(#c13f2-d)"/>
+      <text x="24" y="224" class="t-d t-s">every write must take the whole line from</text>
+      <text x="24" y="242" class="t-d t-s">the other core first — the line ping-pongs</text>
+      <text x="24" y="270" class="t-m t-s">measured: 1772 ms</text>
+
+      <line x1="400" y1="20" x2="400" y2="276" class="grid"/>
+
+      <text x="420" y="30" class="t-h t-s">Counters 128 bytes apart — one line each</text>
+      <rect x="420" y="44" width="160" height="150" rx="10" class="b"/>
+      <text x="500" y="68" text-anchor="middle" class="t-h t-s">Core 0 · L1</text>
+      <rect x="436" y="96" width="32" height="30" class="b-u"/><text x="452" y="116" text-anchor="middle" class="mono">c0</text>
+      <rect x="468" y="96" width="96" height="30" class="b-m"/><text x="516" y="116" text-anchor="middle" class="t-m t-s">padding</text>
+      <text x="500" y="150" text-anchor="middle" class="t-m t-s">owns line A</text>
+      <rect x="616" y="44" width="160" height="150" rx="10" class="b"/>
+      <text x="696" y="68" text-anchor="middle" class="t-h t-s">Core 1 · L1</text>
+      <rect x="632" y="96" width="32" height="30" class="b-u"/><text x="648" y="116" text-anchor="middle" class="mono">c1</text>
+      <rect x="664" y="96" width="96" height="30" class="b-m"/><text x="712" y="116" text-anchor="middle" class="t-m t-s">padding</text>
+      <text x="696" y="150" text-anchor="middle" class="t-m t-s">owns line B</text>
+      <text x="420" y="224" class="t-ok t-s">each core keeps its own line in L1 —</text>
+      <text x="420" y="242" class="t-ok t-s">no invalidations, no traffic between cores</text>
+      <text x="420" y="270" class="t-m t-s">measured: 107 ms</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে চারটা counter একই line-এ: core 0 শুধু <code>c0</code> লেখে, core 1 শুধু <code>c1</code> — তবু প্রতিটা লেখার আগে পুরো line-টা অন্য core-এর কাছ থেকে কেড়ে আনতে হয়। ডানে প্রতিটা counter-এর পরে ফাঁকা জায়গা, তাই প্রত্যেকে নিজের line-এর মালিক হয়ে বসে থাকে। (সরল রাখতে দুইটা core দেখানো; পরীক্ষায় চারটা।)</p>
+  <p>চারটা worker, কেউ কারও data ছোঁয় না — তবু পাশাপাশি রাখায় ১৬ গুণ ধীর। সমাধান দুইটা: প্রতিটা thread-এর data-র মাঝে line-এর মাপের ফাঁকা রাখা (ওপরে যেমন করলাম), অথবা প্রতিটা thread নিজের local variable-এ হিসাব করে শেষে একবার shared জায়গায় যোগ করা। Java-র <code>LongAdder</code> আর Linux kernel-এর per-CPU counter ঠিক এই দ্বিতীয় কৌশল।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"Cache মানে just faster RAM।" এতে দুটো জিনিস miss হয়: (১) cache একটা <strong>hierarchy</strong> — স্তরে স্তরে size/speed trade-off, (২) cache কাজই করে <strong>locality-র জুয়ায়</strong> — তোমার access pattern এলোমেলো হলে cache প্রায় অকেজো। Cache-এর সুবিধা automatic না; সেটা তোমার data layout আর access pattern-এর পুরস্কার।</p>
+    <p>"Big-O ঠিক থাকলেই হলো; বাকিটা micro-optimization।" এই chapter-এর প্রতিটা experiment-এ দুইটা পক্ষ ছিল হুবহু একই Big-O-র — একই সংখ্যক যোগ, একই সংখ্যক access। পার্থক্য এসেছে ৫ গুণ (<code>grid2d</code>), ১০ গুণ (<code>locality.js</code>), ১৬ গুণ (<code>falseshare</code>), আর staircase-এ ৯০ গুণ। Big-O বলে কাজ কত দ্রুত বাড়ে; কাজের প্রতিটা ধাপ কত দামি, সেটা বলে memory-র কোন স্তরে তুমি আছ।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Cache হলো একটা সিঁড়ি — L1 (~১ ns) → L2 (কয়েক ns) → SLC/L3 → RAM (~১২০ ns) — আর তোমার data কোন ধাপে দাঁড়িয়ে, সেটা ঠিক করে তার মাপ আর তুমি কীভাবে ছোঁও। Locality (একই জিনিস বারবার, পাশের জিনিস পরপর) cache-কে কাজে লাগায়; ছড়ানো data আর এলোমেলো ক্রম তাকে অকেজো করে। আর একাধিক core-এ মনে রাখো: hardware মালিকানা দেয় line ধরে, variable ধরে না।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Temporal আর spatial locality — একটা করে নিজের code-এর উদাহরণ?</li>
-      <li>Cache line কীভাবে sequential access-কে জেতায়?</li>
-      <li>L1/L2/L3-এর size ছোট → বড় আর speed দ্রুত → ধীর কেন সাজানো?</li>
+      <li>একটা বড় দ্রুত cache না বানিয়ে কয়েক স্তরের cache কেন? তোমার staircase-এ ১২৮ KB আর ১৬ MB-এর কাছে দাম লাফায় কেন?</li>
+      <li>Temporal আর spatial locality কী — নিজের code থেকে একটা করে উদাহরণ দাও। <code>grid2d.js</code>-এ কলাম ধরে পড়া পাঁচ গুণ ধীর কেন?</li>
+      <li>একই সংখ্যা <code>Float64Array</code>-তে আর <code>{ v }</code> object-এর array-তে রাখলে cache line-এর হিসাবে পার্থক্য কী? Linked list কেন array-র কাছে হারে?</li>
+      <li>Cache coherence কেন লাগে? একটা core লিখতে চাইলে অন্য core-দের copy-র কী হয়?</li>
+      <li><code>falseshare.js</code>-এ কোনো worker অন্যের counter ছোঁয় না, তবু ১৬ গুণ ধীর কেন? দুইটা সমাধান কী?</li>
     </ul>
   </div>

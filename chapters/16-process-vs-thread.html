@@ -1,48 +1,183 @@
   <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
   <h2>Chapter 16 — Process vs Thread</h2>
-  <p class="chap-sub">Concurrency-র সব আলোচনার ভিত্তি — এই ছবিটা মাথায় গাঁথা চাই।</p>
+  <p class="chap-sub">এক process-এর ভেতরে একাধিক execution-এর ধারা: কী আলাদা, কী ভাগাভাগি, kernel তাদের কীভাবে দেখে, Node-এর worker কোথায় আলাদা — আর এই মুহূর্তে তোমার "single-threaded" Node-এর ভেতরে আসলে কয়টা thread চলছে।</p>
 
-  <h3>Thread কী</h3>
-  <p>এতক্ষণ বলেছি "process চলে"। আরও সঠিকভাবে: process-এর ভিতরের <strong>thread</strong> চলে। Thread হলো execution-এর একক — একটা নিজস্ব instruction stream, নিজস্ব stack, নিজস্ব register state, আর নিজস্ব thread-local storage (TLS — <code>errno</code> এখানেই থাকে, এজন্যই এক thread-এর error অন্যের কাছে যায় না)। প্রতিটা process অন্তত একটা thread নিয়ে জন্মায় (main thread), চাইলে আরও বানাতে পারে।</p>
-  <p>মূল কথা: <strong>process হলো resource-এর container, thread হলো execution-এর unit।</strong> Address space, heap, open files — এগুলো process-এর সম্পত্তি; process-এর সব thread এগুলো share করে।</p>
+  <p>যা লাগবে: <strong>process</strong> মানে kernel-এর একটা PCB, নিজস্ব address space, আর CPU context — PC, SP, register (Chapter 3); প্রতিটা function call <strong>stack</strong>-এ একটা frame পায়, যেখানে ফেরার ঠিকানা থাকে (Chapter 5); আর <code>fork</code> দিয়ে process-এর copy বানানো যায় (Chapter 15)। Chapter 2-এ এক লাইনে <strong>thread</strong>-কে বলেছিলাম "process-এর ভেতরে instruction চালানোর একটা স্বাধীন ধারা"। এবার সেটা পুরো খুলি।</p>
 
-  <pre class="diagram"><span class="u">Process (একটা address space)</span>
-├── Thread 1   ├── Thread 2   ├── Thread 3
-│   নিজস্ব:      │   নিজস্ব:      │   নিজস্ব:
-│   • Stack     │   • Stack     │   • Stack
-│   • Registers │   • Registers │   • Registers
-│   • PC        │   • PC        │   • PC
-│
-└── সবাই মিলে shared:
-    • Code (text)  • Heap  • Global data  • Open files/sockets</pre>
-  <p class="diagram-caption">যার যার execution state আলাদা, সবার data জগৎ এক।</p>
+  <h3>Thread কেন লাগে</h3>
+  <p>ধরো একটা program একসাথে কয়েকটা কাজ করতে চায় — Chapter 14-এর মতো বারোটা core-এ হিসাব ভাগ করতে, বা একটা লম্বা হিসাব চলার সময়ও UI সাড়া দিক। একটা উপায়: কয়েকটা process চালাও। কিন্তু process-দের address space আলাদা (Chapter 9) — একজনের data আরেকজন সরাসরি দেখতে পারে না; ভাগ করতে হলে pipe বা socket দিয়ে kernel-এর মাধ্যমে copy করে পাঠাতে হয়। আর process বানানো নিজেই দামি: নতুন PCB, নতুন page table, খোলা file-এর নতুন table।</p>
+  <p>দ্বিতীয় উপায়: একই address space-এর ভেতরে একাধিক execution-এর ধারা চালাও — প্রত্যেকের নিজের PC, নিজের register, নিজের stack, আর kernel তাদের আলাদা আলাদা করে CPU-তে বসায়; কিন্তু memory, খোলা file, বাকি সব একই। এরই নাম <strong>thread</strong>। প্রতিটা process অন্তত একটা thread নিয়ে জন্মায় — <strong>main thread</strong> — আর চাইলে আরও বানাতে পারে। দামের পার্থক্য মাপো:</p>
+  <div class="codewrap"><pre><code>python3 -c "
+import os, threading, time
+N = 1000
+t = time.perf_counter()
+for _ in range(N):
+    th = threading.Thread(target=lambda: None); th.start(); th.join()   # thread বানাও, শেষ হতে দাও
+thr = (time.perf_counter() - t) / N * 1e6
+t = time.perf_counter()
+for _ in range(N):
+    pid = os.fork()                                                     # process বানাও, শেষ হতে দাও
+    if pid == 0: os._exit(0)
+    os.waitpid(pid, 0)
+prc = (time.perf_counter() - t) / N * 1e6
+print(f'thread create+join: {thr:.0f} µs   |   process fork+wait: {prc:.0f} µs')"</code></pre></div>
+  <p>আমার Mac-এ: <code>thread create+join: 31 µs | process fork+wait: 844 µs</code> — process বানানো ২৭ গুণ দামি, যদিও <code>fork</code> copy-on-write দিয়ে memory copy এড়িয়ে যায় (Chapter 15)। Thread-এর জন্য kernel-কে নতুন address space বানাতে হয় না, শুধু একটা নতুন stack আর register-এর একটা সেট।</p>
 
-  <h3>Share করা: আশীর্বাদ ও অভিশাপ</h3>
+  <h3>কী নিজস্ব, কী ভাগাভাগি</h3>
+  <p><strong>প্রতিটা thread-এর নিজস্ব:</strong></p>
+  <ul>
+    <li><strong>PC আর register</strong> — প্রত্যেকে code-এর আলাদা জায়গায় থাকতে পারে, আলাদা হিসাব করতে পারে।</li>
+    <li><strong>Stack</strong> — কারণ প্রত্যেকে আলাদা আলাদা function ডাকে, আর প্রতিটা call-এর frame আর ফেরার ঠিকানা (Chapter 5) নিজের শিকলে রাখতে হয়। দুইটা thread একই stack ভাগ করলে একজনের return আরেকজনের frame মুছে দিত।</li>
+    <li><strong>State</strong> — running, ready, blocked (Chapter 15) — thread ধরে। একটা thread disk-এর জন্য ঘুমালে একই process-এর অন্য thread চলতে থাকে।</li>
+    <li><strong>নিজস্ব ID</strong> (TID), আর কিছু thread-local data — যেমন C-র <code>errno</code>, যাতে এক thread-এর error আরেকজনের ঘাড়ে না পড়ে।</li>
+  </ul>
+  <p><strong>সব thread মিলে ভাগাভাগি:</strong> পুরো address space — code, global data, heap, library — আর খোলা file-এর table, PID, working folder, user। এক thread <code>malloc</code> করে একটা pointer রাখলে অন্য thread সেটা দিয়ে সরাসরি একই memory পড়তে পারে; এক thread file খুললে অন্যজন সেই fd দিয়েই লিখতে পারে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 440" width="100%" role="img" aria-label="One process address space with three threads: each thread has its own stack separated by guard pages and its own PC, SP and registers; the heap, data, code and shared libraries are shared by all threads">
+      <defs>
+        <marker id="c16f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="200" y="20" width="280" height="34" rx="6" class="b-m"/>
+      <text x="340" y="42" text-anchor="middle" class="t-m t-s">kernel space — off-limits</text>
+      <rect x="200" y="62" width="280" height="44" rx="6" class="b-u"/>
+      <text x="216" y="89" class="t-u t-s">stack · thread 1 (main)</text>
+      <rect x="200" y="110" width="280" height="12" rx="3" class="b-m"/>
+      <rect x="200" y="126" width="280" height="44" rx="6" class="b-u"/>
+      <text x="216" y="153" class="t-u t-s">stack · thread 2</text>
+      <rect x="200" y="174" width="280" height="12" rx="3" class="b-m"/>
+      <rect x="200" y="190" width="280" height="44" rx="6" class="b-u"/>
+      <text x="216" y="217" class="t-u t-s">stack · thread 3</text>
+      <text x="340" y="262" text-anchor="middle" class="t-m t-s">… free …</text>
+      <rect x="200" y="276" width="280" height="36" rx="6" class="b-ok"/>
+      <text x="216" y="299" class="t-s">shared libraries: libc, libuv, …</text>
+      <rect x="200" y="316" width="280" height="40" rx="6" class="b-ok"/>
+      <text x="216" y="341" class="t-s">heap — objects of every thread</text>
+      <rect x="200" y="360" width="280" height="30" rx="6" class="b-ok"/>
+      <text x="216" y="380" class="t-s">data / BSS — globals</text>
+      <rect x="200" y="394" width="280" height="30" rx="6" class="b-ok"/>
+      <text x="216" y="414" class="t-s">code (text)</text>
+
+      <path d="M186 62 V234" class="ln-u"/>
+      <text x="176" y="140" text-anchor="end" class="t-u t-s">one stack</text>
+      <text x="176" y="158" text-anchor="end" class="t-u t-s">per thread</text>
+      <text x="176" y="176" text-anchor="end" class="t-m t-s">(guard page</text>
+      <text x="176" y="192" text-anchor="end" class="t-m t-s">between them)</text>
+      <path d="M186 276 V424" class="ln"/>
+      <text x="176" y="344" text-anchor="end" class="t-ok t-s">shared by</text>
+      <text x="176" y="362" text-anchor="end" class="t-ok t-s">all threads</text>
+
+      <rect x="560" y="62" width="216" height="56" rx="8" class="b"/>
+      <text x="576" y="84" class="t-h t-s">Thread 1 · main</text>
+      <text x="576" y="104" class="t-m t-s">own PC · SP · registers</text>
+      <rect x="560" y="126" width="216" height="56" rx="8" class="b"/>
+      <text x="576" y="148" class="t-h t-s">Thread 2</text>
+      <text x="576" y="168" class="t-m t-s">own PC · SP · registers</text>
+      <rect x="560" y="190" width="216" height="56" rx="8" class="b"/>
+      <text x="576" y="212" class="t-h t-s">Thread 3</text>
+      <text x="576" y="232" class="t-m t-s">own PC · SP · registers</text>
+      <line x1="558" y1="86" x2="484" y2="86" class="ln-u" marker-end="url(#c16f1-u)"/>
+      <line x1="558" y1="150" x2="484" y2="150" class="ln-u" marker-end="url(#c16f1-u)"/>
+      <line x1="558" y1="214" x2="484" y2="214" class="ln-u" marker-end="url(#c16f1-u)"/>
+      <text x="520" y="78" text-anchor="middle" class="t-u t-s">SP</text>
+      <text x="560" y="280" class="t-s">every PC points into the</text>
+      <text x="560" y="298" class="t-s">same shared code; each thread</text>
+      <text x="560" y="316" class="t-s">is scheduled separately</text>
+      <text x="560" y="334" class="t-s">(running / ready / blocked)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Chapter 5-এর memory layout, এবার তিনটা thread সহ। উপরের নীল অংশে প্রতিটা thread-এর নিজের stack, মাঝে ছোট নিষিদ্ধ guard page (একজনের stack overflow যাতে আরেকজনের stack-এ ঢুকে না পড়ে)। নিচের সবুজ অংশ — heap, globals, code, library — সবার এক। ডানে প্রতিটা thread-এর নিজের SP নিজের stack দেখায়।</p>
+
+  <h3>Kernel-এর চোখে thread</h3>
+  <p>Kernel thread আর process-কে কতটা আলাদা ভাবে? Linux-এ উত্তর চমকপ্রদ: প্রায় একই ভাবে। প্রতিটা thread kernel-এর কাছে একটা পূর্ণ "task" — নিজের PCB (<code>task_struct</code>), নিজের ID, scheduler-এর নিজের পালা। পার্থক্য শুধু একটা: একই process-এর task গুলো memory আর খোলা file-এর table ভাগ করে। আর দুটোই তৈরি হয় একই syscall দিয়ে — Chapter 15-এর <code>clone</code> — শুধু flag আলাদা। Node চালু হওয়ার সময় সে নিজের জন্য কয়েকটা thread বানায়; দেখো:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-alpine sh -c 'apk add -q strace &gt;/dev/null 2&gt;&amp;1; strace -f -e trace=clone node -e 1 2&gt;&amp;1 | grep clone | head -1'</code></pre></div>
+  <p>আমার output (ছেঁটে): <code>clone(child_stack=0xffff8e002950, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|...)</code>। Chapter 15-এ bash-এর <code>fork</code> ছিল <code>clone(child_stack=NULL, flags=...|SIGCHLD)</code>। তফাতটা পড়ো: thread-এর বেলায় <code>CLONE_VM</code> (address space ভাগ করো), <code>CLONE_FILES</code> (খোলা file-এর table ভাগ করো), <code>CLONE_THREAD</code> (একই process-এর সদস্য), আর একটা নতুন <code>child_stack</code> — নতুন thread-এর নিজের stack। Process-এর বেলায় এসবের কিছুই না — সব copy। একই যন্ত্র, কতটা ভাগ হবে সেটা flag ঠিক করে।</p>
+  <p>এবার দেখো তোমার "single-threaded" Node-এর ভেতরে আসলে কী চলছে। Linux প্রতিটা thread-কে <code>/proc/&lt;PID&gt;/task/</code>-এর নিচে একটা folder হিসেবে দেখায়, আর <code>comm</code> file-এ তার নাম:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — Node-এর thread গুলো</div>
+    <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "
+const fs = require('fs');
+const threads = () =&gt; fs.readdirSync('/proc/self/task')
+  .map(t =&gt; t + ':' + fs.readFileSync('/proc/self/task/' + t + '/comm', 'utf8').trim());
+console.log('at start         :', threads().join('  '));
+fs.readFile('/etc/hostname', () =&gt; console.log('after fs.readFile:', threads().join('  ')));"</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>at start         : 1:node  10:node  11:node  12:node  13:node  8:DelayedTaskSche  9:node
+after fs.readFile: 1:node  10:node  11:node  12:node  13:node  14:libuv-worker  15:libuv-worker  16:libuv-worker  17:libuv-worker  8:DelayedTaskSche  9:node</code></pre></div>
+    <p>macOS-এ: <code>ps -M &lt;PID&gt;</code> — প্রতিটা thread একটা লাইন।</p>
+  </div>
+  <p>শুরুতেই সাতটা thread। <code>1</code> হলো main thread — তোমার সব JS আর event loop এখানে। <code>9</code>–<code>13</code> V8-এর helper thread: garbage collection-এর অনেকটা (Chapter 6) আর JIT compile (Chapter 4) এরা পেছনে চালায়। <code>DelayedTaskSche</code> V8-এর সময়-নির্ধারিত কাজ সামলায়। আর প্রথম <code>fs.readFile</code>-এর পরে হাজির চারটা <code>libuv-worker</code> — Node-এর thread pool, যেটা প্রথম দরকারের সময় তৈরি হয় আর file পড়া, DNS lookup, <code>crypto</code>, <code>zlib</code>-এর মতো blocking কাজ main thread-এর বাইরে সারে (Chapter 19)। "Node single-threaded" — কথাটা সত্যি শুধু তোমার JS-এর জন্য।</p>
+
+  <h3>Node-এর worker: thread, কিন্তু আলাদা heap</h3>
+  <p>C, Java বা Go-তে এক thread-এর বানানো object আরেক thread সরাসরি পড়তে-লিখতে পারে — ওপরের ছবির মতো heap সবার এক। Node-এর <code>worker_threads</code> আসল OS thread-ই (<code>clone</code>-এর ওই flag দিয়ে তৈরি), কিন্তু প্রতিটা worker পায় নিজের একটা পুরো V8 instance — নিজের JS heap, নিজের garbage collector, নিজের event loop। কারণ V8-এর heap আর GC এমনভাবে বানানো যে একাধিক thread একসাথে JS object বদলালে সেগুলো ভেঙে পড়ত। ফল: worker-কে সাধারণ object পাঠালে সেটা <em>copy</em> হয়ে যায়; শুধু <code>SharedArrayBuffer</code>-এর memory সত্যিই ভাগ হয়।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — share.js</div>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+
+if (isMainThread) {
+  const plain = { count: 0 };                               // সাধারণ JS object
+  const shared = new Int32Array(new SharedArrayBuffer(4));  // সবার দেখা memory
+
+  const w = new Worker(__filename, { workerData: { plain, shared } });
+  w.on('exit', () =&gt; {
+    console.log('main sees plain.count =', plain.count);    // worker-এর বদল কি এখানে পৌঁছাল?
+    console.log('main sees shared[0]   =', shared[0]);
+  });
+} else {
+  workerData.plain.count = 42;                              // worker-এর নিজের copy বদলাল
+  workerData.shared[0] = 42;                                // shared memory বদলাল
+  console.log('worker set both to 42');
+}</code></pre></div>
+    <p>আমার output: <code>worker set both to 42</code>, তারপর <code>main sees plain.count = 0</code>, <code>main sees shared[0] = 42</code>।</p>
+  </div>
+  <p>Worker দুইটাকেই ৪২ বানাল, কিন্তু main দেখল শুধু shared-টার বদল। <code>plain</code> পৌঁছানোর সময় copy হয়েছিল (এই copy-র নাম structured clone), worker বদলেছে নিজের copy। শিক্ষা: worker-দের মধ্যে বড় data বারবার পাঠালে copy-র খরচ দিতে হয়। এড়ানোর দুই পথ — <code>SharedArrayBuffer</code> (ভাগ করো), অথবা <code>postMessage(data, [data.buffer])</code>-এর মতো transfer (copy না করে মালিকানা হস্তান্তর — পাঠানোর পরে পাঠানো thread আর ওটা ব্যবহার করতে পারে না)।</p>
+
+  <h3>এক thread-এর ভুল, সবার বিপদ</h3>
+  <p>ভাগাভাগির উল্টো পিঠ: একই address space মানে একটা thread-এর bug সবার memory নষ্ট করতে পারে, আর একটা thread crash করলে — ধরো ভুল address ছুঁয়ে segmentation fault — kernel-এর signal যায় পুরো process-এর কাছে, আর process-এর সব thread একসাথে মরে। Node-এর worker-এ JS স্তরের ভুল আলাদা ব্যাপার, কারণ প্রতিটা worker-এর V8 আলাদা:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — crash.js</div>
+    <div class="codewrap"><pre><code>const { Worker, isMainThread } = require('worker_threads');
+if (isMainThread) {
+  const mode = process.argv[2];
+  new Worker(__filename, { argv: [mode] }).on('error', e =&gt; console.log('main: worker threw →', e.message));
+  setTimeout(() =&gt; console.log('main: still alive after 500 ms'), 500);
+} else if (process.argv[2] === 'throw') {
+  throw new Error('JS error inside the worker');       // JS-এর error: শুধু worker-টা শেষ
+} else {
+  process.kill(process.pid, 'SIGSEGV');                // segfault-এর signal: পুরো process-এর জন্য
+}</code></pre></div>
+    <div class="codewrap"><pre><code>node crash.js throw; echo "exit code: $?"
+node crash.js segv;  echo "exit code: $?"</code></pre></div>
+    <p>আমার output: প্রথমটায় <code>main: worker threw → JS error inside the worker</code>, <code>main: still alive after 500 ms</code>, <code>exit code: 0</code>। দ্বিতীয়টায় শুধু <code>exit code: 139</code> — main-এর একটা লাইনও না।</p>
+  </div>
+  <p>JS-এর exception worker-এর নিজের V8 ধরে ফেলে আর main-কে খবর দেয়। কিন্তু <code>SIGSEGV</code> (আসল একটা native crash যে signal তৈরি করে) process-এর — সবার — তাই main thread-ও শেষ, exit code ১৩৯ = ১২৮ + ১১ (<code>SIGSEGV</code>-এর নম্বর)। Chapter 1-এর <code>chrome://crash</code> মনে করো: Chrome প্রতিটা tab আলাদা <em>process</em>-এ রাখে ঠিক এই কারণে — thread হলে একটা tab-এর crash পুরো browser নামিয়ে দিত।</p>
+
   <div class="table-wrap"><table>
-    <tr><th></th><th>দুই process</th><th>এক process-এর দুই thread</th></tr>
-    <tr><td><strong>Memory</strong></td><td>সম্পূর্ণ আলাদা (isolation)</td><td>Heap/global shared</td></tr>
-    <tr><td><strong>Communication</strong></td><td>কষ্টের — pipe, socket, shared memory setup লাগে, প্রায়ই kernel-এর মধ্য দিয়ে</td><td>সহজ — একই variable-এ লেখো, অন্যজন দেখে</td></tr>
-    <tr><td><strong>একজনের crash</strong></td><td>অন্যজন বাঁচে</td><td>পুরো process মরে — সবাই একসাথে ডোবে</td></tr>
-    <tr><td><strong>তৈরির খরচ</strong></td><td>বেশি (নতুন address space, page table) — CoW-এর পরেও thread-এর তুলনায় বেশি</td><td>কম (শুধু stack + thread state)</td></tr>
-    <tr><td><strong>Bug-এর ধরন</strong></td><td>Interface-এ ভুল</td><td>Race condition, data corruption (Chapter 18)</td></tr>
+    <tr><th></th><th>দুইটা process</th><th>এক process-এর দুইটা thread</th></tr>
+    <tr><td>Memory</td><td>সম্পূর্ণ আলাদা (isolation)</td><td>heap, globals, code — সব এক</td></tr>
+    <tr><td>তৈরির খরচ</td><td>বেশি — এখানে মাপা ~৮৪৪ µs</td><td>কম — ~৩১ µs</td></tr>
+    <tr><td>Data আদান-প্রদান</td><td>kernel-এর মাধ্যমে copy (pipe, socket)</td><td>একই variable পড়ো-লেখো (Node-এ: <code>SharedArrayBuffer</code>)</td></tr>
+    <tr><td>একজনের crash</td><td>অন্যজন বেঁচে থাকে</td><td>পুরো process মরে</td></tr>
+    <tr><td>সাধারণ bug</td><td>interface-এর ভুল</td><td>race condition — একই data-য় একসাথে লেখা (Chapter 18)</td></tr>
   </table></div>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"Thread is a lightweight process" — অসম্পূর্ণ, আর আসল point-টা miss করে। হালকা তো বটেই, কিন্তু defining পার্থক্য ওজনে না — <strong>address space-এ</strong>: process-রা আলাদা জগতে থাকে, thread-রা এক জগৎ share করে। এই sharing-ই thread-এর সব শক্তি আর সব বিপদের উৎস।</p>
+    <p>"Thread মানে হালকা process।" হালকা তো বটেই, কিন্তু আসল সংজ্ঞা ওজনে না — address space-এ: process-রা আলাদা জগতে থাকে, thread-রা এক জগৎ ভাগ করে। Linux-এর চোখে দুটোই task, শুধু <code>clone</code>-এর flag বলে কতটা ভাগ হবে। এই ভাগাভাগিই thread-এর সব সুবিধা (সস্তা, দ্রুত যোগাযোগ) আর সব বিপদের (একজনের ভুল সবার ঘাড়ে, race condition) উৎস।</p>
   </div>
 
-  <div class="box kern">
-    <div class="box-title">তোমার দুনিয়ায়</div>
-    <p>Node.js-এর model: এক process, তোমার JS চলে এক main thread-এ, কিন্তু ভিতরে libuv-এর একটা thread pool কিছু কাজ (file I/O, crypto, DNS) চালায়, আর V8-এর GC-ও আলাদা thread ব্যবহার করে। <code>worker_threads</code> খুললে সত্যিকারের আলাদা JS thread পাও। আর PM2 cluster mode? সেটা thread না — আলাদা <em>process</em>, এজন্যই ওদের মধ্যে memory share হয় না।</p>
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Process হলো resource-এর ধারক — address space, খোলা file, PID; thread হলো execution-এর একক — PC, register, stack, আর scheduler-এর একটা পালা। একটা process-এর ভেতরে যত thread, সবাই একই memory দেখে কিন্তু প্রত্যেকে নিজের stack-এ নিজের পথে হাঁটে। Node-এ তোমার JS এক thread-এ, কিন্তু process-এ এক ডজনের কাছাকাছি; আর worker-রা আসল thread হলেও JS object ভাগ করে না — শুধু <code>SharedArrayBuffer</code>।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>"Process is a container of resources, thread is a unit of execution" — নিজের ভাষায়?</li>
-      <li>Thread-দের মধ্যে কোনটা shared, কোনটা নিজস্ব?</li>
-      <li>প্রতিটা thread-এর আলাদা stack লাগে কেন? (Hint: function call)</li>
-      <li>Chrome tab-প্রতি process কেন — thread কেন না?</li>
+      <li>Process থাকতে thread কেন লাগে? ৩১ µs বনাম ৮৪৪ µs — এই পার্থক্য কোথা থেকে আসে?</li>
+      <li>প্রতিটা thread-এর নিজের stack লাগে কেন? আর কী কী সব thread মিলে ভাগ করে?</li>
+      <li>Linux-এ thread আর process কীভাবে একই <code>clone</code> syscall দিয়ে তৈরি হয়? কোন flag গুলো পার্থক্য গড়ে?</li>
+      <li>একটা সাধারণ Node process-এ কয়টা thread থাকে, আর তারা কী করে? <code>libuv-worker</code> গুলো কখন আসে?</li>
+      <li><code>share.js</code>-এ <code>plain.count</code> ০ কিন্তু <code>shared[0]</code> ৪২ কেন? <code>crash.js</code>-এ JS error-এ শুধু worker মরে, কিন্তু <code>SIGSEGV</code>-এ পুরো process — কেন?</li>
     </ul>
   </div>

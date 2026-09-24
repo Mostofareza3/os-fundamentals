@@ -1,40 +1,193 @@
   <p class="part-label">PART 5 · PROCESS MANAGEMENT</p>
   <h2>Chapter 19 — Thread কখন ব্যবহার করবে?</h2>
-  <p class="chap-sub">Workload চেনো, তারপর tool বাছো — একটা practical decision framework।</p>
+  <p class="chap-sub">আগে workload চেনো — CPU-র কাজ নাকি অপেক্ষার কাজ — তারপর হাতিয়ার বাছো: event loop, libuv-এর thread pool, worker, নাকি আলাদা process। সাথে thread-এর লুকানো বিল।</p>
 
-  <h3>প্রথম প্রশ্ন: তোমার workload কী-bound?</h3>
+  <p>Part 5-এর সব টুকরো এখানে একটা সিদ্ধান্তে জোড়া লাগবে। মনে করিয়ে দিই: thread সস্তা কিন্তু সব memory ভাগ করে (Chapter 16); প্রতিটা পালা বদলের সরাসরি আর লুকানো দাম আছে, core-এর চেয়ে বেশি CPU-র কাজের thread মানে লোকসান (Chapter 14, 17); ভাগাভাগি করা data মানে race আর lock-এর ঝামেলা (Chapter 18); আর যে thread কোনো কিছুর অপেক্ষায়, সে blocked — CPU চায় না (Chapter 15)।</p>
+
+  <h3>প্রথম প্রশ্ন: সময় যাচ্ছে কোথায়?</h3>
+  <p>"Thread দিলে দ্রুত হবে কি?" — উত্তর নির্ভর করে তোমার program-এর সময় কীসে যাচ্ছে তার উপর। দুই রকম কাজ আছে:</p>
   <ul>
-    <li><strong>CPU-bound:</strong> সময় যাচ্ছে হিসাবে — image processing, encryption, বড় JSON parse, ML inference। CPU 100%-এ আটকে।</li>
-    <li><strong>I/O-bound:</strong> সময় যাচ্ছে <em>অপেক্ষায়</em> — DB query, HTTP call, file read। CPU বেশিরভাগ সময় অলস; process টা Waiting state-এ (Chapter 15) পড়ে থাকে।</li>
+    <li><strong>CPU-bound</strong> — সময় যাচ্ছে হিসাবে: image resize, encryption, বড় JSON parse, report বানানো। CPU পুরো সময় ব্যস্ত।</li>
+    <li><strong>I/O-bound</strong> — সময় যাচ্ছে অপেক্ষায়: database query, HTTP call, disk। Process বেশিরভাগ সময় blocked, CPU অলস।</li>
   </ul>
-  <p>বেশিরভাগ web backend আসলে I/O-bound — request-এর জীবনের সিংহভাগ কাটে DB আর downstream service-এর অপেক্ষায়।</p>
+  <p>কোনটা, সেটা আন্দাজ না করে মাপো — Chapter 1-এর <code>time</code> দিয়েই। মোট সময় (<code>real</code> বা <code>total</code>) আর CPU-র সময়ের (<code>user</code> + <code>system</code>) তুলনা করো:</p>
+  <div class="codewrap"><pre><code># ১) হিসাবের কাজ
+time node -e "let s = 0; for (let i = 0; i &lt; 2e9; i++) s += i % 7;"
 
-  <h3>Framework</h3>
+# ২) অপেক্ষার কাজ — ৫০টা 'database query', প্রতিটা ৪০ ms (setTimeout দিয়ে নকল করা)
+time node -e "
+const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
+(async () =&gt; { for (let i = 0; i &lt; 50; i++) await sleep(40); })();"</code></pre></div>
+  <p>আমার Mac-এ:</p>
+  <div class="codewrap"><pre><code>5.42s user 0.11s system 96% cpu 5.711 total
+0.02s user 0.01s system 1% cpu 2.070 total</code></pre></div>
+  <p>প্রথমটায় CPU-র সময় প্রায় মোট সময়ের সমান (<code>96% cpu</code>) — CPU-bound। দ্বিতীয়টায় দুই সেকেন্ডের মধ্যে CPU খেটেছে ৩০ ms (<code>1% cpu</code>) — বাকি পুরো সময় অপেক্ষা। বেশিরভাগ web backend দ্বিতীয় দলের: একটা request-এর জীবনের সিংহভাগ কাটে database আর অন্য service-এর উত্তরের অপেক্ষায়। Production-এ একই প্রশ্ন করো উল্টো দিক থেকে: server ধীর, কিন্তু <code>top</code>-এ তার CPU কত? ১০০%-এর কাছে হলে CPU-bound; ১০%-এ পড়ে থাকলে সমস্যা অপেক্ষায় — আরও thread সেটা সারাবে না।</p>
+
+  <h3>অপেক্ষার কাজ: thread না, event loop</h3>
+  <p>পুরনো ধাঁচের server-এর নকশা ছিল "প্রতিটা connection-এর জন্য একটা thread" — thread-টা query পাঠিয়ে blocked হয়ে বসে থাকে, উত্তর এলে জাগে। দশ হাজার connection মানে দশ হাজার thread, যাদের প্রায় সবাই ঘুমিয়ে, অথচ প্রত্যেকে নিজের stack-এর জায়গা আটকে রাখে, আর প্রত্যেকের জাগা-ঘুমানোয় context switch (Chapter 17)। Thread-এর স্ট্যাকের দামটা মাপো:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — ১০০০টা ঘুমন্ত thread</div>
+    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c 'apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq python3 &gt;/dev/null 2&gt;&amp;1; python3 -c "
+import threading, re
+def vm():
+    s = open(\"/proc/self/status\").read()
+    return {k: int(re.search(k + r\":\s+(\d+)\", s).group(1)) // 1024 for k in (\"VmSize\", \"VmRSS\")}
+print(\"before:\", vm(), \"MB\")
+ev = threading.Event()
+ts = [threading.Thread(target=ev.wait) for _ in range(1000)]   # ১০০০টা thread, সবাই অপেক্ষায়
+for t in ts: t.start()
+print(\"1000 idle threads:\", vm(), \"MB\")
+ev.set()"; ulimit -s'</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>before: {'VmSize': 13, 'VmRSS': 7} MB
+1000 idle threads: {'VmSize': 14174, 'VmRSS': 27} MB
+8192</code></pre></div>
+  </div>
+  <p>এক হাজার ঘুমন্ত thread-এ virtual memory ১৩ MB থেকে ১৪ GB! প্রতিটা thread-এর জন্য kernel ৮ MB (<code>ulimit -s</code>-এর <code>8192</code> KB) stack-এর জায়গা reserve করেছে, সাথে guard page। RSS বেড়েছে মাত্র ২০ MB — Chapter 9-এর lazy allocation: না ছোঁয়া পর্যন্ত frame নেই। তবু দশ হাজার thread মানে ১৪০ GB-র প্রতিশ্রুতি, আর Chapter 10-এর overcommit-এর নিয়ম কড়া হলে সেটা আটকে যায়।</p>
+  <p>Event loop-এর উত্তর: অপেক্ষার জন্য thread পোষার দরকারই নেই। একটা thread অনেকগুলো কাজ শুরু করে দেয়, তারপর OS-কে বলে "এদের কারও উত্তর এলে আমাকে জানিও" (কীভাবে — <code>epoll</code>, <code>kqueue</code> — Chapter 28–29)। Chapter 18-এর পরীক্ষাটা মনে করো: এক thread-এ এক হাজারটা ১০০ ms-এর অপেক্ষা শেষ হয়েছিল ১০৩ ms-এ। Node, nginx, Redis — সবাই এই নকশার উপর দাঁড়িয়ে।</p>
+
+  <h3>CPU-র কাজ: main thread থেকে সরাও</h3>
+  <p>Event loop-এর একটা দুর্বলতা আছে: সব JS এক thread-এ, তাই একটা ভারী হিসাব চলার সময় আর কিছুই চলে না — অন্য সব request-এর callback লাইনে দাঁড়িয়ে থাকে। নিচের server-এ দুইটা route: <code>/hash</code> একটা ভারী password hash বানায়, <code>/ping</code> সঙ্গে সঙ্গে উত্তর দেয়। Server আলাদা process-এ চলে (যাতে মাপার code-ও আটকে না যায়); <code>/hash</code> শুরু হওয়ার ৫০ ms পরে <code>/ping</code> পাঠিয়ে দেখি উত্তর আসতে কত লাগে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — server.js</div>
+    <div class="codewrap"><pre><code>// একটা server: /hash ভারী CPU-র কাজ, /ping হালকা।
+// প্রশ্ন: /hash চলার সময় /ping কত দ্রুত উত্তর পায়?
+const http = require('http');
+const crypto = require('crypto');
+const { fork } = require('child_process');
+
+if (process.argv[2] === 'serve') {                           // ---- server process ----
+  const mode = process.argv[3];
+  const server = http.createServer((req, res) =&gt; {
+    if (req.url === '/hash') {
+      if (mode === 'sync') {                                 // main thread-এই হিসাব
+        crypto.pbkdf2Sync('secret', 'salt', 2_000_000, 64, 'sha512');
+        res.end('done');
+      } else {                                               // libuv-এর thread pool-এ পাঠাও
+        crypto.pbkdf2('secret', 'salt', 2_000_000, 64, 'sha512', () =&gt; res.end('done'));
+      }
+    } else res.end('pong');
+  });
+  server.listen(0, () =&gt; process.send(server.address().port));
+} else {                                                     // ---- client process ----
+  const mode = process.argv[2];                              // 'sync' বা 'async'
+  const child = fork(__filename, ['serve', mode]);
+  child.on('message', async port =&gt; {
+    const get = path =&gt; new Promise(r =&gt; http.get({ port, path }, res =&gt; { res.resume(); res.on('end', r); }));
+    const hash = get('/hash');
+    await new Promise(r =&gt; setTimeout(r, 50));               // /hash শুরু হতে দাও
+    const t = performance.now();
+    await get('/ping');
+    console.log(`${mode.padEnd(5)}: /ping answered in ${(performance.now() - t).toFixed(0).padStart(4)} ms`);
+    await hash;
+    child.kill();
+  });
+}</code></pre></div>
+    <p><code>node server.js sync</code> আর <code>node server.js async</code> — আমার Mac-এ:</p>
+    <div class="codewrap"><pre><code>sync : /ping answered in  432 ms
+async: /ping answered in    3 ms</code></pre></div>
+  </div>
+  <p>একই কাজ, একই server। <code>pbkdf2Sync</code> main thread-এ চলায় ওই পুরো সময় server কানে তুলো দিয়ে বসে ছিল — সবচেয়ে হালকা request-ও ৪৩২ ms অপেক্ষা করল। <code>pbkdf2</code>-এর async version কাজটা Node-এর thread pool-এর একটা thread-এ পাঠিয়ে দেয়; main thread মুক্ত, <code>/ping</code> ৩ ms-এ। একশো user-এর server-এ প্রথমটার মানে: একজনের login বাকি নিরানব্বই জনকে আটকে দেয়।</p>
+  <p>তোমার নিজের CPU-ভারী JS (একটা বড় report, image-এর pixel ঘাঁটা) async API দিয়ে pool-এ পাঠানো যায় না — সেটার জন্য <code>worker_threads</code>। বাস্তবে একটা worker pool রাখো, আকার core-এর সংখ্যার কাছাকাছি (<code>os.availableParallelism()</code>) — Chapter 14-এর <code>parallel.js</code>-এ ১২টা worker পর্যন্ত লাভ, ২৪-এ উল্টো। (<code>piscina</code>-র মতো npm library এই pool সাজিয়ে দেয়।) আর যদি দরকার হয় একজনের crash বা memory leak যেন অন্যদের না ছোঁয় (Chapter 16-এর <code>SIGSEGV</code>), বা কাজ কয়েকটা machine-এ ছড়াতে হয় — তখন thread না, আলাদা process: Node-এর <code>cluster</code>, PM2, বা একটা queue-র পেছনে আলাদা worker service।</p>
+
+  <h3>libuv-এর thread pool আর তার সীমা</h3>
+  <p>Chapter 16-এ দেখেছিলে প্রথম <code>fs.readFile</code>-এর পরে চারটা <code>libuv-worker</code> thread হাজির হয়। Node-এর যেসব async কাজের পেছনে OS-এর কোনো "উত্তর এলে জানাও" ব্যবস্থা নেই — file system-এর কাজ, <code>dns.lookup</code>, <code>crypto</code>-র ভারী function, <code>zlib</code> — সেগুলো এই pool-এ blocking ভাবে চলে, আর শেষ হলে main thread-কে খবর দেয়। Pool-এর default মাপ ৪। পাঁচ নম্বর কাজকে তাহলে কী করতে হয়?</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — pool.js</div>
+    <div class="codewrap"><pre><code>const crypto = require('crypto');
+const t = performance.now();
+for (let i = 1; i &lt;= 8; i++) {                     // একসাথে ৮টা ভারী hash
+  crypto.pbkdf2('secret', 'salt', 500_000, 64, 'sha512', () =&gt; {
+    console.log(`task ${i} finished at ${(performance.now() - t).toFixed(0).padStart(4)} ms`);
+  });
+}</code></pre></div>
+    <p><code>node pool.js</code> — আমার Mac-এ চারটা করে দুই দফা: task ১–৪ শেষ হয়েছে <code>172</code>–<code>218 ms</code>-এ, task ৫–৮ <code>330</code>–<code>391 ms</code>-এ। এবার <code>UV_THREADPOOL_SIZE=8 node pool.js</code>: আটটাই <code>150</code>–<code>256 ms</code>-এর মধ্যে।</p>
+  </div>
+  <p>Default-এ ৪টা thread, তাই পরের চারটা কাজ আগের চারটার শেষ হওয়ার জন্য লাইনে দাঁড়িয়েছিল — দ্বিগুণ সময়। বাস্তব বিপদটা আরও সূক্ষ্ম: তোমার server-এ চারটা ভারী <code>crypto</code> কাজ চললে ততক্ষণ একটা সাধারণ <code>fs.readFile</code>-ও pool-এ জায়গা পায় না — সম্পূর্ণ অসম্পর্কিত file পড়া হঠাৎ ধীর। Pool বড় করা যায় process চালুর আগে <code>UV_THREADPOOL_SIZE</code> environment variable দিয়ে (সর্বোচ্চ ১০২৪), কিন্তু CPU-ভারী কাজের জন্য core-এর বেশি দিয়ে লাভ নেই (Chapter 17)। আর মনে রেখো: network socket এই pool ব্যবহার করে না — সেগুলো OS-এর event ব্যবস্থায় চলে, তাই হাজার HTTP call-এ pool-এর চাপ পড়ে না।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 380" width="100%" role="img" aria-label="Decision flowchart: measure where the time goes; if the program is waiting, use the event loop and async APIs, and a thread pool only for blocking libraries; if it is computing, move the work off the main thread — async crypto and zlib go to the libuv pool, your own JavaScript goes to a worker pool sized to the cores; if you need crash isolation or several machines, use separate processes">
+      <defs>
+        <marker id="c19f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="250" y="16" width="300" height="56" rx="10" class="b"/>
+      <text x="400" y="40" text-anchor="middle" class="t-h t-s">Where does the time go?</text>
+      <text x="400" y="59" text-anchor="middle" class="t-m t-s">compare real with user + sys</text>
+
+      <path d="M300 72 C 260 96, 200 96, 170 112" class="ln" marker-end="url(#c19f1-a)"/>
+      <text x="24" y="98" class="t-s">waiting (I/O-bound)</text>
+      <path d="M500 72 C 540 96, 600 96, 630 112" class="ln" marker-end="url(#c19f1-a)"/>
+      <text x="776" y="98" text-anchor="end" class="t-s">computing (CPU-bound)</text>
+
+      <rect x="24" y="116" width="300" height="70" rx="10" class="b-ok"/>
+      <text x="174" y="142" text-anchor="middle" class="t-ok t-s">Event loop + async APIs</text>
+      <text x="174" y="162" text-anchor="middle" class="t-s">one thread, thousands of waits</text>
+      <text x="174" y="178" text-anchor="middle" class="t-m t-s">(no thread per connection)</text>
+      <line x1="174" y1="186" x2="174" y2="222" class="ln" marker-end="url(#c19f1-a)"/>
+      <text x="184" y="208" class="t-m t-s">only a blocking library?</text>
+      <rect x="24" y="226" width="300" height="56" rx="10" class="b"/>
+      <text x="174" y="250" text-anchor="middle" class="t-s">run it on a thread pool</text>
+      <text x="174" y="268" text-anchor="middle" class="t-m t-s">keeps the main thread free</text>
+
+      <rect x="476" y="116" width="300" height="56" rx="10" class="b-u"/>
+      <text x="626" y="140" text-anchor="middle" class="t-u t-s">Get it off the main thread</text>
+      <text x="626" y="158" text-anchor="middle" class="t-m t-s">or every other request waits</text>
+      <path d="M560 172 V206 H540 V222" class="ln" marker-end="url(#c19f1-a)"/>
+      <path d="M692 172 V206 H712 V222" class="ln" marker-end="url(#c19f1-a)"/>
+      <rect x="440" y="226" width="200" height="70" rx="10" class="b"/>
+      <text x="540" y="250" text-anchor="middle" class="t-s">crypto, zlib, fs …</text>
+      <text x="540" y="268" text-anchor="middle" class="t-m t-s">use the async API →</text>
+      <text x="540" y="284" text-anchor="middle" class="t-m t-s">libuv pool (4 threads)</text>
+      <rect x="650" y="226" width="126" height="70" rx="10" class="b"/>
+      <text x="713" y="250" text-anchor="middle" class="t-s">your own JS</text>
+      <text x="713" y="268" text-anchor="middle" class="t-m t-s">worker pool,</text>
+      <text x="713" y="284" text-anchor="middle" class="t-m t-s">≈ one per core</text>
+
+      <rect x="440" y="314" width="336" height="52" rx="10" class="b-k"/>
+      <text x="608" y="336" text-anchor="middle" class="t-k t-s">need crash / leak isolation or many machines?</text>
+      <text x="608" y="354" text-anchor="middle" class="t-s">separate processes: cluster, PM2, a job queue</text>
+      <line x1="645" y1="262" x2="645" y2="312" class="ln" marker-end="url(#c19f1-a)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">সিদ্ধান্তের পথ। প্রথম ধাপ সবসময় মাপা। অপেক্ষার কাজে event loop-ই উত্তর, thread শুধু সেই library-র জন্য যেটা blocking ছাড়া কিছু পারে না। হিসাবের কাজে প্রথম লক্ষ্য main thread মুক্ত রাখা — Node-এর নিজের async API থাকলে সেটা, নিজের JS হলে worker pool; আর বিচ্ছিন্নতা বা একাধিক machine লাগলে process।</p>
+
+  <h3>Thread-এর লুকানো বিল</h3>
+  <p>সিদ্ধান্তের আগে দামের তালিকাটা এক জায়গায় রাখো — প্রতিটা এই Part-এ মাপা:</p>
   <div class="table-wrap"><table>
-    <tr><th>পরিস্থিতি</th><th>ভালো fit</th><th>কেন</th></tr>
-    <tr><td>CPU-bound, কাজগুলো মোটামুটি স্বাধীন, data ভারী share করতে হয় না</td><td><strong>Multiple processes</strong></td><td>সব core কাজে লাগে, isolation ফ্রি — একটার crash/leak অন্যদের ছোঁয় না। (PM2 cluster, worker process)</td></tr>
-    <tr><td>CPU-bound, কিন্তু বড় shared data structure-এর উপর সবাই কাজ করবে</td><td><strong>Threads</strong></td><td>Data copy না করে share করা যায়; process-এর মধ্যে বড় data পাঠানো দামি।</td></tr>
-    <tr><td>I/O-bound, অনেক concurrent connection</td><td><strong>Event loop / async I/O</strong></td><td>অপেক্ষার জন্য thread পোষা অপচয় — এক thread-ই non-blocking ভাবে হাজারটা সামলায় (Chapter 28-29)।</td></tr>
-    <tr><td>I/O-bound, কিন্তু blocking API/library ব্যবহার করতেই হবে</td><td><strong>Thread pool</strong></td><td>Blocking call-গুলো pool-এর thread-এ ফেলে main flow মুক্ত রাখো। (Node-এর libuv নিজেই এটা করে।)</td></tr>
+    <tr><th>দাম</th><th>কোথায় দেখেছ</th></tr>
+    <tr><td>প্রতিটা thread-এর stack-এর জায়গা (Linux-এ ৮ MB virtual)</td><td>১০০০ thread → VmSize ১৪ GB (এই chapter)</td></tr>
+    <tr><td>Core-এর বেশি CPU-র thread দিলে লাভ নেই, উল্টো ক্ষতি</td><td><code>parallel.js</code>: ১২ → ১৬৯ ms, ২৪ → ১৮০ ms (Chapter 14)</td></tr>
+    <tr><td>প্রতিটা ঘুম-জাগায় কয়েক µs, আর ঠান্ডা cache</td><td><code>pingpong.js</code>: ৫.৩৬ µs বনাম spin ০.২২ µs (Chapter 17)</td></tr>
+    <tr><td>ভাগাভাগি করা data মানে race, lock, deadlock</td><td><code>race.js</code>: ৪০ লাখের বদলে ১১ লাখ (Chapter 18)</td></tr>
+    <tr><td>Node worker-এ data copy আর চালু হওয়ার খরচ</td><td><code>share.js</code>: object copy হয় (Chapter 16)</td></tr>
   </table></div>
 
-  <h3>Thread-এর hidden bill</h3>
-  <ul>
-    <li>প্রতিটা thread-এর নিজস্ব stack (default প্রায়ই MB-স্কেলে reserve হয়) — দশ হাজার thread মানে memory-র বিশাল দাবি।</li>
-    <li>Thread যত বেশি, context switch তত বেশি (Chapter 17) — একটা সীমার পরে থread যোগ করলে throughput <em>কমে</em>।</li>
-    <li>Shared state এলেই lock, lock এলেই contention + deadlock-এর ঝুঁকি + মাথার ব্যথা (Chapter 18)।</li>
-  </ul>
+  <div class="table-wrap"><table>
+    <tr><th>পরিস্থিতি</th><th>ভালো হাতিয়ার</th><th>কেন</th></tr>
+    <tr><td>অনেক একসাথে connection, বেশিরভাগ সময় অপেক্ষা</td><td>Event loop / async I/O</td><td>অপেক্ষার জন্য thread পোষা অপচয়; এক thread হাজারটা সামলায়</td></tr>
+    <tr><td>অপেক্ষার কাজ, কিন্তু library শুধু blocking</td><td>Thread pool</td><td>Blocking call pool-এ, main thread মুক্ত</td></tr>
+    <tr><td>Node-এর নিজের ভারী কাজ (crypto, zlib, fs)</td><td>Async API (libuv pool)</td><td>একটা লাইনের বদল — <code>/ping</code> ৪৩২ ms থেকে ৩ ms</td></tr>
+    <tr><td>নিজের CPU-ভারী JS</td><td><code>worker_threads</code> pool, ≈ core-এর সংখ্যা</td><td>সব core কাজে লাগে, oversubscription নেই</td></tr>
+    <tr><td>বিচ্ছিন্নতা লাগবে, বা একাধিক machine</td><td>আলাদা process (cluster, PM2, queue)</td><td>একজনের crash বা leak অন্যকে ছোঁয় না; machine-এর বাইরেও ছড়ানো যায়</td></tr>
+  </table></div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Node single-threaded, তাই multi-core কাজে লাগাতে পারে না।" তোমার JS এক thread-এ চলে, কিন্তু process-এ এক ডজনের কাছাকাছি thread (Chapter 16); async <code>crypto</code>/<code>zlib</code>/<code>fs</code> থেকেই libuv pool-এর চারটা core কাজে লাগে; <code>worker_threads</code> আর <code>cluster</code> দিয়ে বাকি গুলোও। উল্টো ভুলটাও করো না: "আরও thread দিলে I/O দ্রুত হবে" — অপেক্ষার কাজে সীমা database বা network-এর, thread-এর সংখ্যার না।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">RULE OF THUMB</div>
-    <p>CPU-bound হলে parallelism দরকার — core-সংখ্যার কাছাকাছি worker (process বা thread)। I/O-bound হলে parallelism না, দরকার <em>অপেক্ষাটা সস্তায় করা</em> — async I/O/event loop। আর isolation যত পাও নিয়ে নাও: shared state যত কম, রাতের ঘুম তত ভালো।</p>
+    <p>আগে মাপো: <code>real</code> বনাম <code>user + sys</code>। অপেক্ষার কাজে parallelism না, দরকার অপেক্ষাটা সস্তায় করা — event loop। হিসাবের কাজে দরকার parallelism — core-এর সমান worker, আর main thread সবসময় মুক্ত। Thread-এর মধ্যে ভাগাভাগি যত কম, ঘুম তত ভালো; আর যেখানে বিচ্ছিন্নতা দামি, সেখানে thread না, process।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>নিজের কোনো real project-এর workload — CPU না I/O bound? প্রমাণ কী?</li>
-      <li>I/O-bound কাজে ১০০০ thread বানানো অপচয় কেন?</li>
-      <li>CPU-bound কাজে core-এর চেয়ে অনেক বেশি thread দিলে কী হয়?</li>
+      <li>তোমার কাজ CPU-bound নাকি I/O-bound, <code>time</code> দিয়ে কীভাবে বুঝবে? <code>96% cpu</code> আর <code>1% cpu</code>-এর দুই output কী বলে?</li>
+      <li>অপেক্ষার কাজে প্রতিটা connection-এ একটা thread কেন অপচয়? ১০০০ thread-এ VmSize ১৪ GB কিন্তু RSS মাত্র ২৭ MB কেন?</li>
+      <li><code>server.js</code>-এর sync mode-এ <code>/ping</code> ৪৩২ ms কেন, async-এ ৩ ms কেন?</li>
+      <li><code>pool.js</code>-এ প্রথম চারটা আর পরের চারটা কাজ আলাদা সময়ে শেষ হয় কেন? কোন কোন Node কাজ এই pool ব্যবহার করে, আর কোনটা করে না?</li>
+      <li>কখন <code>worker_threads</code> আর কখন আলাদা process বাছবে? CPU-র কাজের worker pool-এর মাপ কত রাখবে, আর কেন?</li>
     </ul>
   </div>

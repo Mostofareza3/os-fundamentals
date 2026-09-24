@@ -69,3 +69,9 @@ pre.diagram .dim{color:var(--muted);}
 .fig .ah-u{fill:var(--user);}
 .fig .ah-k{fill:var(--kernel);}
 .fig .ah-d{fill:var(--danger);}
+/* charts: one data series, hairline grid, text stays in text tokens */
+.fig .ln-s{stroke:var(--series); stroke-width:2; fill:none; stroke-linejoin:round; stroke-linecap:round;}
+.fig .dot-s{fill:var(--series); stroke:var(--panel); stroke-width:2;}
+.fig .grid{stroke:var(--border-soft); stroke-width:1;}
+.fig .axis{stroke:var(--border); stroke-width:1;}
+.fig .band{fill:color-mix(in srgb, var(--text) 5%, transparent);}

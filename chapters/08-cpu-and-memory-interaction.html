@@ -1,33 +1,163 @@
   <p class="part-label">PART 3 · MEMORY</p>
   <h2>Chapter 8 — CPU আর Memory-র কথাবার্তা</h2>
-  <p class="chap-sub">একটা memory access-এর ভিতরের যাত্রাপথ — cache-এর foundation এখানেই।</p>
+  <p class="chap-sub">CPU একটা মান চাইলে ভেতরে ঠিক কী ঘটে: load আর store, cache-এ পাওয়া-না-পাওয়া, memory কেন টুকরো ধরে আসে, আর CPU কীভাবে আগেভাগে আনিয়ে রাখে।</p>
 
-  <h3>একটা load instruction-এর যাত্রা</h3>
-  <p>ধরো CPU-র সামনে instruction: "address X থেকে value আনো" (load)। ঘটনা broadly এরকম:</p>
-  <pre class="diagram">CPU: "address X-এর data চাই"
-  ↓
-1. L1 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও  <span class="dim">(দ্রুততম)</span>
-  ↓ না
-2. L2 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
-  ↓ না
-3. L3 cache-এ আছে?  ── হ্যাঁ → নিয়ে নাও
-  ↓ না
-4. RAM থেকে আনো    <span class="dim">(সবচেয়ে ধীর ধাপ — শত শত cycle)</span>
-  └─ আনার সময় data-টা cache-এও রেখে দাও, পরেরবারের জন্য</pre>
-  <p>মূল idea: CPU সরাসরি RAM-এ যায় না। মাঝে ছোট, দ্রুত memory-র কয়েকটা স্তর আছে — <strong>cache hierarchy</strong>। সম্প্রতি ব্যবহৃত data cache-এ থাকে; পাওয়া গেলে <strong>cache hit</strong> (সস্তা), না পেলে <strong>cache miss</strong> (দামি — RAM পর্যন্ত যাত্রা)।</p>
+  <p>Chapter 7-এর শেষ সংখ্যাগুলো মনে করো: RAM থেকে একটা মান আনতে এই Mac-এ ~১১৯ ns, মানে CPU-র প্রায় ৫০০ cycle। অথচ একই <code>chase.js</code> ১৬ KB-র array-তে দিল ~১.৪ ns। মাঝখানে কী আছে যেটা ৮০ গুণ তফাত গড়ে দিল? এই chapter সেই মাঝখানের গল্প। আর Chapter 4 থেকে একটা জিনিস লাগবে: CPU-র ভেতরে কয়েক ডজন <strong>register</strong> থাকে — সবচেয়ে দ্রুত, সবচেয়ে ছোট storage।</p>
+
+  <h3>Load আর store: CPU memory ছোঁয় কীভাবে</h3>
+  <p>CPU-র যে অংশ আসলে যোগ-বিয়োগ-তুলনা করে (Chapter 12-এ এর নাম পাবে: ALU), সে কাজ করে শুধু register-এর মান নিয়ে। কিন্তু তোমার data থাকে memory-তে — লাখ লাখ মান, register মাত্র কয়েক ডজন। তাই দুই জগতের মাঝে মান আনা-নেওয়ার জন্য আলাদা instruction লাগে:</p>
+  <ul>
+    <li><strong>Load</strong> — memory-র একটা address থেকে মান পড়ে register-এ আনো।</li>
+    <li><strong>Store</strong> — register-এর মান memory-র একটা address-এ লেখো।</li>
+  </ul>
+  <p>Chapter 4-এর <code>hello</code>-র disassembly-তে এরা ছিল:</p>
+  <div class="codewrap"><pre><code>str  x8, [x9]           ; store: register x8-এর মান লেখো x9-এ রাখা address-এ
+ldr  w0, [sp, #0x8]     ; load:  (SP + 8) address থেকে ৪ byte পড়ে w0-তে আনো</code></pre></div>
+  <p>ARM-এ (Apple Silicon) নিয়মটা কড়া: হিসাব শুধু register-এ, memory ছোঁয়া শুধু load/store দিয়ে। Intel/AMD-এর x86-এ একটা instruction-এর ভেতরেই memory থেকে পড়ে যোগ করা যায়, কিন্তু CPU ভেতরে সেটাকেও load আর যোগ — দুই ধাপে ভাঙে। মানে JS-এর <code>s += a[i]</code> CPU-র চোখে: <code>a[i]</code>-এর address হিসাব, load, যোগ। প্রতিটা <code>a[i]</code> একটা load; প্রশ্ন শুধু সেই load কত দূর পর্যন্ত যেতে হয়।</p>
+
+  <h3>Cache: কাছে রাখা ছোট, দ্রুত copy</h3>
+  <p>প্রতিটা load যদি RAM পর্যন্ত যেত, CPU-র জীবনের সিংহভাগ কাটত অপেক্ষায় — ৫০০ cycle বসে থেকে এক cycle কাজ। অথচ program-রা একটা জিনিস প্রায়ই করে: যা এইমাত্র ছুঁয়েছে, সেটাই আবার ছোঁয় — loop-এর counter, একই object-এর field, একই function-এর instruction।</p>
+  <p>তাই CPU-র গা ঘেঁষে রাখা হয় ছোট কিন্তু অনেক দ্রুত memory (Chapter 7-এর SRAM), যেখানে সম্প্রতি ব্যবহৃত memory-র copy থাকে। এর নাম <strong>cache</strong>। Load এলে CPU আগে cache-এ খোঁজে। পাওয়া গেলে <strong>cache hit</strong> — কয়েক cycle-এ কাজ শেষ। না পেলে <strong>cache miss</strong> — পরের, বড় কিন্তু ধীর স্তরে যেতে হয়। স্তরগুলো:</p>
+  <ul>
+    <li><strong>L1</strong> — প্রতিটা core-এর নিজস্ব, সবচেয়ে ছোট আর দ্রুত।</li>
+    <li><strong>L2</strong> — বড়, একটু ধীর; কোনো CPU-তে core-প্রতি, কোনোটায় কয়েকটা core মিলে ভাগ করা।</li>
+    <li><strong>L3</strong> বা Apple-এর <strong>SLC</strong> (system level cache) — আরও বড়, সব core-এর জন্য এক।</li>
+    <li>তারপর <strong>RAM</strong>।</li>
+  </ul>
+  <p>গুরুত্বপূর্ণ কথা: এটা পুরোপুরি hardware-এর কাজ। "এটা cache-এ রাখো" বলার কোনো সাধারণ instruction নেই, kernel-ও প্রতিটা load-এ মাথা ঘামায় না। তোমার হাতে একমাত্র লাগাম হলো access pattern — কোন ক্রমে, কতটা ছড়িয়ে memory ছুঁচ্ছ। তোমার machine-এর cache-এর মাপ দেখো:</p>
+  <div class="codewrap"><pre><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize   # macOS (Apple Silicon)
+lscpu --caches                                                 # Linux</code></pre></div>
+  <p>আমার Mac-এ performance core-প্রতি L1 data cache <code>131072</code> byte (১২৮ KB), আর performance core-দের ভাগ করা L2 <code>16777216</code> byte (১৬ MB)। Chapter 7-এর <code>chase.js</code> দিয়ে তিনটা মাপে চালালে ছবিটা পরিষ্কার: ১৬ KB-তে <code>1.4 ns</code> (পুরোটা L1-এ আঁটে), ২৫৬ KB-তে <code>4.0 ns</code> (L1-এ আঁটে না, L2-তে আঁটে), ৫১২ MB-তে <code>118 ns</code> (কোথাও আঁটে না — প্রতিবার RAM)। প্রতিটা স্তরের পুরো মাপজোখ Chapter 13-এ।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="A load checks L1, then L2, then the shared SLC, then RAM; the whole cache line comes back and a copy is kept in L2 and L1">
+      <defs>
+        <marker id="c08f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c08f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-m t-s">a load travels right until some level has the data (a hit)</text>
+      <rect x="24" y="56" width="110" height="80" rx="8" class="b-u"/>
+      <text x="79" y="90" text-anchor="middle" class="t-h">CPU core</text>
+      <text x="79" y="110" text-anchor="middle" class="t-m t-s">registers</text>
+      <rect x="160" y="56" width="120" height="80" rx="8" class="b"/>
+      <text x="220" y="90" text-anchor="middle" class="t-h">L1</text>
+      <text x="220" y="110" text-anchor="middle" class="t-m t-s">128 KB · ~1.4 ns</text>
+      <rect x="306" y="56" width="140" height="80" rx="8" class="b"/>
+      <text x="376" y="90" text-anchor="middle" class="t-h">L2</text>
+      <text x="376" y="110" text-anchor="middle" class="t-m t-s">16 MB · ~4–8 ns</text>
+      <rect x="472" y="56" width="130" height="80" rx="8" class="b"/>
+      <text x="537" y="90" text-anchor="middle" class="t-h">SLC</text>
+      <text x="537" y="110" text-anchor="middle" class="t-m t-s">shared by all cores</text>
+      <rect x="628" y="56" width="148" height="80" rx="8" class="b-k"/>
+      <text x="702" y="90" text-anchor="middle" class="t-k">RAM</text>
+      <text x="702" y="110" text-anchor="middle" class="t-m t-s">24 GB · ~120 ns</text>
+      <line x1="134" y1="96" x2="158" y2="96" class="ln" marker-end="url(#c08f1-a)"/>
+      <line x1="280" y1="96" x2="304" y2="96" class="ln" marker-end="url(#c08f1-a)"/>
+      <line x1="446" y1="96" x2="470" y2="96" class="ln" marker-end="url(#c08f1-a)"/>
+      <line x1="602" y1="96" x2="626" y2="96" class="ln" marker-end="url(#c08f1-a)"/>
+      <text x="293" y="50" text-anchor="middle" class="t-d t-s">miss</text>
+      <text x="459" y="50" text-anchor="middle" class="t-d t-s">miss</text>
+      <text x="615" y="50" text-anchor="middle" class="t-d t-s">miss</text>
+      <path d="M702 136 V178 H79 V140" class="ln-u" marker-end="url(#c08f1-u)"/>
+      <rect x="352" y="170" width="16" height="16" rx="2" class="b-u"/>
+      <text x="24" y="210" class="t-u t-s">the whole cache line (128 bytes here) comes back — not just the value you asked for —</text>
+      <text x="24" y="230" class="t-u t-s">and a copy stays in L2 and L1, so the next touch of anything in that line is a hit</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা load বাঁ থেকে ডানে যায়, যতক্ষণ না কোনো স্তরে data পাওয়া যায়। RAM পর্যন্ত যেতে হলে ফেরার পথে পুরো একটা cache line আসে আর প্রতিটা স্তরে তার copy থেকে যায়। সময়গুলো এই Mac-এ <code>chase.js</code> দিয়ে মাপা।</p>
+
+  <h3>Cache line: memory আসে টুকরো ধরে</h3>
+  <p>Cache যদি প্রতিটা byte আলাদা করে রাখত, তাহলে প্রতিটা byte-এর পাশে লিখে রাখতে হতো "এটা কোন address-এর copy" — সেই হিসাবের খাতাই data-র চেয়ে বড় হয়ে যেত। তার উপর, program একটা byte ছুঁলে প্রায়ই পাশেরগুলোও ছোঁয় — array-র পরের element, object-এর পরের field।</p>
+  <p>তাই cache আর RAM-এর মধ্যে লেনদেন হয় নির্দিষ্ট মাপের টুকরো ধরে, যার নাম <strong>cache line</strong>। তুমি ৪ byte চাইলেও RAM থেকে আসে পুরো line; তার পরে সেই line-এর যেকোনো byte ছোঁয়া মানে hit। মাপটা CPU-ভেদে আলাদা:</p>
+  <div class="codewrap"><pre><code>sysctl -n hw.cachelinesize            # macOS — Apple Silicon-এ 128
+getconf LEVEL1_DCACHE_LINESIZE        # Linux — Intel/AMD-এ সাধারণত 64</code></pre></div>
+  <p>এবার প্রমাণ। নিচের script ১২৮ MB জুড়ে ছড়ানো ১০ লাখ line-এ একটা এলোমেলো শিকল বানায়: প্রতিটা line-এর প্রথম ঘরে লেখা থাকে পরের কোন line-এ যেতে হবে (Chapter 7-এর pointer chase, শুধু এবার line ধরে)। তারপর দুইবার শিকল ধরে হাঁটে — একবার প্রতি line থেকে শুধু ওই একটা মান পড়ে, আরেকবার প্রতি line-এর ৩২টা মানই পড়ে যোগ করে।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — cacheline.js</div>
+    <div class="codewrap"><pre><code>const LINE = 128;                          // Apple Silicon-এ 128 byte; Intel/AMD-এ 64 দাও
+const PER_LINE = LINE / 4;                 // এক line-এ কতগুলো Int32
+const LINES = 2 ** 20;                     // ~১০ লাখ line × 128 B = 128 MB, cache-এ আঁটবে না
+const a = new Int32Array(LINES * PER_LINE).fill(1);
+
+// প্রতিটা line-এর প্রথম ঘরে লেখা থাকবে "পরের line কোনটা" — এলোমেলো একটা চক্র
+const order = new Int32Array(LINES);
+for (let i = 0; i &lt; LINES; i++) order[i] = i;
+for (let i = LINES - 1; i &gt; 0; i--) {
+  const j = Math.floor(Math.random() * (i + 1));
+  const t = order[i]; order[i] = order[j]; order[j] = t;
+}
+for (let i = 0; i &lt; LINES; i++) a[order[i] * PER_LINE] = order[(i + 1) % LINES];
+
+function firstOnly() {                     // প্রতি line থেকে শুধু "পরের ঠিকানা"
+  let line = 0;
+  for (let k = 0; k &lt; LINES; k++) line = a[line * PER_LINE];
+  return line;
+}
+function wholeLine() {                     // একই পথ, কিন্তু প্রতি line-এর বাকি ৩১টা মানও যোগ করো
+  let line = 0, s = 0;
+  for (let k = 0; k &lt; LINES; k++) {
+    const base = line * PER_LINE;
+    for (let j = 1; j &lt; PER_LINE; j++) s += a[base + j];
+    line = a[base];
+  }
+  return line + s;
+}
+for (const [label, fn] of [['1 value per line   ', firstOnly], ['all 32 values/line ', wholeLine]]) {
+  fn();
+  const t = performance.now();
+  fn();
+  const ms = performance.now() - t;
+  console.log(label, ms.toFixed(0).padStart(4), 'ms  =', (ms * 1e6 / LINES).toFixed(0), 'ns per line');
+}</code></pre></div>
+    <p>আমার Mac-এ:</p>
+    <div class="codewrap"><pre><code>1 value per line     124 ms  = 118 ns per line
+all 32 values/line   128 ms  = 122 ns per line</code></pre></div>
+  </div>
+  <p>৩২ গুণ বেশি মান পড়া হলো, সময় বাড়ল মাত্র ৩%। প্রতিটা line-এর দাম ~১১৮ ns — সেটা দেওয়া হয় প্রথম byte ছোঁয়ার সময়ই; তারপর বাকি ৩১টা মান এসে বসে আছে L1-এ, প্রায় বিনামূল্যে। উল্টো দিক থেকে ভাবলে: প্রতি line থেকে মাত্র একটা মান নিলে তুমি ১২৮ byte আনার দাম দিচ্ছ ৪ byte কাজে লাগাতে — বাকি ৯৭% bandwidth নষ্ট।</p>
+  <p>Store-ও line ধরেই কাজ করে। CPU একটা মান লিখলে সেটা প্রথমে লেখা হয় cache-এর line-এ, আর line-টা "বদলানো হয়েছে" (dirty) চিহ্ন পায়; RAM-এ ফেরত লেখা হয় পরে, যখন cache-এ জায়গা খালি করতে line-টাকে সরাতে হয়। এর নাম <strong>write-back</strong>। নাহলে একটা loop-এর counter-এর প্রতিটা <code>++</code> ১০০ ns-এর RAM যাত্রা হতো। দাম হলো একটা নতুন প্রশ্ন: একাধিক core-এর প্রত্যেকের নিজের L1-এ যদি একই line-এর আলাদা copy থাকে, আর একজন সেটা বদলায় — অন্যজন জানবে কীভাবে? উত্তর Chapter 13-এ।</p>
+
+  <h3>Prefetcher: CPU যখন আগেভাগে আনে</h3>
+  <p>একটা array শুরু থেকে শেষ পর্যন্ত পড়লেও প্রতি ৩২টা Int32-এ একবার নতুন line লাগে। CPU যদি প্রতিবার line-এর জন্য ~১০০ ns বসে থাকত, একটানা পড়াও ধীর হতো। অথচ Chapter 7-এ copy করার সময় ~৫৮ GB/s পেয়েছিলাম।</p>
+  <p>কারণ CPU-র ভেতরে একটা circuit আছে যে memory access-এর ধরন খেয়াল করে — "এ তো পরপর line পড়ছে" বা "এ প্রতি ৬৪ byte পরপর লাফাচ্ছে" — আর অনুমান করে পরের line গুলো চাওয়ার আগেই RAM থেকে আনিয়ে রাখে। এর নাম <strong>prefetcher</strong>। অনুমান মিললে load এসে দেখে data আগে থেকেই cache-এ। কিন্তু pattern না থাকলে সে কিছুই অনুমান করতে পারে না।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — prefetch.js</div>
+    <div class="codewrap"><pre><code>const N = 32 * 2 ** 20;                    // ৩ কোটির বেশি Int32 = 128 MB
+const a = new Int32Array(N).fill(1);
+const inOrder = new Int32Array(N);         // 0, 1, 2, 3, ...
+const shuffled = new Int32Array(N);        // একই index গুলো, এলোমেলো ক্রমে
+for (let i = 0; i &lt; N; i++) inOrder[i] = shuffled[i] = i;
+for (let i = N - 1; i &gt; 0; i--) {
+  const j = Math.floor(Math.random() * (i + 1));
+  const t = shuffled[i]; shuffled[i] = shuffled[j]; shuffled[j] = t;
+}
+function sum(idx) { let s = 0; for (let k = 0; k &lt; N; k++) s += a[idx[k]]; return s; }
+for (const [label, idx] of [['in order', inOrder], ['shuffled', shuffled]]) {
+  sum(idx);
+  const t = performance.now();
+  const s = sum(idx);
+  console.log(label, (performance.now() - t).toFixed(0).padStart(5), 'ms  sum =', s);
+}</code></pre></div>
+    <p>আমার Mac-এ <code>in order 17 ms</code>, <code>shuffled 168 ms</code> — একই যোগফল (<code>33554432</code>), একই সংখ্যক load, ১০ গুণ পার্থক্য।</p>
+  </div>
+  <p>ক্রমানুসারে পড়লে দুইটা সুবিধা একসাথে: প্রতিটা line-এর ৩২টা মানই কাজে লাগে, আর prefetcher পরের line আগেই এনে রাখে। এলোমেলো ক্রমে প্রায় প্রতিটা load নতুন একটা line চায়, আর prefetcher কোনো pattern খুঁজে পায় না। (এলোমেলো হয়েও এটা Chapter 7-এর pointer chase-এর মতো ১১৮ ns প্রতি access না, কারণ এখানে পরের address আগের load-এর উপর নির্ভর করে না — CPU একসাথে অনেকগুলো miss চালিয়ে দিতে পারে। ওই কৌশল Chapter 14-এ।)</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Cache OS বা runtime manage করে; দরকার হলে কিছু একটা cache-এ 'রেখে' দেওয়া যায়।" CPU cache-এর বেলায় না। কোন line থাকবে, কোনটা বাদ যাবে — সব সিদ্ধান্ত hardware প্রতি nanosecond-এ নিজে নেয়। (Redis বা HTTP cache সম্পূর্ণ আলাদা জিনিস, শুধু নামটা এক।) তোমার লাগাম দুইটা: data কীভাবে সাজাচ্ছ (পাশাপাশি নাকি ছড়ানো), আর কোন ক্রমে ছুঁচ্ছ।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Memory access-এর cost একটা fixed number না — এটা একটা <strong>lottery</strong>: data কোথায় বসে আছে তার উপর নির্ভর করে একই instruction সস্তাও হতে পারে, শতগুণ দামিও হতে পারে। Performance-sensitive code লেখার সময় আসল খেলা হলো এই lottery-তে জেতার সম্ভাবনা বাড়ানো — মানে cache-friendly access pattern। কীভাবে, সেটা Chapter 13-এ।</p>
+    <p>প্রতিটা load একটাই প্রশ্ন করে: "এই address-এর line এখন কোথায় আছে?" L1-এ হলে ~১ ns, L2-তে কয়েক ns, RAM-এ ~১২০ ns। Line আসে পুরোটা একসাথে (৬৪ বা ১২৮ byte), আর pattern বোঝা গেলে prefetcher আগেভাগে আনে। দ্রুত code মানে প্রায়ই কম instruction না — কম নতুন line।</p>
   </div>
-
-  <p>আরেকটা সূক্ষ্ম কথা: CPU byte ধরে ধরে RAM থেকে আনে না — আনে <strong>cache line</strong> ধরে (সাধারণত 64 bytes-এর chunk)। মানে address X চাইলে তার আশেপাশের byte গুলোও ফাউ হিসেবে cache-এ চলে আসে। এই এক তথ্যই sequential vs random access-এর পুরো পার্থক্যের বীজ — মাথায় রেখো।</p>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>CPU data খোঁজার order-টা কী?</li>
-      <li>Cache hit আর miss-এর cost-এর পার্থক্য এত বড় কেন?</li>
-      <li>Cache line ধরে data আনার ফলে কী সুবিধা তৈরি হয়?</li>
+      <li>Load আর store কী? JS-এর <code>s += a[i]</code> CPU-র ভাষায় কী কী ধাপে ভাঙে, আর তার কোন ধাপটার দাম অনিশ্চিত?</li>
+      <li>Cache hit আর miss কী? একটা load L1 থেকে RAM পর্যন্ত কোন ক্রমে খোঁজে, আর <code>chase.js</code>-এর ১৬ KB / ২৫৬ KB / ৫১২ MB-এর তিনটা সংখ্যা কোন স্তরের কথা বলে?</li>
+      <li>Cache line কী? <code>cacheline.js</code>-এ ৩২ গুণ বেশি মান পড়েও সময় প্রায় একই থাকল কেন?</li>
+      <li><code>prefetch.js</code>-এ একই যোগফল এলোমেলো ক্রমে ১০ গুণ ধীর কেন? Prefetcher কখন সাহায্য করতে পারে না?</li>
+      <li>Write-back না থাকলে একটা loop-এর counter বাড়ানো কেন ভয়ংকর ধীর হতো? আর write-back কোন নতুন সমস্যা তৈরি করে?</li>
     </ul>
   </div>

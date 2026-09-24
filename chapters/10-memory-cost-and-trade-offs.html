@@ -1,37 +1,162 @@
   <p class="part-label">PART 3 · MEMORY</p>
   <h2>Chapter 10 — Memory-র Cost আর Trade-off</h2>
-  <p class="chap-sub">Virtual memory ফ্রি না — কোথায় কী দাম দিতে হয়, সেটার engineering হিসাব।</p>
+  <p class="chap-sub">Virtual memory বিনামূল্যে না। কোথায় কত দাম — TLB miss, page fault, swap, OOM kill — আর page-এর মাপ বদলে বা file map করে কীভাবে সেই দাম কমানো যায়।</p>
 
-  <h3>Page size-এর টানাটানি</h3>
-  <p>Page 4KB কেন — 1 byte বা 1GB না কেন? দুই দিকেই খরচ আছে:</p>
+  <p>Chapter 9-এর সারকথা: memory ভাগ হয় <strong>page</strong>-এ (macOS-এ ১৬ KB, বেশিরভাগ Linux-এ ৪ KB); প্রতিটা process-এর <strong>page table</strong> বলে কোন page কোন physical <strong>frame</strong>-এ; CPU-র <strong>MMU</strong> প্রতিটা access-এ অনুবাদ করে, সাম্প্রতিক অনুবাদ রাখে <strong>TLB</strong>-তে; আর frame না থাকা page ছুঁলে <strong>page fault</strong> — kernel frame বসিয়ে দেয়। এই প্রতিটা ধাপের একটা দাম আছে। এই chapter সেই দামের হিসাব।</p>
+
+  <h3>Page-এর মাপ: ছোট বনাম বড়</h3>
+  <p>Page ৪ KB কেন, ৪০ byte বা ৪০ MB কেন না? দুই দিকেই খরচ:</p>
   <ul>
-    <li>Page <strong>ছোট</strong> হলে → page table-এ entry বেশি → table-এর নিজেরই memory খরচ বাড়ে, TLB-তে কম range ধরে।</li>
-    <li>Page <strong>বড়</strong> হলে → <strong>internal fragmentation</strong>: 5KB data-র জন্য 2MB page দিলে বাকিটা অপচয়। (তুলনায়, heap allocator-এর free space টুকরা টুকরা হয়ে যাওয়াটা <strong>external fragmentation</strong> — Chapter 6-এ দেখেছিলে।)</li>
+    <li><strong>ছোট page</strong> — একই memory ঢাকতে বেশি page, মানে page table-এ বেশি entry (table নিজেই memory খায়), আর TLB-তে প্রতিটা entry কম জায়গা ঢাকে।</li>
+    <li><strong>বড় page</strong> — ৫ KB data-র জন্য ২ MB-র page দিলে বাকিটা অকেজো পড়ে থাকে। Page-এর ভেতরের এই অপচয়কে বলে <strong>internal fragmentation</strong> (Chapter 6-এর heap-এর টুকরো টুকরো খালি জায়গা ছিল তার উল্টো — external fragmentation)। তার উপর permission আর lazy loading-এর সূক্ষ্মতাও কমে যায়।</li>
   </ul>
-  <p>4KB একটা historical sweet spot। Database/বড়-memory workload-এর জন্য Linux-এ "huge pages" (2MB) option-ও আছে — TLB-র উপর চাপ কমাতে।</p>
+  <p>৪ KB হলো কয়েক দশকের পুরনো একটা আপস; Apple Silicon ১৬ KB বেছেছে, কারণ আজকের RAM অনেক বড়। আর বড় memory-র কাজের জন্য প্রায় সব CPU আরও বড় page-ও সমর্থন করে — <strong>huge page</strong> (সাধারণত ২ MB, কোথাও ১ GB)। Linux-এ একটা feature আছে, <strong>Transparent Huge Pages</strong> (THP): বড় একটানা memory চাইলে kernel নিজে থেকেই সম্ভব হলে ২ MB-র page ব্যবহার করে। Chapter 9-এর <code>lazy.js</code>-এর Linux version-এ fault কম আসার রহস্য এটাই:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <div class="codewrap"><pre><code>docker run --rm node:22-alpine sh -c 'cat /sys/kernel/mm/transparent_hugepage/enabled; node -e "
+const f = () =&gt; process.resourceUsage().minorPageFault;
+const f0 = f();
+const buf = new Uint8Array(1024 * 2 ** 20);                 // ১ GB
+for (let i = 0; i &lt; buf.length; i += 4096) buf[i] = 1;     // প্রতি ৪ KB-তে ১ byte
+const huge = require(\"fs\").readFileSync(\"/proc/self/smaps_rollup\", \"utf8\").match(/AnonHugePages:.*/)[0];
+console.log(\"faults:\", f() - f0, \"|\", huge);"'</code></pre></div>
+    <p>আমার output: প্রথম লাইন <code>[always] madvise never</code> (THP চালু), তারপর <code>faults: 872 | AnonHugePages: 1050624 kB</code>।</p>
+  </div>
+  <p>৪ KB page হলে ১ GB ছুঁতে ২,৬২,১৪৪টা fault লাগত; এসেছে মাত্র ৮৭২টা, আর <code>AnonHugePages</code> বলছে প্রায় পুরো ১ GB-ই ২ MB-র page-এ বসেছে (১ GB ÷ ২ MB = ৫১২; বাকিগুলো Node-এর নিজের কাজের — কিছু না ছুঁয়ে শুধু ১ GB চাইলেই ~১১০টা fault আসে)। প্রতিটা fault-এ kernel ৪ KB-র বদলে ২ MB-র frame বসিয়েছে।</p>
 
-  <h3>কোন operation-এর কী দাম</h3>
-  <div class="table-wrap"><table>
-    <tr><th>ঘটনা</th><th>Cost-এর ধরন</th></tr>
-    <tr><td>TLB hit</td><td>প্রায় free — translation cache থেকেই।</td></tr>
-    <tr><td>TLB miss</td><td>Page table হেঁটে আসতে হয় (memory access) — লক্ষণীয় কিন্তু ছোট দাম। এলোমেলো বিশাল data structure ঘাঁটলে এটা জমে জমে বড় হয়।</td></tr>
-    <tr><td>Minor page fault</td><td>Kernel-এ যেতে হয়, কিন্তু disk লাগে না (যেমন প্রথমবার ছোঁয়া lazy page)। মাঝারি দাম।</td></tr>
-    <tr><td>Major page fault</td><td><strong>Disk থেকে page আনতে হয়</strong> (swap বা file)। দাম কয়েক মাত্রা (orders of magnitude) বেশি। এগুলো ঘনঘন হলে performance ধসে যায়।</td></tr>
-  </table></div>
+  <h3>TLB reach: অনুবাদের cache কত দূর ঢাকে</h3>
+  <p>TLB ছোট — কয়েকশো থেকে কয়েক হাজার entry। প্রতিটা entry একটা page-এর অনুবাদ। তাই TLB মোট যতটা memory ঢাকতে পারে (<strong>TLB reach</strong>) = entry-র সংখ্যা × page-এর মাপ। ধরো ২০০০ entry: ৪ KB page-এ reach মাত্র ৮ MB, ১৬ KB-তে ৩২ MB, আর ২ MB-র huge page-এ ৪ GB। তোমার program যদি এর চেয়ে বেশি page জুড়ে ছড়ানো data ঘাঁটে, প্রায় প্রতিটা access-এ TLB miss — আর প্রতিটা miss মানে MMU-র page table-এর গাছ ধরে হাঁটা।</p>
+  <p>এটা মাপার কৌশল: data-র পরিমাণ একই রাখো আর এত ছোট রাখো যে পুরোটা cache-এ আঁটে (যাতে cache miss মাপে না ঢোকে), শুধু বদলাও কতগুলো আলাদা page-এ ছড়ানো।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — tlb.js</div>
+    <div class="codewrap"><pre><code>// একই পরিমাণ data (৪০৯৬টা cache line = 512 KB, পুরোটা L2-তে আঁটে),
+// একবার ঘেঁষাঘেঁষি করে রাখা, একবার ৪০৯৬টা আলাদা page-এ ছড়ানো।
+const PAGE = 16384, LINE = 128, N = 4096;          // Linux/x86-এ PAGE = 4096, LINE = 64 দাও
+const a = new Int32Array((N * PAGE) / 4);          // 64 MB জায়গা, কিন্তু ব্যবহার হবে সামান্য
 
-  <h3>Memory mapping: file-কে memory বানিয়ে ফেলা</h3>
-  <p>Virtual memory-র আরেকটা elegant ব্যবহার — <strong>mmap</strong>। একটা file-কে process-এর address space-এ map করে দাও; এরপর file পড়া মানে স্রেফ memory পড়া। প্রথম access-এ page fault হবে, kernel disk থেকে page আনবে, তারপর থেকে direct। Database engine, dynamic linker (shared library load), বড় file processing — সবখানে এই কৌশল। এখানে দেখো কীভাবে concepts জোড়া লাগছে: page fault যেটা Chapter 9-এ "error handling" মনে হচ্ছিল, সেটাই এখানে একটা <em>loading mechanism</em>।</p>
+function build(spread) {
+  // i-তম line কোথায়: ঘন হলে পরপর; ছড়ানো হলে প্রতিটা আলাদা page-এ
+  const where = i =&gt; spread ? (i * PAGE + (i * LINE) % PAGE) / 4 : (i * LINE) / 4;
+  const order = Array.from({ length: N }, (_, i) =&gt; i).sort(() =&gt; Math.random() - 0.5);
+  for (let k = 0; k &lt; N; k++) a[where(order[k])] = where(order[(k + 1) % N]);
+  return where(order[0]);
+}
+function chase(start, steps) { let p = start; for (let i = 0; i &lt; steps; i++) p = a[p]; return p; }
+
+for (const [label, spread] of [['dense  (32 pages)  ', false], ['spread (4096 pages)', true]]) {
+  const start = build(spread);
+  chase(start, 1e6);
+  const t = process.hrtime.bigint();
+  chase(start, 2e7);
+  console.log(label, (Number(process.hrtime.bigint() - t) / 2e7).toFixed(1), 'ns per access');
+}</code></pre></div>
+    <p>আমার Mac-এ: <code>dense (32 pages) 6.5 ns</code>, <code>spread (4096 pages) 15.1 ns</code>।</p>
+  </div>
+  <p>একই ৫১২ KB data, একই সংখ্যক access, দুই ক্ষেত্রেই পুরোটা L2 cache-এ বসে। তবু ছড়ানো version দ্বিগুণের বেশি ধীর — বাড়তি প্রতিটা nanosecond খরচ হয়েছে ঠিকানা অনুবাদ করতে। এজন্যই বিশাল memory নিয়ে কাজ করা software — PostgreSQL (<code>huge_pages</code> setting), JVM (<code>-XX:+UseLargePages</code>), বড় in-memory cache — প্রায়ই huge page চালু করে।</p>
+
+  <h3>Page fault-এর দুই জাত: minor আর major</h3>
+  <p>Chapter 9-এ যে fault দেখেছ, সেখানে kernel-কে disk ছুঁতে হয়নি — একটা খালি frame নিয়ে শূন্য দিয়ে ভরে বসিয়ে দিয়েছে। এর নাম <strong>minor page fault</strong>, দাম মোটামুটি এক microsecond-এর ঘরে (Chapter 9-এর Mac-এ ৬৫ হাজার fault সহ পুরো loop লেগেছিল ৬২ ms)। কিন্তু কখনো কখনো page-এর data শুধু disk-এ আছে — তখন kernel-কে disk থেকে পড়তে হয়, আর process ততক্ষণ ঘুমায়। এর নাম <strong>major page fault</strong>, দাম কয়েকশো microsecond থেকে কয়েক millisecond — minor-এর চেয়ে শত-হাজার গুণ।</p>
+  <p>Major fault-এর সবচেয়ে চেনা উৎস <strong>swap</strong>: RAM কম পড়লে kernel কম-ব্যবহৃত page গুলোর data disk-এর একটা বিশেষ জায়গায় (swap area) লিখে রাখে, frame ছেড়ে দেয়, আর page table entry-তে "present না" লিখে দেয়। সেই page আবার ছুঁলে major fault — disk থেকে ফিরিয়ে আনো। নিজে ঘটাও: container-কে ২০০ MB RAM দাও (swap সহ মোট ১ GB পর্যন্ত), আর ৬০০ MB ছোঁয়াও:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker) — swap</div>
+    <div class="codewrap"><pre><code>docker run --rm --memory=200m --memory-swap=1g node:22-alpine node -e "
+const ru = () =&gt; process.resourceUsage();
+const buf = new Uint8Array(600 * 2 ** 20);          // 600 MB — container-এর RAM সীমা 200 MB
+let t = performance.now();
+for (let i = 0; i &lt; buf.length; i += 4096) buf[i] = 1;
+console.log('first touch :', (performance.now() - t).toFixed(0), 'ms | major faults so far:', ru().majorPageFault);
+t = performance.now();
+for (let i = 0; i &lt; buf.length; i += 4096) buf[i] += 1;   // আবার পুরোটা ছোঁয়া
+console.log('second pass :', (performance.now() - t).toFixed(0), 'ms | major faults so far:', ru().majorPageFault);"</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>first touch : 123 ms | major faults so far: 204
+second pass : 1562 ms | major faults so far: 39228</code></pre></div>
+  </div>
+  <p>প্রথমবার ছোঁয়ার সময় kernel শুধু নতুন frame দিচ্ছিল, আর RAM ফুরালে পুরনো page swap-এ ঠেলে দিচ্ছিল। দ্বিতীয়বার ঘুরতে গিয়ে প্রায় সব page-ই ততক্ষণে swap-এ — ৩৯ হাজার major fault, আর একই loop ১২ গুণের বেশি ধীর। এখন কল্পনা করো তোমার server-এর যে data সারাক্ষণ লাগে (তার <strong>working set</strong>) সেটাই RAM-এর চেয়ে বড়: system তখন আসল কাজের চেয়ে বেশি সময় কাটায় page disk-এ পাঠাতে আর ফিরিয়ে আনতে। এই অবস্থার নাম <strong>thrashing</strong>, আর তখন কোনো code optimization কাজে আসে না — হয় RAM বাড়াও, নয় working set ছোট করো।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Staircase of memory costs: TLB hit almost free, TLB miss adds nanoseconds, minor page fault costs about a microsecond, major page fault costs hundreds of microseconds to milliseconds, OOM kill ends the process">
+      <rect x="24" y="220" width="140" height="56" rx="8" class="b-ok"/>
+      <text x="94" y="244" text-anchor="middle" class="t-ok">TLB hit</text>
+      <text x="94" y="264" text-anchor="middle" class="t-m t-s">≈ free</text>
+      <rect x="176" y="178" width="140" height="98" rx="8" class="b"/>
+      <text x="246" y="202" text-anchor="middle" class="t-h">TLB miss</text>
+      <text x="246" y="222" text-anchor="middle" class="t-m t-s">page-table walk</text>
+      <text x="246" y="242" text-anchor="middle" class="t-s">+ ~10 ns</text>
+      <text x="246" y="262" text-anchor="middle" class="t-m t-s">(tlb.js: 6.5 → 15.1)</text>
+      <rect x="328" y="130" width="140" height="146" rx="8" class="b"/>
+      <text x="398" y="154" text-anchor="middle" class="t-h">minor fault</text>
+      <text x="398" y="174" text-anchor="middle" class="t-m t-s">kernel gives a</text>
+      <text x="398" y="192" text-anchor="middle" class="t-m t-s">zeroed frame</text>
+      <text x="398" y="214" text-anchor="middle" class="t-s">~1 µs</text>
+      <rect x="480" y="78" width="140" height="198" rx="8" class="b-k"/>
+      <text x="550" y="102" text-anchor="middle" class="t-k">major fault</text>
+      <text x="550" y="122" text-anchor="middle" class="t-m t-s">read page from disk</text>
+      <text x="550" y="140" text-anchor="middle" class="t-m t-s">(swap or file)</text>
+      <text x="550" y="162" text-anchor="middle" class="t-s">~100 µs – ms</text>
+      <text x="550" y="184" text-anchor="middle" class="t-m t-s">swap demo: 12× slower</text>
+      <rect x="632" y="30" width="144" height="246" rx="8" class="b-d"/>
+      <text x="704" y="54" text-anchor="middle" class="t-d">OOM kill</text>
+      <text x="704" y="74" text-anchor="middle" class="t-m t-s">no frame to give</text>
+      <text x="704" y="92" text-anchor="middle" class="t-m t-s">at all</text>
+      <text x="704" y="114" text-anchor="middle" class="t-s">process dies</text>
+      <text x="704" y="132" text-anchor="middle" class="t-m t-s">exit code 137</text>
+      <text x="24" y="40" class="t-m t-s">cost grows by orders of</text>
+      <text x="24" y="58" class="t-m t-s">magnitude at each step:</text>
+      <text x="24" y="76" class="t-m t-s">ns → µs → ms → dead</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা memory access-এর সম্ভাব্য পরিণতি, সস্তা থেকে দামি। বাঁয়ের দুই ধাপ hardware-এর ভেতরেই মেটে; মাঝখান থেকে kernel-কে ডাকতে হয়; major fault-এ disk পর্যন্ত যেতে হয়; আর শেষ ধাপে কোনো frame-ই দেওয়ার নেই।</p>
+
+  <h3>Overcommit: প্রতিশ্রুতি বেশি, RAM কম</h3>
+  <p>Chapter 9-এ দেখেছ Node-এর <code>VmSize</code> ৪২১ MB, অথচ <code>VmRSS</code> ৫০ MB — program-রা যা চায়, তার অল্পই আসলে ছোঁয়। Kernel যদি প্রতিটা চাওয়ার বিপরীতে তখনই আসল RAM আলাদা করে রাখত (বা চাওয়ার যোগফল RAM ছাড়ালেই "না" বলত), অনেক program চালুই হতো না, আর বেশিরভাগ RAM পড়ে থাকত সংরক্ষিত কিন্তু অব্যবহৃত।</p>
+  <p>তাই kernel ব্যাংকের মতো আচরণ করে: যত RAM আছে তার চেয়ে বেশি প্রতিশ্রুতি দেয়, এই ভরসায় যে সবাই একসাথে পুরোটা তুলতে আসবে না। এর নাম <strong>overcommit</strong>।</p>
+  <div class="codewrap"><pre><code>node -e "
+const buf = new ArrayBuffer(64 * 2 ** 30);    // ৬৪ GB চাও
+console.log('got', buf.byteLength / 2 ** 30, 'GB on a', require('os').totalmem() / 2 ** 30, 'GB machine; rss =', Math.round(process.memoryUsage().rss / 2 ** 20), 'MB');"</code></pre></div>
+  <p>আমার Mac-এ: <code>got 64 GB on a 24 GB machine; rss = 37 MB</code>। ২৪ GB RAM-এর machine ৬৪ GB-র প্রতিশ্রুতি দিয়ে দিল, কারণ এখনো একটা byte-ও ছোঁয়া হয়নি। Linux-এ নিয়মটা বদলানো যায় <code>/proc/sys/vm/overcommit_memory</code> দিয়ে: <code>0</code> = অনুমান করে সিদ্ধান্ত (default), <code>1</code> = সবসময় হ্যাঁ, <code>2</code> = কড়া হিসাব। Docker Desktop-এর VM-এ এটা <code>1</code> — সেখানেও একই পরীক্ষায় ৬৪ GB পাওয়া যায়।</p>
+
+  <h3>RAM সত্যিই ফুরালে: OOM killer</h3>
+  <p>প্রতিশ্রুতির খেলায় একদিন সবাই টাকা তুলতে আসে। Process গুলো সত্যি সত্যি page ছুঁতে থাকে, RAM শেষ, swap-ও শেষ (বা নেই), অথচ একটা page fault মেটাতে একটা frame লাগবেই। Kernel তখন কী করবে? Fault মেটাতে না পারলে যে process fault করেছে সে এক পা-ও এগোতে পারবে না।</p>
+  <p>Linux-এর উত্তর নির্মম: <strong>OOM killer</strong> (out of memory)। Kernel প্রতিটা process-কে একটা নম্বর দেয় (মূলত কে কত memory দখল করে আছে), সবচেয়ে বড়টাকে বেছে নেয়, আর <code>SIGKILL</code> পাঠায় — এমন একটা signal যেটা process ধরতেও পারে না, আটকাতেও পারে না। Container-এ একই ঘটনা ঘটে container-এর নিজের memory সীমায় (Chapter 36-এ cgroup)।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker) — OOM kill</div>
+    <div class="codewrap"><pre><code>docker run --name oomdemo --memory=100m --memory-swap=100m node:22-alpine node -e "
+const chunks = [];
+for (let i = 1; i &lt;= 10; i++) {
+  chunks.push(Buffer.alloc(50 * 2 ** 20, 1));   // 50 MB, সত্যি সত্যি লেখা
+  console.log('holding', i * 50, 'MB');
+}"
+echo "exit code: $?"
+docker inspect -f 'OOMKilled={{.State.OOMKilled}}' oomdemo
+docker rm oomdemo</code></pre></div>
+    <p>আমার output: <code>holding 50 MB</code> — তারপর কিছুই না — <code>exit code: 137</code>, <code>OOMKilled=true</code> (শেষ command container-টা মুছে দেয়)।</p>
+  </div>
+  <p>কোনো JS error নেই, কোনো stack trace নেই, <code>process.on('exit')</code>-ও চলেনি — process-টা স্রেফ হাওয়া। Exit code ১৩৭ মানে ১২৮ + ৯, আর ৯ হলো <code>SIGKILL</code>-এর নম্বর। Chapter 1-এ যে রহস্যের কথা বলেছিলাম — "container-এ app কোনো JS error ছাড়াই হঠাৎ মারা গেল" — এটাই তার চেহারা। Chapter 6-এর মৃত্যুর সাথে গুলিয়ো না: সেখানে V8 নিজের JS heap-এর সীমায় পৌঁছে নিজেই <code>FATAL ERROR: ... JavaScript heap out of memory</code> লিখে থেমেছিল। এখানে ব্যবহার করেছি <code>Buffer</code>, যার memory V8-এর JS heap-এর বাইরে — সীমাটা kernel-এর, মৃত্যুদণ্ডও kernel-এর। (macOS-এ Linux-এর মতো OOM killer নেই; সে আগে memory compress করে আর swap করে, শেষে "Your system has run out of application memory" dialog দেখায়।)</p>
+
+  <h3>mmap: file-কে memory বানিয়ে ফেলা</h3>
+  <p>Chapter 2-এর <code>readFileSync</code>-এর যাত্রা মনে করো: data disk থেকে page cache-এ আসে, তারপর kernel সেটা তোমার process-এর buffer-এ <em>copy</em> করে। ছোট file-এ ঠিক আছে। কিন্তু ৫০ GB-র একটা database file, যার এখানে-ওখানে একটু একটু পড়তে হবে? প্রতিবার <code>read</code> syscall আর copy — এবং একই data RAM-এ দুইবার (page cache-এ আর তোমার buffer-এ)।</p>
+  <p>Page fault-এর কৌশল এখানে আরেকবার কাজে লাগে। <code>mmap</code> syscall দিয়ে একটা file-কে সরাসরি address space-এর একটা range-এ map করা যায়। শুরুতে কিছুই পড়া হয় না। তুমি সেই range-এর কোনো address ছুঁলে page fault; kernel file-এর ঠিক সেই অংশ page cache-এ আনে, আর page cache-এর <em>সেই frame-টাই</em> তোমার page table-এ বসিয়ে দেয়। কোনো copy নেই, কোনো <code>read</code> নেই — file পড়া মানে memory পড়া। একাধিক process একই file map করলে সবাই একই frame দেখে।</p>
+  <p>তুমি প্রতিদিন এটা ব্যবহার করছ না জেনেই। Chapter 4-এর dynamic linker libc-কে ঠিক এভাবে load করে:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim sh -c 'apt-get update -qq &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1; strace -e trace=openat,mmap cat /dev/null 2&gt;&amp;1 | grep -A2 "libc.so.6\""'</code></pre></div>
+  <p>আমার output (একটু ছেঁটে):</p>
+  <div class="codewrap"><pre><code>openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+mmap(NULL, 1826912, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xffff9d383000
+mmap(0xffff9d390000, 1761376, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xffff9d390000</code></pre></div>
+  <p>libc খোলা হলো (fd <code>3</code>), তারপর <code>mmap</code>-এর শেষ দুই argument <code>3, 0</code> মানে "fd 3-এর file, শুরু থেকে" — ১.৭ MB-র code অংশটা <code>PROT_READ|PROT_EXEC</code> (Chapter 5-এর <code>r-x</code>) permission নিয়ে address space-এ বসে গেল, একটা byte-ও copy না করে। SQLite, LMDB, Elasticsearch-এর মতো database আর search engine বড় file-এর জন্য একই কৌশল ব্যবহার করে। (Node-এ built-in <code>mmap</code> নেই; npm package আছে।)</p>
 
   <div class="box concept">
-    <div class="box-title">ENGINEERING INTUITION</div>
-    <p>Memory নিয়ে চিন্তা করার সময় দুইটা প্রশ্ন করো: <strong>(১) আমার working set (একই সময়ে দরকারি data) RAM-এ ধরে তো?</strong> না ধরলে major fault/swap শুরু হবে — তখন কোনো code optimization বাঁচাবে না। <strong>(২) আমার access pattern কি ঘেঁষাঘেঁষি (dense) নাকি ছড়ানো (sparse)?</strong> ছড়ানো হলে TLB আর cache দুটোই কাঁদবে।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Memory নিয়ে দুইটা প্রশ্ন করো। (১) আমার <strong>working set</strong> কি RAM-এ আঁটে? না আঁটলে major fault, thrashing, শেষে OOM kill — তখন code-এর কোনো কারসাজি বাঁচাবে না। (২) আমার data কতগুলো page জুড়ে ছড়ানো? ছড়ানো হলে cache আর TLB দুইটাই ভুগবে; ঘন রাখো, দরকারে huge page চালু করো। আর মনে রেখো: kernel যা প্রতিশ্রুতি দেয় (<code>VSZ</code>) আর যা আসলে দেয় (<code>RSS</code>) — দুইটা আলাদা সংখ্যা।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Internal আর external fragmentation-এর পার্থক্য?</li>
-      <li>Minor আর major page fault-এর পার্থক্য এবং কোনটা ভয়ংকর কেন?</li>
-      <li>mmap কীভাবে page fault-কে feature বানিয়ে ফেলে?</li>
+      <li>Page ছোট হলে কী দাম, বড় হলে কী দাম? Linux-এ ১ GB ছুঁয়ে লাখ লাখের বদলে মাত্র কয়েকশো fault এল কেন?</li>
+      <li>TLB reach কী? <code>tlb.js</code>-এ একই ৫১২ KB data ৪০৯৬টা page-এ ছড়ালে দ্বিগুণের বেশি ধীর কেন, যখন data পুরোটাই cache-এ?</li>
+      <li>Minor আর major page fault-এর পার্থক্য কী? Swap demo-তে দ্বিতীয়বার ঘোরা ১২ গুণ ধীর কেন? Thrashing কী?</li>
+      <li>Overcommit কী, kernel এটা কেন করে, আর এর শেষ পরিণতি কী হতে পারে?</li>
+      <li>Exit code ১৩৭ আর V8-এর "JavaScript heap out of memory" — দুই মৃত্যুর পার্থক্য কী? আর <code>mmap</code> কীভাবে <code>read</code>-এর copy বাঁচায়?</li>
     </ul>
   </div>

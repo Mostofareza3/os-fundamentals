@@ -1,32 +1,175 @@
   <p class="part-label">PART 3 · MEMORY</p>
   <h2>Chapter 7 — Physical Memory বোঝা</h2>
-  <p class="chap-sub">RAM আসলে কী, আর কেন সেটা যত fast ভাবো তত fast না।</p>
+  <p class="chap-sub">RAM-এর ভেতরের বাস্তবতা: আসল ঠিকানা কী, CPU-র তুলনায় সে কেন এত ধীর, "ধীর" কথাটার দুইটা আলাদা মানে, আর তোমার machine-এর RAM আসলে কে কতটা খাচ্ছে।</p>
 
-  <h3>RAM কী</h3>
-  <p><strong>RAM</strong> (Random Access Memory) হলো সেই hardware যেখানে চলমান process-দের code আর data থাকে। "Random access" মানে যেকোনো address-এ প্রায় সমান সময়ে পৌঁছানো যায় — disk-এর মতো ঘুরে ঘুরে খুঁজতে হয় না। আর RAM <strong>volatile</strong> — power গেলে সব মুছে যায়। এজন্যই "save" বলে একটা জিনিস আছে: RAM থেকে persistent storage-এ নেওয়া।</p>
-  <p>Physically RAM থাকে <strong>DIMM</strong> module-এ (motherboard-এর ওই লম্বা stick গুলো), আর আজকের প্রযুক্তির নাম <strong>DDR</strong> (DDR4/DDR5)। আমাদের জন্য এটুকু জানাই যথেষ্ট — এই বই memory hardware-এর encyclopedia না।</p>
+  <p>Chapter 2-এর কথা এক লাইনে: <strong>RAM</strong> হলো byte-এর একটা বিশাল array, প্রতিটা byte-এর একটা নম্বর — <strong>memory address</strong>; power গেলে সব মুছে যায়, আর একবার পড়তে মোটামুটি ১০০ ns লাগে। সেই chapter-এ একটা কথা ঝুলিয়ে রেখেছিলাম: <code>%DebugPrint</code> যে address দেখায় সেটা "virtual"। এই Part-এর কাজ সেই ঝোলানো সুতো ধরে টানা। শুরু করি hardware-এর নিজের দিক থেকে।</p>
 
-  <h3>Physical address</h3>
-  <p>RAM-কে ভাবো একটা বিশাল byte-এর array। প্রতিটা byte-এর একটা নাম্বার আছে — <strong>physical address</strong>। 16GB RAM মানে মোটামুটি 0 থেকে ১৬০০ কোটি+ পর্যন্ত address। CPU যখন memory access করে, শেষ পর্যন্ত এই physical address-ই ব্যবহৃত হয়। (কিন্তু তোমার process এই address কখনো সরাসরি দেখে না — সেই twist Chapter 9-এ।)</p>
+  <h3>Physical address: RAM-এর আসল ঠিকানা</h3>
+  <p>তোমার process যে address দেখে (Chapter 5-এর <code>/proc/self/maps</code>-এর <code>aaaabb3d0000</code>-এর মতো সংখ্যা), সেগুলো যদি সরাসরি RAM chip-এর ঠিকানা হতো, তাহলে দুইটা process একই সংখ্যা ব্যবহার করলে একই byte-এ গিয়ে পড়ত। অথচ Chapter 3-এ দেখেছ, দুই process-এর <code>count</code> আলাদা থাকে। তাহলে বোঝাই যায়, process-এর address আর RAM-এর আসল ঠিকানা আলাদা জিনিস।</p>
+  <p>Memory hardware নিজে বোঝে শুধু একটা নম্বর-ব্যবস্থা: <strong>physical address</strong> — machine-এর পুরো hardware-এর উপর একটাই, সবার জন্য এক। এই ঠিকানা নিয়ে কাজ করে শুধু kernel আর CPU-র ভেতরের একটা অংশ (যেটা Chapter 9-এ খুলব); কোনো user process কখনো physical address দেখে না।</p>
+  <p>মজার ব্যাপার হলো, physical address-এর সব নম্বর RAM-এ যায় না। Chapter 2-এ বলেছিলাম CPU device controller-এর register-এ command লেখে — সেই register গুলোও physical address-এর এক একটা range দখল করে থাকে। Linux kernel পুরো ম্যাপটা দেখায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <p>এই file-এর আসল সংখ্যা দেখতে বিশেষ অনুমতি লাগে, তাই <code>--privileged</code>:</p>
+    <div class="codewrap"><pre><code>docker run --rm --privileged alpine sh -c 'head -6 /proc/iomem; grep "System RAM" /proc/iomem'</code></pre></div>
+    <p>আমার output (Docker-এর Linux VM):</p>
+    <div class="codewrap"><pre><code>10000000-1000ffff : GICD
+10010000-1018ffff : GICR
+20050000-20050fff : pl031
+  20050000-20050fff : rtc-pl031
+40000000-4fffffff : PCI ECAM
+50000000-6ffdffff : pci
+70000000-269bfffff : System RAM</code></pre></div>
+    <p><code>GICD</code>/<code>GICR</code> হলো interrupt controller (Chapter 2-এর interrupt যে chip সামলায়), <code>rtc-pl031</code> হলো ঘড়ির chip, <code>pci</code> হলো I/O bus-এর device গুলো। আসল RAM (<code>System RAM</code>) শুরু হয়েছে <code>0x70000000</code> থেকে। মানে physical address-এর জগতে RAM আর device-এর register পাশাপাশি বসানো; CPU একটা address-এ লিখলে সেটা RAM-এ যাবে নাকি কোনো device-এ, তা ঠিক হয় এই ম্যাপ দিয়ে।</p>
+  </div>
+  <p>macOS এই ম্যাপ দেখায় না, কিন্তু মোট মাপ বলে: <code>sysctl -n hw.memsize</code> আমার Mac-এ <code>25769803776</code> — ঠিক ২৪ × ২<sup>৩০</sup> byte।</p>
 
-  <h3>Memory infinitely fast না কেন</h3>
-  <p>এখানেই একটা অস্বস্তিকর সত্য: <strong>CPU-র তুলনায় RAM ধীর</strong>। আধুনিক CPU প্রতি nanosecond-এ একাধিক instruction চালাতে পারে, কিন্তু RAM থেকে একটা data আনতে লাগে দশগুণ-শতগুণ বেশি সময় (exact number hardware-ভেদে ভিন্ন, তাই মুখস্থ করার দরকার নেই — অনুপাতটাই আসল)। কারণটা physics + engineering: RAM chip CPU থেকে physically দূরে, signal যেতে-আসতে সময় লাগে, আর DRAM cell পড়ার নিজস্ব latency আছে।</p>
+  <h3>DRAM: প্রতিটা bit একটা ছোট্ট capacitor</h3>
+  <p>RAM কেন power গেলে সব ভুলে যায়, আর কেন CPU-র register-এর মতো দ্রুত না — দুটোর উত্তর একই জায়গায়: RAM কী দিয়ে তৈরি। আজকের প্রায় সব RAM-এর প্রযুক্তির নাম <strong>DRAM</strong> (Dynamic RAM)। তোমার machine-এরটা দেখো:</p>
+  <div class="codewrap"><pre><code>system_profiler SPMemoryDataType      # macOS
+sudo dmidecode -t memory | grep Type   # Linux (আসল machine-এ)</code></pre></div>
+  <p>আমার Mac বলছে <code>Type: LPDDR5</code> — DRAM-এরই একটা প্রজন্ম (LP মানে low-power, phone আর laptop-এর জন্য)।</p>
+  <p>DRAM-এর প্রতিটা bit হলো একটা অতি ক্ষুদ্র <strong>capacitor</strong> (বিদ্যুৎ-চার্জ ধরে রাখার একটা ছোট আধার) আর একটা transistor (সুইচ)। চার্জ আছে মানে ১, নেই মানে ০। একটা bit-এ মাত্র দুইটা অংশ — তাই এক chip-এ কোটি কোটি bit আঁটে, আর দামও কম। সমস্যা হলো capacitor-এর চার্জ চুপচাপ লিক করে যায়, কয়েক millisecond-এই। তাই memory controller (CPU-র পাশের যে circuit RAM-কে চালায়) প্রতিটা সারির চার্জ নিয়মিত পড়ে আবার লিখে দেয় — standard অনুযায়ী প্রতি সারি অন্তত প্রতি ৬৪ ms-এ একবার। এর নাম <strong>refresh</strong>, আর "Dynamic" নামটাও এখান থেকে। Power চলে গেলে refresh বন্ধ, চার্জ লিক হয়ে শেষ, data শেষ — RAM volatile হওয়ার আসল কারণ এটাই।</p>
+  <p>পড়ার প্রক্রিয়াও সরল না। Bit গুলো সারি (row) আর কলাম (column)-এ সাজানো। কিছু পড়তে হলে controller-কে আগে পুরো একটা সারি "খুলতে" হয় — সারির সব চার্জ একটা <strong>row buffer</strong>-এ তুলে আনা — তারপর সেখান থেকে দরকারি column পড়া, তারপর সারিটা বন্ধ করে পরের জন্য প্রস্তুত করা। প্রতিটা ধাপে কয়েক nanosecond।</p>
+  <p>তুলনার জন্য: CPU-র register আর cache-এ ব্যবহৃত হয় <strong>SRAM</strong> (Static RAM) — প্রতিটা bit ছয়টা transistor-এর একটা ছোট circuit, কোনো লিক নেই, refresh নেই, অনেক দ্রুত। কিন্তু প্রতি bit-এ অনেকগুণ বেশি জায়গা, বেশি বিদ্যুৎ আর অনেক বেশি দাম। ২৪ GB SRAM একটা laptop-এ বসানোর মতো আকার বা দামে বানানো সম্ভব না। তাই অল্প SRAM (cache) কাছে, অনেক DRAM একটু দূরে — এই আপসের উপরেই পুরো Part 3 আর Part 4 দাঁড়িয়ে।</p>
+
+  <h3>Memory wall: RAM কেন CPU-র তুলনায় এত ধীর</h3>
+  <p>CPU-র ভেতরের সব কাজ একটা ঘড়ির তালে এগোয়; ঘড়ির এক টিকের নাম <strong>cycle</strong> (Chapter 12-এ বিস্তারিত)। আধুনিক CPU সেকেন্ডে ৪০০–৫০০ কোটি cycle চালায় — এক cycle মোটামুটি ০.২২ ns। এখন RAM থেকে একটা মান আনতে যদি ১০০ ns লাগে, তাহলে প্রতিবার CPU-কে প্রায় ৫০০ cycle চুপচাপ অপেক্ষা করতে হবে — যে সময়ে সে কয়েক হাজার instruction চালিয়ে ফেলতে পারত।</p>
+  <p>এই দেরির উৎস তিনটা: RAM chip CPU-র chip-এর বাইরে (Apple Silicon-এ একই package-এ, তবু আলাদা chip), signal যেতে-আসতে সময় লাগে; controller-এর কাছে অনুরোধ লাইনে দাঁড়ায়; আর ওপরের row খোলা-পড়া-বন্ধ করার ধাপ। গত কয়েক দশকে CPU যে হারে দ্রুত হয়েছে, DRAM-এর latency সেই হারে কমেনি — দুইয়ের মাঝখানের এই ক্রমবর্ধমান ফাঁকের নাম <strong>memory wall</strong>।</p>
+  <p>এবার আসল সংখ্যাটা নিজের machine-এ মাপো। কৌশলটার নাম <strong>pointer chase</strong>: একটা বড় array-তে এলোমেলো একটা চক্র বানাও, যেখানে প্রতিটা ঘরে লেখা আছে পরের কোন ঘরে যেতে হবে। প্রতিটা ধাপের address আগের ধাপের ফলাফল না জেনে বের করা যায় না, তাই CPU আগেভাগে কিছু আনতে পারে না, একসাথে কয়েকটা অনুরোধও পাঠাতে পারে না — প্রতিটা access-এর পুরো দেরিটা গুনতে হয়।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — chase.js</div>
+    <div class="codewrap"><pre><code>function chase(bytes, steps = 20_000_000) {
+  const n = bytes / 4;                          // Int32 = 4 byte
+  const next = new Int32Array(n);
+  const order = new Int32Array(n);
+  for (let i = 0; i &lt; n; i++) order[i] = i;
+  for (let i = n - 1; i &gt; 0; i--) {             // এলোমেলো ক্রম
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  for (let i = 0; i &lt; n; i++) next[order[i]] = order[(i + 1) % n];  // একটা বড় চক্র
+  let p = 0;
+  for (let i = 0; i &lt; 1_000_000; i++) p = next[p];                   // গরম করে নাও
+  const t = process.hrtime.bigint();
+  for (let i = 0; i &lt; steps; i++) p = next[p];                       // শুধু এটাই মাপা হচ্ছে
+  return Number(process.hrtime.bigint() - t) / steps;
+}
+const mb = Number(process.argv[2] || 512);
+console.log(`${mb} MB array: ${chase(mb * 2 ** 20).toFixed(1)} ns per access`);</code></pre></div>
+    <p><code>node chase.js 512</code> — আমার Mac-এ <code>512 MB array: 118.6 ns per access</code>। এবার <code>node chase.js 0.015625</code> (১৬ KB) চালাও: এসেছে <code>1.4 ns</code>। একই code, একই RAM — তবু ৮০ গুণেরও বেশি দ্রুত। কারণ ছোট array-টা পুরোটাই CPU-র কাছের SRAM-এ (cache-এ) এঁটে গেছে; বড়টা আঁটেনি। সেই গল্প Chapter 8 আর 13-এর।</p>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 420" width="100%" role="img" aria-label="Path of a memory read that misses the caches: CPU core, caches, memory controller, DRAM chip; inside the DRAM bank a whole row is activated into the row buffer, one column is read, then the row is closed; total about 120 nanoseconds or 500 CPU cycles">
+      <defs>
+        <marker id="c07f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c07f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="30" width="150" height="62" rx="8" class="b-u"/>
+      <text x="99" y="56" text-anchor="middle" class="t-h">CPU core</text>
+      <text x="99" y="76" text-anchor="middle" class="t-m t-s">1 cycle ≈ 0.22 ns</text>
+      <rect x="214" y="30" width="150" height="62" rx="8" class="b"/>
+      <text x="289" y="56" text-anchor="middle" class="t-h">Caches (SRAM)</text>
+      <text x="289" y="76" text-anchor="middle" class="t-d t-s">miss → go to RAM</text>
+      <rect x="404" y="30" width="170" height="62" rx="8" class="b"/>
+      <text x="489" y="56" text-anchor="middle" class="t-h">Memory controller</text>
+      <text x="489" y="76" text-anchor="middle" class="t-m t-s">queues, refreshes rows</text>
+      <rect x="614" y="30" width="162" height="62" rx="8" class="b"/>
+      <text x="695" y="56" text-anchor="middle" class="t-h">DRAM chip</text>
+      <text x="695" y="76" text-anchor="middle" class="t-m t-s">LPDDR5, off the CPU die</text>
+      <line x1="176" y1="61" x2="212" y2="61" class="ln" marker-end="url(#c07f1-a)"/>
+      <line x1="366" y1="61" x2="402" y2="61" class="ln" marker-end="url(#c07f1-a)"/>
+      <line x1="576" y1="61" x2="612" y2="61" class="ln" marker-end="url(#c07f1-a)"/>
+
+      <path d="M614 92 L380 130 M776 92 L776 130" class="ln dash"/>
+      <rect x="380" y="130" width="396" height="210" rx="10" class="b"/>
+      <text x="398" y="154" class="t-h t-s">inside one DRAM bank</text>
+      <g>
+        <rect x="400" y="168" width="24" height="16" rx="2" class="b"/><rect x="428" y="168" width="24" height="16" rx="2" class="b"/><rect x="456" y="168" width="24" height="16" rx="2" class="b"/><rect x="484" y="168" width="24" height="16" rx="2" class="b"/><rect x="512" y="168" width="24" height="16" rx="2" class="b"/><rect x="540" y="168" width="24" height="16" rx="2" class="b"/><rect x="568" y="168" width="24" height="16" rx="2" class="b"/><rect x="596" y="168" width="24" height="16" rx="2" class="b"/>
+        <rect x="400" y="188" width="24" height="16" rx="2" class="b"/><rect x="428" y="188" width="24" height="16" rx="2" class="b"/><rect x="456" y="188" width="24" height="16" rx="2" class="b"/><rect x="484" y="188" width="24" height="16" rx="2" class="b"/><rect x="512" y="188" width="24" height="16" rx="2" class="b"/><rect x="540" y="188" width="24" height="16" rx="2" class="b"/><rect x="568" y="188" width="24" height="16" rx="2" class="b"/><rect x="596" y="188" width="24" height="16" rx="2" class="b"/>
+        <rect x="400" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="428" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="456" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="484" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="512" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="540" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="568" y="208" width="24" height="16" rx="2" class="b-u"/><rect x="596" y="208" width="24" height="16" rx="2" class="b-u"/>
+        <rect x="400" y="228" width="24" height="16" rx="2" class="b"/><rect x="428" y="228" width="24" height="16" rx="2" class="b"/><rect x="456" y="228" width="24" height="16" rx="2" class="b"/><rect x="484" y="228" width="24" height="16" rx="2" class="b"/><rect x="512" y="228" width="24" height="16" rx="2" class="b"/><rect x="540" y="228" width="24" height="16" rx="2" class="b"/><rect x="568" y="228" width="24" height="16" rx="2" class="b"/><rect x="596" y="228" width="24" height="16" rx="2" class="b"/>
+      </g>
+      <line x1="510" y1="246" x2="510" y2="276" class="ln-u" marker-end="url(#c07f1-u)"/>
+      <rect x="400" y="280" width="220" height="24" rx="4" class="b-k"/>
+      <text x="412" y="297" class="t-k t-s">row buffer</text>
+      <rect x="512" y="280" width="24" height="24" rx="2" class="b-u"/>
+      <text x="398" y="328" class="t-m t-s">each small box = a group of 1-bit capacitor cells</text>
+      <text x="640" y="190" class="t-s">① activate row:</text>
+      <text x="640" y="208" class="t-m t-s">copy whole row</text>
+      <text x="640" y="226" class="t-m t-s">into row buffer</text>
+      <text x="640" y="254" class="t-s">② read column</text>
+      <text x="640" y="282" class="t-s">③ precharge:</text>
+      <text x="640" y="300" class="t-m t-s">close the row</text>
+
+      <rect x="24" y="130" width="330" height="210" rx="10" class="b-m"/>
+      <text x="42" y="156" class="t-h t-s">One DRAM cell = 1 bit</text>
+      <text x="42" y="182" class="t-s">a tiny capacitor + a transistor switch</text>
+      <text x="42" y="206" class="t-s">charged = 1, empty = 0</text>
+      <text x="42" y="230" class="t-s">charge leaks away in milliseconds</text>
+      <text x="42" y="254" class="t-s">→ controller re-writes every row</text>
+      <text x="42" y="278" class="t-s">at least every 64 ms ("refresh")</text>
+      <text x="42" y="310" class="t-d t-s">power off → no refresh → data gone</text>
+
+      <rect x="24" y="362" width="752" height="40" rx="8" class="b-k"/>
+      <text x="400" y="387" text-anchor="middle" class="t-k">round trip on this Mac ≈ 119 ns ≈ 500+ CPU cycles spent waiting</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Cache-এ না পেলে একটা read-এর পথ: core থেকে memory controller হয়ে DRAM chip। Chip-এর ভেতরে একটা মান পড়তে পুরো একটা সারি row buffer-এ তুলতে হয়, তারপর একটা column পড়া, তারপর সারি বন্ধ। বাঁয়ের বাক্স বলছে কেন DRAM volatile: capacitor-এর চার্জ লিক করে, refresh বন্ধ হলেই data শেষ।</p>
+
+  <h3>Latency আর bandwidth: "ধীর"-এর দুইটা মানে</h3>
+  <p>একটা ধাঁধা: RAM যদি প্রতি access-এ ১১৯ ns নেয়, তাহলে ১ GB-র একটা array copy করতে (প্রায় ১০০ কোটি byte) কয়েক মিনিট লাগার কথা। অথচ লাগে কয়েক millisecond। দুটো কীভাবে একসাথে সত্যি?</p>
+  <p>কারণ "memory কত দ্রুত" প্রশ্নের দুইটা আলাদা উত্তর আছে:</p>
+  <ul>
+    <li><strong>Latency</strong> — একটা অনুরোধ পাঠানো থেকে উত্তর পাওয়া পর্যন্ত সময়। Pointer chase এটা মাপে: ~১১৯ ns।</li>
+    <li><strong>Bandwidth</strong> — একসাথে অনেক অনুরোধ চললে প্রতি সেকেন্ডে কত byte আনা-নেওয়া হয়।</li>
+  </ul>
+  <p>Highway-র উপমায়: latency হলো একটা গাড়ির ঢাকা থেকে চট্টগ্রাম যেতে কত ঘণ্টা লাগে, bandwidth হলো ঘণ্টায় কতগুলো গাড়ি পৌঁছায় — রাস্তা আট লেনের হলে যাত্রার সময় না কমেও পৌঁছানো গাড়ির সংখ্যা আটগুণ। Hardware-এ ঠিক কী ঘটে: পরের address আগে থেকে জানা থাকলে (যেমন array একটানা পড়া) memory controller একসাথে অনেকগুলো অনুরোধ পাঠিয়ে রাখে, একাধিক channel আর bank পাশাপাশি কাজ করে, আর CPU আগেভাগে পরের টুকরো আনিয়ে রাখে। প্রতিটা অনুরোধের latency একই থাকে, কিন্তু সেগুলো একটার পেছনে আরেকটা না, একসাথে চলে।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — bandwidth.js</div>
+    <div class="codewrap"><pre><code>const GB = 2 ** 30;
+const src = new Uint8Array(GB).fill(1);   // ১ GB
+const dst = new Uint8Array(GB);
+dst.set(src);                              // একবার গরম করে নাও
+const t = performance.now();
+for (let k = 0; k &lt; 5; k++) dst.set(src); // ৫ বার পুরো ১ GB copy
+const sec = (performance.now() - t) / 1000;
+console.log('copy speed:', (5 / sec).toFixed(1), 'GB/s');</code></pre></div>
+    <p>আমার Mac-এ <code>copy speed: 57.9 GB/s</code>। Pointer chase-এ প্রতি ১১৯ ns-এ কাজের data আসছিল ৪ byte — মানে সেকেন্ডে প্রায় ০.০৩ GB। একই RAM, একই machine: একভাবে পড়লে ~৫৮ GB/s, আরেকভাবে পড়লে ~০.০৩ GB/s — প্রায় ১৭০০ গুণ পার্থক্য।</p>
+  </div>
+  <p>শিক্ষাটা সোজা: memory-র গতি তোমার access pattern-এর উপর নির্ভর করে। একটানা পড়লে তুমি bandwidth পাও; এক জায়গা থেকে আরেক জায়গায় লাফ দিলে (linked list, object-এর reference ধরে ঘোরা, hash table) তুমি latency-র দাস। Chapter 6-এর <code>locality.js</code>-এ এলোমেলো ক্রমের object ১০ গুণ ধীর হয়েছিল — এটাই তার নিচের কারণ।</p>
+
+  <h3>তোমার RAM কে খাচ্ছে: free, available, buff/cache</h3>
+  <p>অনেকে server-এ <code>free -h</code> চালিয়ে দেখে "free" খুব কম, আর ভয় পেয়ে যায়। কিন্তু kernel-এর দর্শন হলো: ফাঁকা পড়ে থাকা RAM মানে নষ্ট RAM। তাই কোনো process যে RAM চাইছে না, kernel সেটা file-এর data জমিয়ে রাখার কাজে লাগায় — Chapter 2-এর <strong>page cache</strong>। কেউ memory চাইলে kernel এই cache থেকে পুরনো জিনিস ফেলে দিয়ে জায়গা বানায়। তাই "কতটা memory আসলে পাওয়া যাবে" প্রশ্নের উত্তর "free" না, "available"।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <div class="codewrap"><pre><code>docker run --rm alpine sh -c 'free -m | head -2; dd if=/dev/urandom of=/root/big.bin bs=1M count=500 2&gt;/dev/null; free -m | head -2'</code></pre></div>
+    <p>আমার output (MB-তে):</p>
+    <div class="codewrap"><pre><code>        total   used   free   shared   buff/cache   available
+Mem:     7837    447   6122       35         1268        7156
+Mem:     7837    457   5601       35         1779        7146</code></pre></div>
+    <p>৫০০ MB-র একটা file লেখার পরে <code>free</code> কমেছে ৫২১ MB, <code>buff/cache</code> বেড়েছে ৫১১ MB — kernel file-এর data RAM-এ রেখে দিয়েছে। কিন্তু <code>available</code> কমেছে মাত্র ১০ MB, কারণ দরকার হলে ওই cache সঙ্গে সঙ্গে ছেড়ে দেওয়া যায়।</p>
+  </div>
+  <p>macOS-এ একই ছবি অন্য নামে। <code>vm_stat</code> page হিসেবে গুনে দেখায় (প্রথম লাইনেই বলে <code>page size of 16384 bytes</code> — page কী, Chapter 9-এ)। সেখানে <code>free</code>, <code>active</code>, <code>inactive</code> (সম্প্রতি ব্যবহৃত হয়নি, দরকারে ফেরত নেওয়া যায়) আর <code>wired down</code> (kernel-এর নিজের memory, যেটা কখনো সরানো যায় না) আলাদা করে দেখায়। সহজ সারাংশ চাইলে <code>memory_pressure | tail -1</code> — আমার Mac-এ <code>System-wide memory free percentage: 78%</code>। Activity Monitor-এর Memory tab-এর "Cached Files" হলো page cache, আর নিচের "Memory Pressure" graph-টাই আসল সূচক: সবুজ থাকলে RAM নিয়ে চিন্তার কিছু নেই।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"RAM-এ যেকোনো address পড়তে সমান সময় লাগে — এজন্যই তো নাম Random Access।" নামটা এসেছিল tape-এর তুলনায়: tape-এ দূরের data-র জন্য ফিতা ঘোরাতে হয়, RAM-এ হয় না। কিন্তু সমান সময়? একদমই না। কাছের cache-এ থাকলে ~১ ns, RAM-এ গেলে ~১২০ ns, আর সদ্য খোলা row-তে থাকলে তার মাঝামাঝি। "Random" access আজকের machine-এ সবচেয়ে দামি access।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>CPU হলো একটা দ্রুতগতির chef, RAM হলো storeroom। Chef-এর হাত যত দ্রুতই চলুক, প্রতিটা উপকরণের জন্য storeroom-এ হেঁটে গেলে রান্নার speed storeroom-এর হাঁটাপথেই আটকে যাবে। এই gap-টার নাম চলতি ভাষায় "memory wall" — আর এটা মেটানোর জন্যই cache-এর জন্ম (Chapter 8, 13)।</p>
-  </div>
-
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p>Linux-এ <code>free -h</code> চালাও। <code>used</code>, <code>free</code>, আর <code>buff/cache</code> column গুলো দেখো। অবাক লাগতে পারে যে "free" এত কম — আসলে OS ইচ্ছা করেই অলস RAM-কে file cache হিসেবে ব্যবহার করে (Chapter 23-এ বুঝবে কেন এটা ভালো জিনিস)। <code>available</code> column-টাই আসল "কতটুকু পাওয়া যাবে"-র হিসাব।</p>
+    <p>RAM হলো ধীর কিন্তু প্রশস্ত একটা পাইপ: প্রতিটা একক অনুরোধের উত্তর আসতে ~১০০ ns (latency), কিন্তু একটানা চাইলে সেকেন্ডে কয়েক দশ GB বয়ে আনে (bandwidth)। তোমার code কোনটা পাবে, তা ঠিক করে access pattern। আর physical address-এর এই জগৎ শুধু kernel দেখে — process দেখে তার নিজের বানানো address, যার গল্প Chapter 9।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Volatile মানে কী, আর তার consequence কী?</li>
-      <li>Physical address জিনিসটা কী?</li>
-      <li>CPU-র তুলনায় RAM slow — এটা software design-এ কেন matter করে?</li>
+      <li>Physical address কী, কে এটা ব্যবহার করে, আর process-এর address যে physical address হতে পারে না তার প্রমাণ কোথায় দেখেছ? <code>/proc/iomem</code>-এ RAM ছাড়া আর কী থাকে?</li>
+      <li>DRAM volatile কেন? Refresh না থাকলে কী হতো, আর cache-এ DRAM-এর বদলে SRAM ব্যবহার হয় কেন?</li>
+      <li><code>chase.js</code> কেন latency মাপে, bandwidth না? ৫১২ MB-তে ~১১৯ ns আর ১৬ KB-তে ~১.৪ ns কেন?</li>
+      <li>একই RAM থেকে ~৫৮ GB/s আর ~০.০৩ GB/s — দুটো সংখ্যা কীভাবে একসাথে সত্যি?</li>
+      <li><code>free -h</code>-এ "free" কম দেখালে ভয় পাওয়ার কারণ নেই কেন? <code>buff/cache</code> আর <code>available</code> কী বলে?</li>
     </ul>
   </div>
