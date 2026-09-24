@@ -1,44 +1,183 @@
   <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
   <h2>Chapter 3 — Program vs Process</h2>
-  <p class="chap-sub">এই পার্থক্যটা পরিষ্কার না হলে সামনের অর্ধেক বই ঝাপসা লাগবে। তাই আলাদা করে একটা পুরো chapter।</p>
+  <p class="chap-sub">Disk-এ পড়ে থাকা একটা file আর "চলছে" এমন একটা জিনিসের মধ্যে পার্থক্য কী — আর সেই পার্থক্য ধরে রাখতে kernel কী কী হিসাব রাখে।</p>
+
+  <p>আগের দুই chapter থেকে তিনটা জিনিস লাগবে, এক লাইনে মনে করিয়ে দিই। <strong>Kernel</strong>: OS-এর যে অংশ hardware-এর মালিক আর বাকি সবার হয়ে সিদ্ধান্ত নেয়। <strong>Register আর program counter (PC)</strong>: CPU-র ভেতরের ছোট দ্রুত slot; PC মনে রাখে পরের instruction কোথায়। <strong>Memory address</strong>: RAM-এর প্রতিটা byte-এর নম্বর।</p>
+
+  <h3>একটা ধাঁধা দিয়ে শুরু</h3>
+  <p>দুইটা terminal খোলো, দুটোতেই এই এক লাইন চালাও:</p>
+  <div class="codewrap"><pre><code>node -e "let count = 0; setInterval(() =&gt; console.log(process.pid, ++count), 1000)"</code></pre></div>
+  <p>দ্বিতীয়টা কয়েক সেকেন্ড পরে চালালে এরকম কিছু দেখবে:</p>
+  <div class="codewrap"><pre><code># terminal 1            # terminal 2
+4101 1                  4187 1
+4101 2                  4187 2
+4101 3                  4187 3
+4101 4
+4101 5</code></pre></div>
+  <p>Disk-এ <code>node</code> নামের file একটাই, code-ও হুবহু এক। অথচ দুই জায়গায় দুইটা আলাদা <code>count</code> আলাদা গতিতে বাড়ছে, আর প্রতিটা আলাদা একটা নম্বর print করছে। এক file থেকে দুইটা স্বাধীন "চলমান জিনিস" এল কীভাবে? আর <code>count</code>-এর মান file-এ তো লেখা নেই — থাকছে কোথায়? এই প্রশ্নের উত্তরের জন্যই দুইটা আলাদা শব্দ লাগে: program আর process।</p>
 
   <h3>Program: disk-এ শুয়ে থাকা file</h3>
-  <p><strong>Program</strong> হলো একটা executable file — disk-এ পড়ে থাকা bytes। এর ভিতরে আছে machine instructions (CPU-র ভাষায় compiled code), কিছু initial data, আর metadata (কোথা থেকে execution শুরু হবে ইত্যাদি)। Linux-এ এই file format-এর নাম <strong>ELF</strong>। গুরুত্বপূর্ণ কথা: program একটা <em>passive</em> জিনিস। <code>/usr/bin/node</code> file-টা disk-এ পড়ে আছে — কিছুই করছে না।</p>
-
-  <h3>Process: সেই file-এর একটা running instance</h3>
-  <p>তুমি যখন <code>node server.js</code> চালাও, OS ওই executable-টা নিয়ে একটা <strong>process</strong> বানায়। Process মানে শুধু "চলছে" না — process মানে OS একগাদা জিনিস তৈরি করে দিয়েছে:</p>
+  <p><strong>Program</strong> হলো একটা <strong>executable</strong> file — এমন file, যেটা OS চালাতে জানে। এর ভেতরে তিন রকম জিনিস থাকে:</p>
   <ul>
-    <li>একটা <strong>PID</strong> (Process ID) — kernel-এর খাতায় unique নাম্বার</li>
-    <li>নিজস্ব <strong>virtual address space</strong> — process-এর নিজের "private" memory জগৎ (Chapter 9)</li>
-    <li>Memory-তে load হওয়া code, data, <strong>heap</strong> আর <strong>stack</strong> (Chapter 5)</li>
-    <li>CPU state — registers, program counter (এখন কোন instruction-এ আছে)</li>
-    <li>Open file/socket-দের list — <strong>file descriptor table</strong></li>
-    <li>Kernel-এর bookkeeping — state (running/waiting), owner, parent কে, ইত্যাদি</li>
+    <li><strong>Machine code</strong> — CPU-র instruction গুলো, সংখ্যা হিসেবে লেখা (Chapter 2-এর instruction set অনুযায়ী)। এগুলো মানুষের পড়ার জন্য না, এজন্য এমন file-কে চলতি ভাষায় <strong>binary</strong> বলে।</li>
+    <li><strong>Initial data</strong> — program শুরুর সময় যে মানগুলো লাগবে, যেমন আগে থেকে লেখা string।</li>
+    <li><strong>Header</strong> — file-এর একদম শুরুতে বসানো তথ্য: এটা কোন ধরনের file, কোন CPU-র জন্য, কোন instruction থেকে চালানো শুরু করতে হবে।</li>
   </ul>
+  <p>Program-এর সবচেয়ে গুরুত্বপূর্ণ বৈশিষ্ট্য: সে <strong>passive</strong>। কিছুই করে না, কিছুই বদলায় না। শুধু byte, disk-এ পড়ে থাকে। নিজে দেখো:</p>
+  <div class="codewrap"><pre><code>ls -lh $(which node)       # file-টা কত বড়
+file $(which node)         # OS-এর চোখে এটা কী
+xxd -l 16 $(which node)    # প্রথম ১৬ byte, hex-এ</code></pre></div>
+  <p>আমার Mac-এ <code>node</code> ১০৪ MB-এর একটা file, <code>file</code> বলছে <code>Mach-O 64-bit executable arm64</code>, আর প্রথম চার byte <code>cffa edfe</code>। Linux-এ (Docker-এর <code>node:22-alpine</code>-এ) একই পরীক্ষায় প্রথম চার byte <code>7f 45 4c 46</code> — শেষের তিনটা ASCII-তে (অক্ষরকে সংখ্যা দিয়ে লেখার প্রচলিত তালিকা) <code>E</code>, <code>L</code>, <code>F</code>। এই শুরুর byte গুলোকে বলে <strong>magic number</strong>: kernel এগুলো দেখেই চেনে file-টা কোন format-এর executable। macOS-এর format-এর নাম Mach-O, Linux-এর ELF। দুটোর ভেতরে কী থাকে, Chapter 4-এ খুলব।</p>
+
+  <h3>Process: program-এর একটা চলমান instance</h3>
+  <p>এবার সমস্যাটা দেখো। Program চালু হলেই এমন সব তথ্য জন্মায় যা file-এ রাখা সম্ভব না:</p>
+  <ul>
+    <li>এই মুহূর্তে কোন instruction চলছে (PC-র মান), আর register গুলোতে কী আছে;</li>
+    <li>variable-দের বর্তমান মান — ওপরের <code>count</code>;</li>
+    <li>কোন কোন file বা network connection খোলা আছে;</li>
+    <li>এটা কে চালিয়েছে, কোন user-এর অনুমতি নিয়ে।</li>
+  </ul>
+  <p>File-এ রাখা যায় না, কারণ একই file থেকে একসাথে দশবার চালানো যায় — দশটার দশ রকম অবস্থা। তার উপর Chapter 1-এর time-sharing মনে করো: kernel কয়েক millisecond পরপর একটা program-কে CPU থেকে সরিয়ে আরেকটাকে বসায়। সরানোর আগে যদি ঠিক কোথায় থেমেছিল তা লিখে না রাখে, পরে আর ঠিক সেই জায়গা থেকে চালাতে পারবে না।</p>
+  <p>তাই program চালু করার সময় kernel একটা নতুন জিনিস তৈরি করে, যেটা এই সব চলমান অবস্থা ধরে রাখে। এর নাম <strong>process</strong>। একটা process-এর ভেতরে থাকে:</p>
+  <ul>
+    <li><strong>PID</strong> (process ID) — kernel-এর দেওয়া একটা নম্বর, যেটা দিয়ে এই process-কে চেনা যায়। ওপরের <code>4101</code> আর <code>4187</code>।</li>
+    <li><strong>Address space</strong> — এই process-এর নিজস্ব memory address-এর জগৎ। Program-এর code আর data এখানে বসানো হয়, আর <code>count</code>-এর মতো variable এখানেই থাকে। প্রতিটা process-এর address space আলাদা, একজনের address দিয়ে অন্যজনের memory-তে পৌঁছানো যায় না (কীভাবে, Chapter 9; ভেতরের গঠন Chapter 5)।</li>
+    <li><strong>CPU context</strong> — register আর PC-র মান। Process CPU-তে চলার সময় এগুলো CPU-র ভেতরেই থাকে; kernel যখন process-টাকে সরায়, তখন এগুলো kernel-এর খাতায় সেভ করে রাখে, আবার বসানোর সময় ফিরিয়ে দেয়।</li>
+    <li><strong>File descriptor table</strong> — এই process-এর খোলা file, socket ইত্যাদির তালিকা (নিচে আলাদা section)।</li>
+    <li><strong>Credentials</strong> — কোন user-এর হয়ে চলছে। Chapter 1-এ <code>/dev/disk0</code> খুলতে গিয়ে যে <code>EPERM</code> পেয়েছিলে, kernel সেটা ঠিক করেছিল এই তথ্য দেখে।</li>
+    <li><strong>State</strong> — এখন CPU-তে চলছে, নাকি কিছুর অপেক্ষায় ঘুমিয়ে আছে (Chapter 2-এর <code>readFileSync</code>-এ দেখেছ)। সব state আর তাদের মধ্যে আসা-যাওয়ার পুরো ছবি Chapter 15-এ।</li>
+    <li><strong>Parent</strong> — কোন process একে তৈরি করেছে (নিচে আলাদা section)।</li>
+  </ul>
+  <p>Kernel প্রতিটা process-এর জন্য এই সব তথ্য এক জায়গায় একটা record-এ রাখে, যাকে সাধারণভাবে বলে <strong>PCB</strong> (Process Control Block)। Linux-এর source code-এ এর নাম <code>task_struct</code>, আর তাতে কয়েকশো field। Record-টা থাকে kernel space-এ — process নিজে এটা বদলাতে পারে না, শুধু syscall দিয়ে কিছু অংশ জানতে পারে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 500" width="100%" role="img" aria-label="One executable file on disk runs as two processes, each with its own PID, memory, state, open files and variable values; the kernel keeps one PCB per process">
+      <defs>
+        <marker id="c03f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c03f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+
+      <rect x="24" y="118" width="210" height="196" rx="10" class="b"/>
+      <text x="44" y="146" class="t-h">Program</text>
+      <text x="44" y="166" class="t-m t-s">file on disk · passive</text>
+      <text x="44" y="190" class="mono">/usr/local/bin/node</text>
+      <rect x="44" y="204" width="170" height="30" rx="4" class="b-m"/>
+      <text x="129" y="224" text-anchor="middle" class="t-s">header · entry point</text>
+      <rect x="44" y="238" width="170" height="30" rx="4" class="b-m"/>
+      <text x="129" y="258" text-anchor="middle" class="t-s">machine code</text>
+      <rect x="44" y="272" width="170" height="30" rx="4" class="b-m"/>
+      <text x="129" y="292" text-anchor="middle" class="t-s">initial data</text>
+
+      <path d="M234 190 C 280 190, 280 110, 324 110" class="ln" marker-end="url(#c03f1-a)"/>
+      <path d="M234 250 C 280 250, 280 300, 324 300" class="ln" marker-end="url(#c03f1-a)"/>
+      <text x="252" y="140" class="t-m t-s">run</text>
+      <text x="252" y="292" class="t-m t-s">run</text>
+
+      <rect x="330" y="24" width="440" height="168" rx="10" class="b-u"/>
+      <text x="350" y="50" class="t-u">Process · PID 4101</text>
+      <text x="350" y="68" class="t-m t-s">own address space</text>
+      <rect x="350" y="78" width="110" height="24" rx="3" class="b-m"/>
+      <text x="405" y="95" text-anchor="middle" class="t-m t-s">…</text>
+      <rect x="350" y="104" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="121" text-anchor="middle" class="mono">count = 5</text>
+      <rect x="350" y="130" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="147" text-anchor="middle" class="t-s">data</text>
+      <rect x="350" y="156" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="173" text-anchor="middle" class="t-s">code</text>
+      <text x="484" y="92" class="t-s">state: running</text>
+      <text x="484" y="116" class="t-s">PC + registers: on the CPU now</text>
+      <text x="484" y="140" class="t-s">open files (fd): 0 1 2 17</text>
+      <text x="484" y="164" class="t-s">parent: 3990 (zsh)</text>
+
+      <rect x="330" y="214" width="440" height="168" rx="10" class="b-u"/>
+      <text x="350" y="240" class="t-u">Process · PID 4187</text>
+      <text x="350" y="258" class="t-m t-s">own address space</text>
+      <rect x="350" y="268" width="110" height="24" rx="3" class="b-m"/>
+      <text x="405" y="285" text-anchor="middle" class="t-m t-s">…</text>
+      <rect x="350" y="294" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="311" text-anchor="middle" class="mono">count = 3</text>
+      <rect x="350" y="320" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="337" text-anchor="middle" class="t-s">data</text>
+      <rect x="350" y="346" width="110" height="24" rx="3" class="b"/>
+      <text x="405" y="363" text-anchor="middle" class="t-s">code</text>
+      <text x="484" y="282" class="t-s">state: sleeping (waiting for timer)</text>
+      <text x="484" y="306" class="t-s">PC + registers: saved in its PCB</text>
+      <text x="484" y="330" class="t-s">open files (fd): 0 1 2</text>
+      <text x="484" y="354" class="t-s">parent: 4012 (zsh)</text>
+
+      <line x1="20" y1="404" x2="780" y2="404" class="ln-k dash"/>
+      <text x="24" y="396" class="t-k t-s">KERNEL SPACE</text>
+      <rect x="330" y="420" width="210" height="58" rx="8" class="b-k"/>
+      <text x="435" y="445" text-anchor="middle" class="t-k">PCB · 4101</text>
+      <text x="435" y="464" text-anchor="middle" class="t-m t-s">task_struct on Linux</text>
+      <rect x="560" y="420" width="210" height="58" rx="8" class="b-k"/>
+      <text x="665" y="445" text-anchor="middle" class="t-k">PCB · 4187</text>
+      <text x="665" y="464" text-anchor="middle" class="t-m t-s">holds saved PC + registers</text>
+      <text x="24" y="445" class="t-s">one record per process,</text>
+      <text x="24" y="464" class="t-s">kept by the kernel</text>
+      <path d="M300 454 H326" class="ln-k" marker-end="url(#c03f1-k)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে একটাই program file; সেটা দুইবার চালানোয় ডানে দুইটা process — প্রত্যেকের নিজস্ব memory, আলাদা <code>count</code>, আলাদা state আর খোলা file-এর তালিকা। নিচে kernel space-এ প্রতিটা process-এর একটা করে PCB; যে process এই মুহূর্তে CPU-তে নেই (4187), তার PC আর register সেখানে সেভ করা।</p>
+
+  <p>Record-টার একটা অংশ নিজের চোখে দেখো। Linux kernel প্রতিটা process-এর তথ্য <code>/proc/&lt;PID&gt;/</code> folder-এ file হিসেবে দেখায়, আর <code>/proc/self</code> মানে "যে process পড়ছে, সে নিজে":</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "process.stdout.write(require('fs').readFileSync('/proc/self/status', 'utf8'))"</code></pre></div>
+    <p>লম্বা output-এর ভেতর থেকে কয়েকটা লাইন (আমার চালানোয়):</p>
+    <div class="codewrap"><pre><code>Name:    node
+State:   R (running)
+Pid:     17
+PPid:    1
+Uid:     0  0  0  0
+VmRSS:   52084 kB
+Threads: 7</code></pre></div>
+    <p><code>Name</code>, <code>State</code>, <code>Pid</code>, <code>PPid</code> (parent-এর PID), <code>Uid</code> (কোন user — ০ মানে root, সব অনুমতিওয়ালা admin user), <code>VmRSS</code> (এই মুহূর্তে কতটা RAM ব্যবহার করছে) — সবই PCB থেকে আসছে। macOS-এ কাছাকাছি তথ্য পাবে <code>ps -o pid,ppid,user,state,rss,command -p &lt;PID&gt;</code> দিয়ে।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Program = <strong>recipe</strong> (কাগজে লেখা, passive)। Process = <strong>রান্না চলছে</strong> (চুলা জ্বলছে, উপকরণ কাটা হচ্ছে, নির্দিষ্ট state আছে)। একই recipe থেকে একসাথে দুই হাঁড়িতে রান্না চলতে পারে — দুইটা আলাদা process, আলাদা state, আলাদা হাঁড়ি (memory)।</p>
+    <p>Program হলো রান্নার recipe — কাগজে লেখা, নিজে কিছু করে না। Process হলো চুলায় চলা একটা রান্না: কোন ধাপে আছে, হাঁড়িতে কী আছে, কোন চুলা জ্বলছে। এক recipe থেকে একসাথে দুই হাঁড়ি রান্না হতে পারে।</p>
+    <p>উপমাটা এখানেই থামাই, কারণ আসল জিনিসটা আরও নির্দিষ্ট: process মানে kernel-এর রাখা একটা PCB, একটা নিজস্ব address space যেখানে program-এর code আর data বসানো, আর CPU context (PC + register) — যেটা হয় CPU-তে আছে, নয়তো PCB-তে সেভ করা।</p>
   </div>
 
-  <h3>একই program, দুইটা process</h3>
-  <p>দুইটা terminal খুলে দুই জায়গায় <code>node</code> চালাও। Executable file একটাই, কিন্তু process দুইটা — আলাদা PID, আলাদা memory, আলাদা variables। একটাতে crash হলে আরেকটার কিছু হয় না। এটাই <strong>isolation</strong> — OS-এর অন্যতম প্রধান উপহার। তোমার Chrome-এর প্রতিটা tab আলাদা process রাখার পিছনেও এই একই logic — এক tab মরলে বাকিরা বাঁচে।</p>
+  <h3>File descriptor: খোলা জিনিসের নম্বর</h3>
+  <p>Process যখন একটা file খোলে, তারপর প্রতিটা <code>read</code> বা <code>write</code>-এ kernel-কে বলতে হয় কোন file-এর কথা বলছে। প্রতিবার পুরো path পাঠানো ধীর আর বিপজ্জনক — মাঝখানে কেউ file-টার নাম বদলে দিলে বা সরিয়ে দিলে কী হবে? আর kernel-কেও প্রতিবার path থেকে file খুঁজতে হবে।</p>
+  <p>তাই kernel খোলার সময় একবারই কাজটা করে, আর process-কে একটা ছোট integer ফেরত দেয়। এর নাম <strong>file descriptor</strong> (fd)। এরপর process শুধু সেই নম্বর দিয়ে কথা বলে: "fd 17 থেকে ১৪ byte পড়ো"। Chapter 1-এর <code>strace</code> output মনে করো: <code>openat(...) = 17</code>, তারপর <code>read(17, ...)</code>, <code>close(17)</code>। নম্বরটা kernel-এর কাছে ওই process-এর file descriptor table-এর একটা index — table-এর প্রতিটা ঘরে লেখা থাকে কোন file, কোন mode-এ খোলা, এখন কত byte পর্যন্ত পড়া হয়েছে।</p>
+  <p>তিনটা নম্বর প্রায় সব process-এ আগে থেকেই খোলা থাকে: <code>0</code> = <strong>stdin</strong> (input আসে এখান দিয়ে), <code>1</code> = <strong>stdout</strong> (স্বাভাবিক output — <code>console.log</code> এখানে লেখে), <code>2</code> = <strong>stderr</strong> (error output — <code>console.error</code>)। Terminal থেকে চালালে তিনটাই terminal-এর দিকে যায়।</p>
+  <div class="codewrap"><pre><code>node -e "const fs = require('fs'); console.log(fs.openSync('/etc/hosts', 'r'), fs.openSync('/etc/hosts', 'r'))"</code></pre></div>
+  <p>আমার Mac-এ output <code>14 15</code>। নতুন খোলা file সবচেয়ে ছোট খালি নম্বর পায়; ৩ না পেয়ে ১৪ পেল কারণ Node নিজে চালু হওয়ার সময় ৩ থেকে ১৩ পর্যন্ত নম্বর নিজের কাজে খুলে রেখেছে। একটা চলমান process-এর সব fd দেখতে: macOS-এ <code>lsof -p &lt;PID&gt;</code> (<code>FD</code> column-এ <code>0r</code>, <code>1w</code>, <code>2w</code>… — অক্ষরটা mode: read/write), Linux-এ <code>ls -l /proc/&lt;PID&gt;/fd</code>।</p>
+
+  <h3>একই program, অনেক process — আর isolation</h3>
+  <p>শুরুর ধাঁধার উত্তর এখন দেওয়া যায়। দুই terminal-এ <code>node</code> চালানোয় kernel দুইটা আলাদা process বানিয়েছে: আলাদা PID, আলাদা address space। <code>count</code> variable প্রতিটার নিজের address space-এ আছে, তাই একটার <code>++count</code> অন্যটার কিছুই ছোঁয় না। আর এই আলাদা থাকা শুধু variable-এ সীমাবদ্ধ না — একটা মরে গেলেও অন্যটা বাঁচে। শুরুর দুই loop চলা অবস্থায় তৃতীয় terminal থেকে চালাও (<code>kill</code> command একটা PID-কে থামার সংকেত পাঠায়):</p>
+  <div class="codewrap"><pre><code>kill 4101      # তোমার terminal 1-এ যে PID print হচ্ছে, সেটা বসাও</code></pre></div>
+  <p>Terminal 1-এর loop থেমে যাবে; terminal 2 নির্বিকারে গুনে চলবে। এটাই Chapter 1-এর <strong>isolation</strong>, এবার process-এর ভাষায়: kernel প্রতিটা process-কে আলাদা খাঁচায় রাখে।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"Process = program in execution" — শুরুর জন্য ঠিক আছে, কিন্তু অসম্পূর্ণ। Process-এর নিজস্ব identity (PID), নিজস্ব address space, নিজস্ব resources আছে। শুধু "চলমান code" না — বরং <strong>code + memory + state + kernel bookkeeping-এর একটা পুরো package</strong>। আর সামনে দেখবে, একটা process-এ একাধিক thread-ও থাকতে পারে — তখন "in execution" অংশটা আসলে thread-এর কাজ।</p>
+    <p>"একটা app মানে একটা process।" প্রায়ই না। Chrome প্রতিটা tab, প্রতিটা extension আর GPU-র কাজের জন্য আলাদা process চালায় — <code>ps aux | grep -c "Google Chrome Helper"</code> চালিয়ে দেখো (আমার machine-এ এই মুহূর্তে ৫টা; tab যত বেশি, সংখ্যা তত বেশি)। VS Code-ও তাই। উল্টো দিকে, <code>npm run dev</code> চালালে প্রায়ই npm একটা process, আর সে আরও কয়েকটা child process জন্ম দেয়। "App" হলো তোমার দেখার একক; kernel-এর একক হলো process।</p>
   </div>
 
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p>দুইটা terminal-এ চালাও: <code>sleep 300</code> (দুই জায়গায়)। তৃতীয় terminal-এ: <code>ps aux | grep sleep</code>। দেখবে একই program (<code>/bin/sleep</code>) কিন্তু দুইটা আলাদা PID। Linux হলে <code>ls /proc/&lt;PID&gt;/</code> চালিয়ে দেখো — প্রতিটা process-এর জন্য kernel কত কিছু track করে।</p>
-  </div>
+  <h3>Process-এর বংশ: parent আর child</h3>
+  <p>Process আকাশ থেকে পড়ে না। নতুন process তৈরি করতে হলে একটা <em>আগে থেকে চলমান</em> process-কে kernel-এর কাছে syscall দিয়ে অনুরোধ করতে হয়। যে অনুরোধ করে সে <strong>parent</strong>, নতুনটা <strong>child</strong>। Kernel child-এর PCB-তে parent-এর PID লিখে রাখে — একে বলে <strong>PPID</strong>।</p>
+  <p>এই সম্পর্ক রাখার কারণ আছে: child শেষ হলে সে সফল হলো কি না — একটা ছোট সংখ্যা, যার নাম <strong>exit code</strong> (০ মানে সফল, অন্য যেকোনো মান মানে কোনো সমস্যা) — সেটা কাউকে জানাতে হবে। Kernel সেটা parent-কে জানায়। তোমার shell ঠিক এভাবেই জানে একটা command fail করেছে কি না, আর CI pipeline এভাবেই জানে <code>npm test</code> fail করেছে।</p>
+  <div class="codewrap"><pre><code>echo $$                                               # shell-এর নিজের PID
+node -e "console.log(process.pid, process.ppid)"      # node-এর PID আর তার parent
+node -e "process.exit(3)"; echo "exit code: $?"      # child-এর exit code parent পেল</code></pre></div>
+  <p>আমার চালানোয় shell-এর PID <code>85530</code>, আর node print করল <code>85532 85530</code> — node-এর parent সেই shell-ই। শেষ লাইন print করল <code>exit code: 3</code>।</p>
+  <p>তোমার Node code-ও parent হতে পারে। <code>child_process</code> module ঠিক এই কাজ করে:</p>
+  <div class="codewrap"><pre><code>const { spawnSync } = require('child_process');
+console.log('parent pid:', process.pid);
+spawnSync('node', ['-e', 'console.log("child  pid:", process.pid, "| its parent:", process.ppid)'], { stdio: 'inherit' });</code></pre></div>
+  <p>Output: <code>parent pid: 87154</code>, তারপর <code>child  pid: 87158 | its parent: 87154</code>। প্রতিটা process-এর parent আছে, তার parent আছে — পুরো গাছের গোড়ায় PID 1, যেটা kernel নিজে boot-এর শেষে চালু করে। <code>ps -p 1 -o comm</code> চালালে macOS-এ দেখবে <code>/sbin/launchd</code>, Linux-এ সাধারণত <code>systemd</code> বা <code>init</code> (Docker container-এর ভেতরে PID 1 হয় container-এর প্রথম command নিজেই — ওপরের experiment-এ <code>PPid: 1</code> ছিল সেজন্য)। Kernel ঠিক কোন syscall দিয়ে নতুন process বানায় (<code>fork</code>, <code>exec</code>), সেটা Chapter 15-এ।</p>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Program passive আর process active — মানে কী?</li>
-      <li>Process বানাতে OS কী কী জিনিস তৈরি করে দেয়?</li>
-      <li>একই executable-এর দুই process একে অপরের variable দেখতে পায় না কেন?</li>
+      <li>Disk-এর <code>node</code> file আর এইমাত্র চালানো <code>node</code> — কোনটা passive, আর কেন <code>count</code>-এর মান file-এ রাখা সম্ভব না?</li>
+      <li>Kernel একটা process-কে CPU থেকে সরানোর আগে কী সেভ করে রাখে, কোথায় রাখে, আর না রাখলে কী হতো?</li>
+      <li>File descriptor কী? প্রতিবার path না পাঠিয়ে নম্বর ব্যবহার করার সুবিধা কী, আর Node-এ <code>fs.openSync</code> ৩ না দিয়ে বড় নম্বর দেয় কেন?</li>
+      <li>দুই terminal-এ একই script চালালে একটার <code>count</code> অন্যটাকে প্রভাবিত করে না কেন? একটাকে <code>kill</code> করলে অন্যটার কী হয়?</li>
+      <li>Kernel প্রতিটা process-এর parent মনে রাখে কেন? তোমার shell কীভাবে জানে একটা command সফল হলো কি না?</li>
     </ul>
   </div>

@@ -1,54 +1,278 @@
   <p class="part-label">PART 1 · THE BIG PICTURE</p>
   <h2>Chapter 2 — The System Architecture</h2>
-  <p class="chap-sub">সব component-এর relationship একটা map-এ, আর একটা end-to-end উদাহরণ।</p>
+  <p class="chap-sub">Hardware-এর ভেতরে ঢুকব: CPU, RAM, storage কীভাবে জোড়া লাগানো, device কীভাবে CPU-কে ডাকে, আর একটা <code>readFileSync</code> পুরো পথটা কীভাবে পাড়ি দেয়।</p>
 
-  <h3>Player-দের চিনে নেই</h3>
+  <p>Chapter 1-এর সারকথা এক লাইনে: তোমার code <strong>user mode</strong>-এ চলে আর hardware ছুঁতে পারে না; hardware ছোঁয় শুধু <strong>kernel</strong>, আর দুইয়ের মাঝখানের দরজা হলো <strong>system call</strong>। সেই chapter-এ hardware-কে চারটা বাক্সে সেরে দিয়েছিলাম। এবার বাক্সগুলো খুলব, কারণ সামনের প্রায় প্রতিটা chapter — memory, process, file, network — এই বাক্সগুলোর আচরণের উপর দাঁড়িয়ে।</p>
+
+  <h3>CPU: এক hardware, অসংখ্য কাজ</h3>
+  <p>একদম প্রথম দিকের computer গুলো একটা নির্দিষ্ট কাজের জন্য তৈরি হতো। অন্য কাজ করাতে চাইলে তার পাল্টে নতুন করে wiring করতে হতো — দিনের পর দিন লাগত। তুমি যদি প্রতিবার নতুন app install করতে গিয়ে laptop-এর ভেতরের তার বদলাতে, তাহলে software industry বলে কিছু থাকত না।</p>
+  <p><strong>CPU</strong> এই সমস্যার সমাধান। CPU-র hardware স্থির, কখনো বদলায় না। সে শুধু একটা কাজ জানে: memory থেকে একটা <strong>instruction</strong> পড়ো, চালাও, তারপর পরেরটা পড়ো। Instruction আসলে একটা সংখ্যা, যার ভেতরে লেখা থাকে কী করতে হবে — যোগ, তুলনা, memory থেকে আনা, অন্য জায়গায় লাফ দেওয়া। কাজ বদলাতে চাইলে hardware না, শুধু memory-তে রাখা instruction-এর তালিকা বদলাও। এই তালিকাটাই program।</p>
+  <p>Instruction গুলো কাজ করে CPU-র ভেতরের কয়েকটা ছোট storage slot নিয়ে, যাদের বলে <strong>register</strong>। একটা core-এ মাত্র কয়েক ডজন register থাকে, প্রতিটায় একটা সংখ্যা রাখা যায় (৬৪-bit CPU-তে ৮ byte), আর এগুলো পুরো machine-এর সবচেয়ে দ্রুত storage। একটা বিশেষ register-এর নাম <strong>program counter</strong> (PC): এটা মনে রাখে পরের instruction টা memory-র কোথায় আছে। CPU প্রতিটা instruction শেষ করে PC সামনে সরায় — "program চলছে" বলতে আসলে এটুকুই বোঝায় (Chapter 4-এ বিস্তারিত)।</p>
+  <p>একটা শর্ত আছে: CPU কোন কোন instruction বোঝে, আর সেগুলো কোন সংখ্যা দিয়ে লেখা হয় — এই তালিকার নাম <strong>instruction set</strong>। Intel/AMD-র CPU বোঝে <code>x86-64</code>, Apple Silicon আর বেশিরভাগ phone বোঝে <code>arm64</code>। একটার জন্য বানানো program আরেকটায় সরাসরি চলে না। তোমার machine কোনটা?</p>
+  <div class="codewrap"><pre><code>node -p "process.arch"
+file $(which node)</code></pre></div>
+  <p>আমার Mac-এ দুটোই বলছে <code>arm64</code> — <code>node</code> program-টা ARM-এর instruction দিয়ে লেখা। Intel Mac-এ এই একই file চলবে না, তার জন্য <code>x86_64</code> version লাগবে।</p>
+
+  <h3>RAM আর memory address</h3>
+  <p>Register মাত্র কয়েক ডজন। অথচ তোমার Node server একসাথে লাখ লাখ মান নিয়ে কাজ করে — প্রতিটা request, প্রতিটা object, প্রতিটা string। এত data রাখার জন্য একটা বড় কাজের জায়গা লাগে, আর সেখানে প্রতিটা মানকে আলাদা করে চেনার উপায়ও লাগে। না হলে CPU বলবে কীভাবে "ওই মানটা আনো"?</p>
+  <p><strong>RAM</strong> হলো সেই বড় কাজের জায়গা। RAM-কে ভাবো byte-এর একটা বিশাল array হিসেবে — এটা উপমা না, hardware আসলেই এভাবে আচরণ করে। প্রতিটা byte-এর একটা index আছে: ০, ১, ২, … এই index-এর নাম <strong>memory address</strong>। CPU যখন RAM থেকে কিছু পড়ে, সে বলে "address এত থেকে ৮ byte দাও"; লেখার সময় বলে "address এত-তে এই মান রাখো"। ২৪ GB RAM মানে মোটামুটি ২,৫৭০ কোটি আলাদা address।</p>
+  <p>Address গুলো সাধারণত <strong>hexadecimal</strong>-এ লেখা হয় — ১৬-ভিত্তিক সংখ্যা, যেখানে ০–৯-এর পরে a–f আসে (a=১০ … f=১৫), আর সামনে <code>0x</code> বসিয়ে বোঝানো হয় এটা hex। Node-এ চেষ্টা করো:</p>
+  <div class="codewrap"><pre><code>node -p "[0xff, (255).toString(16), Buffer.from('Hi!')]"</code></pre></div>
+  <p>Output: <code>[ 255, 'ff', &lt;Buffer 48 69 21&gt; ]</code>। শেষেরটা দেখো — <code>"Hi!"</code> string-টা memory-তে তিনটা পাশাপাশি byte: <code>0x48</code> (H), <code>0x69</code> (i), <code>0x21</code> (!)। প্রথম byte যে address-এ, পরেরটা তার ঠিক পরের address-এ।</p>
+  <p>তোমার JS object-এরও একটা address আছে, V8 শুধু সেটা তোমাকে দেখায় না। একটা debug flag দিয়ে দেখানো যায়:</p>
+  <div class="codewrap"><pre><code>node --allow-natives-syntax -e "const user = { name: 'Rahim' }; %DebugPrint(user)"</code></pre></div>
+  <p>প্রথম লাইনে আসবে এরকম কিছু: <code>DebugPrint: 0x257501fa9999: [JS_OBJECT_TYPE]</code>। ওই <code>0x257501fa9999</code> হলো <code>user</code> object-টা memory-র কোন address-এ বসে আছে। (এটা আসলে "virtual" address — প্রতিটা process-কে OS যে নিজস্ব address-এর জগৎ দেয় তার ভেতরের ঠিকানা, Chapter 9-এ খুলে বলব। আপাতত ধরে নাও এটা RAM-এর একটা জায়গা।)</p>
+  <p>RAM-এর দুইটা সীমাবদ্ধতা মনে রাখো: <strong>volatile</strong> — power গেলে সব মুছে যায়; আর দামি — প্রতি GB-র দাম storage-এর চেয়ে অনেক বেশি।</p>
+
+  <h3>Storage: ধীর, কিন্তু স্থায়ী</h3>
+  <p>RAM volatile হলে তোমার code, তোমার database, তোমার photo — laptop বন্ধ করলেই সব হারাবে। এমন একটা জায়গা লাগবে যেখানে data power ছাড়াও টিকে থাকে, আর সস্তায় অনেক বেশি জায়গা পাওয়া যায়। সেটাই <strong>storage</strong>: SSD (flash chip-এ data রাখে, কোনো নড়াচড়ার অংশ নেই) বা পুরনো ধরনের hard disk (ঘুরন্ত চৌম্বক plate)।</p>
+  <p>দামটা দিতে হয় গতিতে। সময়ের একক আগে ঠিক করে নিই: <strong>ms</strong> (millisecond) = সেকেন্ডের হাজার ভাগের এক, <strong>µs</strong> (microsecond) = ms-এর হাজার ভাগের এক, <strong>ns</strong> (nanosecond) = µs-এর হাজার ভাগের এক। মোটা দাগের হিসাব (hardware ভেদে কম-বেশি হয়):</p>
   <div class="table-wrap"><table>
-    <tr><th>Component</th><th>এক লাইনে কাজ</th></tr>
-    <tr><td><strong>CPU</strong></td><td>Instruction execute করে। একমাত্র জায়গা যেখানে "কাজ" হয়।</td></tr>
-    <tr><td><strong>RAM (Memory)</strong></td><td>Running process-এর code আর data রাখে। Fast, কিন্তু volatile — power গেলে সব শেষ।</td></tr>
-    <tr><td><strong>Storage (SSD/HDD)</strong></td><td>Persistent data। Slow (RAM-এর তুলনায়), কিন্তু power গেলেও থাকে।</td></tr>
-    <tr><td><strong>Network device</strong></td><td>Packet পাঠায়/রিসিভ করে।</td></tr>
-    <tr><td><strong>Program</strong></td><td>Disk-এ পড়ে থাকা executable file। Passive জিনিস।</td></tr>
-    <tr><td><strong>Process</strong></td><td>Running program — নিজস্ব memory, নিজস্ব state সহ। Active জিনিস।</td></tr>
-    <tr><td><strong>Kernel</strong></td><td>Resource manager। সবসময় memory-তে থাকে।</td></tr>
-    <tr><td><strong>Driver</strong></td><td>Kernel-এর ভিতরের সেই code যেটা specific hardware-এর ভাষা জানে।</td></tr>
-    <tr><td><strong>File system</strong></td><td>Raw disk block-কে file/directory হিসেবে organize করে।</td></tr>
-    <tr><td><strong>System call</strong></td><td>User space → kernel space-এ ঢোকার একমাত্র official দরজা।</td></tr>
+    <tr><th>Data কোথা থেকে আসছে</th><th>মোটামুটি সময়</th><th>RAM-এর সময়টা ১ সেকেন্ড ধরলে</th></tr>
+    <tr><td>CPU register</td><td>&lt; ১ ns</td><td>এক পলকেরও কম</td></tr>
+    <tr><td>RAM</td><td>~১০০ ns</td><td>১ সেকেন্ড</td></tr>
+    <tr><td>SSD</td><td>~২০–১০০ µs</td><td>৩–১৭ মিনিট</td></tr>
+    <tr><td>Hard disk</td><td>~৫–১০ ms</td><td>১৪–২৮ ঘণ্টা</td></tr>
+    <tr><td>একই data center-এর অন্য server</td><td>~০.৫ ms</td><td>প্রায় দেড় ঘণ্টা</td></tr>
+    <tr><td>অন্য মহাদেশের server</td><td>~১৫০ ms</td><td>প্রায় ১৭ দিন</td></tr>
   </table></div>
+  <p>এই টেবিলটা মাথায় গেঁথে রাখো — "software কেন slow" প্রশ্নের অর্ধেক উত্তর এখানেই। নিজের machine-এ পার্থক্যটা মাপো। নিচের script একই ২০০ লাইন একবার শুধু RAM-এ (array-তে) রাখে, আরেকবার disk-এ লেখে। Disk-এর বেলায় প্রতিটা লেখার পর <code>fsyncSync</code> ডাকা হয়েছে। কারণ সাধারণ write-এ kernel data আগে RAM-এ জমিয়ে রাখে আর পরে সুবিধামতো storage-এ পাঠায় (কেন, সেটা Chapter 23-এ)। আর <code>fsync</code> বললে kernel storage-এ লেখা শেষ হওয়া পর্যন্ত অপেক্ষা করে তারপর ফেরে — মানে আসল storage-এর গতি মাপা হয়।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — disk.js</div>
+    <div class="codewrap"><pre><code>const fs = require('fs');
+const N = 200;
+const line = 'x'.repeat(100) + '\n';
 
-  <h3>End-to-end example: একটা file read</h3>
-  <p>ধরো তোমার Node.js code লিখলো <code>fs.readFileSync("config.json")</code>। Broadly যা ঘটে:</p>
-  <pre class="diagram"><span class="u">1. Application:  readFileSync("config.json") call করলো</span>
-<span class="u">2. Runtime/libc: ভিতরে গিয়ে read() system call বানালো</span>
-━━━━━━━━━━ <span class="dim">user → kernel mode switch</span> ━━━━━━━━━━
-<span class="k">3. Kernel:       request receive করলো</span>
-<span class="k">4. File system:  "config.json" মানে disk-এর কোন block? বের করলো</span>
-<span class="k">5. Page cache:   data আগেই cache-এ আছে কি? (থাকলে shortcut!)</span>
-<span class="k">6. Block layer:  না থাকলে disk-এর জন্য read request queue করলো</span>
-<span class="k">7. Driver:       storage device-কে command পাঠালো</span>
-8. Device:       data পড়ে DMA দিয়ে memory-তে দিলো
-<span class="k">9. Kernel:       data process-এর buffer-এ copy করলো</span>
-━━━━━━━━━━ <span class="dim">kernel → user mode switch</span> ━━━━━━━━━━
-<span class="u">10. Application: data হাতে পেলো, কাজ চললো</span></pre>
+// ১) শুধু RAM-এ: একটা array-তে N বার রাখা
+let t = performance.now();
+const arr = [];
+for (let i = 0; i &lt; N; i++) arr.push(line);
+console.log('RAM (array push)     :', (performance.now() - t).toFixed(3), 'ms');
 
-  <p>প্রতিটা step এখনই পুরোপুরি বোঝার দরকার নেই — page cache, DMA, block layer সব সামনের chapter-গুলোতে আসবে। এখন শুধু structure-টা মাথায় গাঁথো: <strong>application কখনো disk-কে সরাসরি দেখে না। মাঝখানে সবসময় kernel থাকে।</strong></p>
-
-  <div class="box concept">
-    <div class="box-title">MENTAL MODEL</div>
-    <p>যেকোনো I/O-এর গল্প আসলে একই pattern: <strong>user space request → system call → kernel-এর layer গুলো → hardware → ফেরার পথ উল্টো।</strong> File হোক, network হোক — pattern এক, শুধু মাঝের layer বদলায়।</p>
+// ২) storage-এ: প্রতিবার লিখে fsync — "সত্যি সত্যি storage-এ লেখো"
+const fd = fs.openSync('test.txt', 'w');
+t = performance.now();
+for (let i = 0; i &lt; N; i++) { fs.writeSync(fd, line); fs.fsyncSync(fd); }
+console.log('Disk (write + fsync) :', (performance.now() - t).toFixed(3), 'ms');
+fs.closeSync(fd);
+fs.unlinkSync('test.txt');</code></pre></div>
+    <p>আমার Mac-এ: RAM <code>0.013 ms</code>, disk <code>725.560 ms</code> — প্রায় ৫০,০০০ গুণ পার্থক্য। Docker-এর Linux-এ disk-এর অংশটা এসেছিল ~১০ ms। তোমার সংখ্যা আলাদা হবে, কিন্তু পার্থক্যটা শত বা হাজার গুণের ঘরেই থাকবে।</p>
   </div>
+
+  <h3>সবাইকে জোড়া লাগানো: bus, controller আর driver</h3>
+  <p>CPU-কে RAM-এর সাথে কথা বলতে হয়, SSD-র সাথে, network card-এর সাথে, USB-র সাথে। প্রতিটা জোড়ার জন্য আলাদা তার টানলে তারের জঙ্গল হবে। তার উপর এই device গুলো CPU-র তুলনায় ভয়ংকর ধীর আর প্রত্যেকের কাজের নিয়ম জটিল — CPU যদি নিজে flash chip-এর প্রতিটা voltage সামলাতে বসে, অন্য কিছু করার সময় পাবে না।</p>
+  <p>প্রথম সমস্যার সমাধান <strong>bus</strong>: একটা ভাগ করা যোগাযোগের পথ, যেটা দিয়ে একাধিক component data আর command আদান-প্রদান করে। CPU আর RAM-এর মাঝে একটা আলাদা দ্রুত <strong>memory bus</strong> থাকে। SSD, network card, GPU-র মতো device গুলো বসে একটা I/O bus-এ — আজকের machine-এ সাধারণত <strong>PCIe</strong>।</p>
+  <p>দ্বিতীয় সমস্যার সমাধান <strong>device controller</strong>: প্রতিটা device-এর নিজস্ব একটা ছোট chip, যেটা ওই device-এর খুঁটিনাটি নিজেই সামলায়। CPU-কে flash-এর voltage বুঝতে হয় না। Controller-এর কয়েকটা নিজস্ব register থাকে, আর CPU সেখানে একটা সরল command লিখে দেয় — "block ৮৮,২১০ থেকে ৪টা block পড়ো, RAM-এর এই address-এ রাখো"। বাকিটা controller নিজে করে।</p>
+  <p>কিন্তু কোন controller কোন command বোঝে, সেটা model ভেদে আলাদা। এই জ্ঞানটা রাখে <strong>driver</strong> — kernel-এর ভেতরের সেই code, যেটা একটা নির্দিষ্ট ধরনের controller-এর ভাষা জানে। Chapter 1-এ যে abstraction-এর কথা বলেছিলাম, তার নিচের তলাটা এরাই: file system বলে "এই block গুলো পড়ো", driver সেটাকে ওই নির্দিষ্ট controller-এর command-এ অনুবাদ করে।</p>
+  <p>তোমার kernel-এ কোন কোন driver load করা আছে, দেখো:</p>
+  <div class="codewrap"><pre><code># macOS
+kmutil showloaded | grep -iE "nvme|wlan|apfs"
+
+# Linux
+lsmod | head</code></pre></div>
+  <p>আমার Mac-এ এসেছে <code>com.apple.iokit.IONVMeFamily</code> (SSD-র driver; NVMe হলো আধুনিক SSD-র সাথে কথা বলার একটা standard), <code>com.apple.driver.AppleBCMWLANCore</code> (Wi-Fi chip-এর driver), আর <code>com.apple.filesystems.apfs</code> (macOS-এর file system)। সব মিলিয়ে <code>kmutil showloaded | wc -l</code> গুনলে ২৬০-এর বেশি।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 420" width="100%" role="img" aria-label="CPU and RAM joined by the memory bus; SSD, network and USB controllers sit on the I/O bus; controllers raise interrupts to the CPU">
+      <defs>
+        <marker id="c02f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c02f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+
+      <rect x="50" y="24" width="250" height="176" rx="10" class="b"/>
+      <text x="70" y="50" class="t-h">CPU</text>
+      <rect x="70" y="64" width="100" height="56" rx="6" class="b-u"/>
+      <text x="120" y="88" text-anchor="middle" class="t-s">Core 0</text>
+      <text x="120" y="106" text-anchor="middle" class="t-m t-s">registers · PC</text>
+      <rect x="180" y="64" width="100" height="56" rx="6" class="b-u"/>
+      <text x="230" y="88" text-anchor="middle" class="t-s">Core 1</text>
+      <text x="230" y="106" text-anchor="middle" class="t-m t-s">registers · PC</text>
+      <rect x="70" y="130" width="100" height="56" rx="6" class="b-u"/>
+      <text x="120" y="154" text-anchor="middle" class="t-s">Core 2</text>
+      <text x="120" y="172" text-anchor="middle" class="t-m t-s">registers · PC</text>
+      <rect x="180" y="130" width="100" height="56" rx="6" class="b-u"/>
+      <text x="230" y="154" text-anchor="middle" class="t-s">Core 3</text>
+      <text x="230" y="172" text-anchor="middle" class="t-m t-s">registers · PC</text>
+
+      <rect x="510" y="24" width="250" height="176" rx="10" class="b"/>
+      <text x="530" y="50" class="t-h">RAM</text>
+      <rect x="530" y="72" width="36" height="34" class="b"/>
+      <text x="548" y="94" text-anchor="middle" class="mono">48</text>
+      <rect x="566" y="72" width="36" height="34" class="b"/>
+      <text x="584" y="94" text-anchor="middle" class="mono">69</text>
+      <rect x="602" y="72" width="36" height="34" class="b"/>
+      <text x="620" y="94" text-anchor="middle" class="mono">21</text>
+      <rect x="638" y="72" width="36" height="34" class="b"/>
+      <text x="656" y="94" text-anchor="middle" class="mono">00</text>
+      <rect x="674" y="72" width="36" height="34" class="b"/>
+      <text x="692" y="94" text-anchor="middle" class="mono">7f</text>
+      <rect x="710" y="72" width="36" height="34" class="b-m"/>
+      <text x="728" y="94" text-anchor="middle" class="t-m">…</text>
+      <text x="548" y="124" text-anchor="middle" class="t-m mono">0</text>
+      <text x="584" y="124" text-anchor="middle" class="t-m mono">1</text>
+      <text x="620" y="124" text-anchor="middle" class="t-m mono">2</text>
+      <text x="656" y="124" text-anchor="middle" class="t-m mono">3</text>
+      <text x="692" y="124" text-anchor="middle" class="t-m mono">4</text>
+      <text x="530" y="156" class="t-s">one byte per address</text>
+      <text x="530" y="178" class="t-m t-s">24 GB ≈ 25.7 billion addresses</text>
+
+      <line x1="302" y1="112" x2="508" y2="112" class="ln" marker-start="url(#c02f1-a)" marker-end="url(#c02f1-a)"/>
+      <text x="405" y="102" text-anchor="middle" class="t-s">memory bus</text>
+      <text x="405" y="132" text-anchor="middle" class="t-m t-s">~100 ns per access</text>
+
+      <line x1="60" y1="262" x2="760" y2="262" class="ln" style="stroke-width:3"/>
+      <text x="760" y="252" text-anchor="end" class="t-m t-s">I/O bus (PCIe)</text>
+      <line x1="175" y1="202" x2="175" y2="259" class="ln" marker-start="url(#c02f1-a)" marker-end="url(#c02f1-a)"/>
+
+      <rect x="110" y="292" width="180" height="52" rx="8" class="b"/>
+      <text x="200" y="323" text-anchor="middle">SSD controller</text>
+      <line x1="200" y1="264" x2="200" y2="290" class="ln"/>
+      <rect x="330" y="292" width="180" height="52" rx="8" class="b"/>
+      <text x="420" y="323" text-anchor="middle">Network controller</text>
+      <line x1="420" y1="264" x2="420" y2="290" class="ln"/>
+      <rect x="550" y="292" width="180" height="52" rx="8" class="b"/>
+      <text x="640" y="323" text-anchor="middle">USB controller</text>
+      <line x1="640" y1="264" x2="640" y2="290" class="ln"/>
+
+      <line x1="200" y1="344" x2="200" y2="364" class="ln"/>
+      <rect x="120" y="364" width="160" height="36" rx="6" class="b-m"/>
+      <text x="200" y="387" text-anchor="middle" class="t-m t-s">NAND flash chips</text>
+      <line x1="420" y1="344" x2="420" y2="364" class="ln"/>
+      <rect x="340" y="364" width="160" height="36" rx="6" class="b-m"/>
+      <text x="420" y="387" text-anchor="middle" class="t-m t-s">Ethernet / Wi-Fi</text>
+      <line x1="640" y1="344" x2="640" y2="364" class="ln"/>
+      <rect x="560" y="364" width="160" height="36" rx="6" class="b-m"/>
+      <text x="640" y="387" text-anchor="middle" class="t-m t-s">keyboard, mouse …</text>
+
+      <path d="M110 318 H30 V160 H48" class="ln-k dash" marker-end="url(#c02f1-k)"/>
+      <text x="22" y="240" text-anchor="middle" class="t-k t-s" transform="rotate(-90 22 240)">interrupt</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">CPU আর RAM একটা দ্রুত memory bus দিয়ে জোড়া; RAM-এর প্রতিটা byte-এর একটা address। বাকি device গুলো নিজ নিজ controller সহ I/O bus-এ বসে। Amber দাগটা interrupt-এর পথ (পরের section) — আঁকা হয়েছে শুধু SSD-রটা, কিন্তু প্রতিটা controller-এরই এমন পথ আছে।</p>
+
+  <h3>Interrupt: device কীভাবে CPU-কে ডাকে</h3>
+  <p>ধরো kernel SSD controller-কে command দিল "এই block গুলো পড়ো"। টেবিল অনুযায়ী এতে প্রায় ১০০ µs লাগবে — এই সময়ে একটা আধুনিক core কয়েক লাখ instruction চালিয়ে ফেলতে পারে। Kernel জানবে কীভাবে কখন কাজ শেষ হলো?</p>
+  <p>সরল উপায়: CPU বারবার controller-কে জিজ্ঞেস করবে "হয়েছে? হয়েছে?" — এর নাম <strong>polling</strong>। JS-এ এটা হলো <code>setInterval</code> দিয়ে প্রতি মুহূর্তে একটা flag চেক করা। সমস্যা হলো, ওই কয়েক লাখ instruction-এর সময়টা পুরো নষ্ট হয় প্রশ্ন করতে করতে। আর device যদি হাজারটা হয়, CPU-র সারাদিন কাটবে শুধু খোঁজ নিতে।</p>
+  <p>সমাধান হলো <strong>interrupt</strong>: device-এর কাজ শেষ হলে controller নিজেই একটা নির্দিষ্ট তার দিয়ে CPU-কে একটা hardware signal পাঠায়। তারপর:</p>
+  <ol>
+    <li>CPU হাতের instruction-টা শেষ করে, আর মনে রাখে সে কোথায় ছিল (PC আর দরকারি register গুলো সেভ করে)।</li>
+    <li>CPU kernel mode-এ ঢোকে, আর kernel-এর <strong>interrupt handler</strong>-এ লাফ দেয় — boot-এর সময় kernel প্রতিটা ধরনের interrupt-এর জন্য যে code ঠিক করে রেখেছিল।</li>
+    <li>Handler দেখে কী হয়েছে (যেমন "block পড়া শেষ"), যে program এই data-র জন্য অপেক্ষা করছিল তাকে জাগিয়ে দেয়।</li>
+    <li>CPU আগের জায়গায় ফিরে যায় — যেন কিছুই হয়নি।</li>
+  </ol>
+  <p>মাঝের পুরো সময়টা CPU অন্য কাজ করতে পারল। এটা JS-এর event listener-এর মতো শোনালেও পার্থক্য আছে: এটা কোনো software callback না, CPU chip-এর একটা physical input, যেটা চলমান যেকোনো code-কে মাঝপথে থামিয়ে দিতে পারে।</p>
+  <p>এখান থেকে Chapter 1-এর একটা রহস্যের উত্তরও আসে। <code>while(true){}</code> loop কোনো syscall করে না, kernel-কে কখনো ডাকে না — তাহলে OS তাকে CPU থেকে সরাল কীভাবে? উত্তর: <strong>timer interrupt</strong>। CPU-র পাশে একটা timer chip থাকে, যেটা kernel-এর বেঁধে দেওয়া নিয়মিত ব্যবধানে (Linux-এ সাধারণত প্রতি ১–৪ ms-এ) interrupt পাঠায়। প্রতিটা tick-এ kernel নিয়ন্ত্রণ ফিরে পায় আর সিদ্ধান্ত নেয় এই program-কে চলতে দেবে নাকি অন্য কাউকে বসাবে। Program নিজে না চাইলেও kernel-এর হাতে নিয়ন্ত্রণ ফেরার এটাই নিশ্চিত পথ।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <p>Linux kernel শুরু থেকে এ পর্যন্ত কতগুলো interrupt সামলেছে, সেই মোট হিসাব রাখে <code>/proc/stat</code> file-এর <code>intr</code> লাইনে। এক সেকেন্ডের ব্যবধানে দুইবার পড়ো:</p>
+    <div class="codewrap"><pre><code>docker run --rm alpine sh -c "awk '/^intr/{print \$2}' /proc/stat; sleep 1; awk '/^intr/{print \$2}' /proc/stat"</code></pre></div>
+    <p>আমার চালানোয় এসেছে <code>38638665</code> আর <code>38640797</code> — প্রায় চুপচাপ বসে থাকা একটা VM-এও এক সেকেন্ডে ২,১০০-এর বেশি interrupt। আসল Linux machine-এ <code>cat /proc/interrupts</code> চালালে device ধরে ধরে আলাদা হিসাব দেখবে (Docker Desktop এই file-টা লুকিয়ে রাখে)।</p>
+  </div>
+
+  <h3>Kernel-এর ভেতরের ভাগগুলো</h3>
+  <p>Kernel-এর কাজের তালিকা এখন লম্বা: program-দের পালা ঠিক করা, memory ভাগ করা, file-এর নাম থেকে block খোঁজা, network packet সামলানো, শত শত ধরনের device-এর সাথে কথা বলা। সব এক জায়গায় জট পাকালে কেউ এই code maintain করতে পারত না। তাই kernel কয়েকটা ভাগে (<strong>subsystem</strong>) সাজানো, প্রত্যেকের দায়িত্ব আলাদা:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Subsystem</th><th>কী সামলায়</th><th>Linux-এ উঁকি দাও</th></tr>
+    <tr><td><strong>Process management</strong></td><td>কোন program চলছে, কে কখন CPU পাবে</td><td><code>cat /proc/self/status</code></td></tr>
+    <tr><td><strong>Memory management</strong></td><td>কোন process কোন memory পাবে, কারটা কে ছুঁতে পারবে না</td><td><code>head -3 /proc/meminfo</code></td></tr>
+    <tr><td><strong>File system</strong></td><td>File-এর নাম আর folder-কে storage-এর block-এ রূপান্তর</td><td><code>cat /proc/filesystems</code></td></tr>
+    <tr><td><strong>Network stack</strong></td><td>Socket থেকে packet বানানো, packet থেকে socket-এ data পৌঁছানো</td><td><code>cat /proc/net/tcp</code></td></tr>
+    <tr><td><strong>Device drivers</strong></td><td>প্রতিটা controller-এর ভাষায় কথা বলা</td><td><code>cat /proc/modules</code></td></tr>
+  </table></div>
+  <p>ডানের command গুলো সবই <code>/proc</code>-এর file পড়ে। <code>/proc</code> আসলে disk-এ রাখা কোনো folder না — Linux kernel তার ভেতরের অবস্থা এখানে file-এর চেহারায় সাজিয়ে রাখে, আর তুমি পড়লে তখনই তৈরি করে দেয়। Docker-এ চালিয়ে দেখো: <code>docker run --rm alpine cat /proc/meminfo</code>। (macOS-এ <code>/proc</code> নেই; সেখানে একই তথ্য আসে <code>vm_stat</code>, <code>ps</code>, <code>kmutil</code>-এর মতো আলাদা আলাদা command থেকে।)</p>
+
+  <h3>পুরো যাত্রা: একটা <code>readFileSync</code></h3>
+  <p>এবার সব টুকরো জোড়া দিই। তোমার code-এ এক লাইন:</p>
+  <div class="codewrap"><pre><code>const config = fs.readFileSync('config.json');</code></pre></div>
+  <p>ধরে নিচ্ছি file-টা আগে কখনো পড়া হয়নি। যা যা ঘটে:</p>
+  <ol>
+    <li><strong>User space:</strong> Node file খোলার আর পড়ার জন্য syscall করে — Chapter 1-এর <code>strace</code>-এ দেখা <code>openat</code> আর <code>read</code>। CPU kernel mode-এ ঢোকে।</li>
+    <li><strong>File system:</strong> <code>config.json</code> নামটা থেকে বের করে storage-এর কোন কোন block-এ file-টা আছে।</li>
+    <li><strong>RAM-এ আগে থেকে আছে কি?</strong> Kernel সম্প্রতি পড়া file-এর data RAM-এ রেখে দেয়, যাতে পরেরবার storage-এ যেতে না হয় — এই জায়গার নাম <strong>page cache</strong> (Chapter 23)। থাকলে সোজা ধাপ ৭-এ। এবার নেই।</li>
+    <li><strong>Driver:</strong> SSD controller-এর register-এ command লেখে: "এই block গুলো পড়ো, RAM-এর এই address-এ রাখো"।</li>
+    <li><strong>অপেক্ষা:</strong> তোমার process-কে kernel ঘুম পাড়িয়ে দেয়, আর CPU-তে অন্য কাউকে বসায়। CPU বসে থাকে না।</li>
+    <li><strong>SSD:</strong> controller flash থেকে data পড়ে সরাসরি RAM-এ লিখে দেয় — CPU-কে byte byte copy করতে হয় না; device-এর এই নিজে নিজে RAM-এ লেখার ক্ষমতার নাম <strong>DMA</strong> (Direct Memory Access, Chapter 11)। তারপর interrupt পাঠায়।</li>
+    <li><strong>Interrupt handler:</strong> kernel দেখে data এসেছে, সেটা Node-এর নিজের memory-তে (যেটা Node user mode থেকে ছুঁতে পারে) copy করে, আর তোমার process-কে জাগায়।</li>
+    <li><strong>ফেরা:</strong> <code>read</code> syscall result নিয়ে ফেরে, CPU আবার user mode-এ, <code>readFileSync</code> তোমাকে <code>Buffer</code> দেয়।</li>
+  </ol>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 560" width="100%" role="img" aria-label="Sequence of a readFileSync call: syscall into the kernel, file system lookup, page cache miss, driver command to the SSD, DMA, interrupt, copy and return while the process sleeps">
+      <defs>
+        <marker id="c02f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c02f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c02f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c02f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+
+      <rect x="60" y="16" width="180" height="40" rx="8" class="b-u"/>
+      <text x="150" y="41" text-anchor="middle" class="t-h">app.js · Node</text>
+      <rect x="330" y="16" width="200" height="40" rx="8" class="b-k"/>
+      <text x="430" y="41" text-anchor="middle" class="t-h">Kernel</text>
+      <rect x="630" y="16" width="160" height="40" rx="8" class="b"/>
+      <text x="710" y="41" text-anchor="middle" class="t-h">SSD controller</text>
+
+      <path d="M150 56 V82 M150 106 V130 M150 496 V520" class="ln dash"/>
+      <path d="M430 56 V132 M430 172 V182 M430 222 V232 M430 272 V430 M430 480 V520" class="ln dash"/>
+      <path d="M710 56 V306 M710 358 V520" class="ln dash"/>
+
+      <line x1="290" y1="16" x2="290" y2="540" class="ln-k dash"/>
+      <text x="298" y="78" class="t-k t-s">system call boundary</text>
+
+      <text x="150" y="98" text-anchor="middle" class="mono">readFileSync('config.json')</text>
+      <line x1="162" y1="122" x2="328" y2="122" class="ln-k" marker-end="url(#c02f2-k)"/>
+      <text x="170" y="115" class="t-k t-s">read() syscall</text>
+
+      <rect x="140" y="130" width="20" height="366" rx="4" class="b-m"/>
+      <text x="150" y="313" text-anchor="middle" class="t-m t-s" transform="rotate(-90 150 313)">process sleeps — CPU runs other work</text>
+
+      <rect x="330" y="132" width="200" height="40" rx="6" class="b-k"/>
+      <text x="430" y="157" text-anchor="middle" class="t-s">file system: name → blocks</text>
+      <rect x="330" y="182" width="200" height="40" rx="6" class="b-k"/>
+      <text x="430" y="207" text-anchor="middle" class="t-s">page cache: in RAM? — no</text>
+      <rect x="330" y="232" width="200" height="40" rx="6" class="b-k"/>
+      <text x="430" y="257" text-anchor="middle" class="t-s">driver: write command</text>
+
+      <line x1="532" y1="292" x2="706" y2="292" class="ln" marker-end="url(#c02f2-a)"/>
+      <text x="540" y="284" class="t-s">read blocks 88210–88213</text>
+
+      <rect x="640" y="306" width="140" height="52" rx="6" class="b"/>
+      <text x="710" y="328" text-anchor="middle" class="t-s">fetch from flash</text>
+      <text x="710" y="347" text-anchor="middle" class="t-m t-s">≈ 100 µs</text>
+
+      <line x1="706" y1="382" x2="534" y2="382" class="ln" marker-end="url(#c02f2-a)"/>
+      <text x="540" y="374" class="t-s">DMA: data written to RAM</text>
+      <line x1="706" y1="418" x2="534" y2="418" class="ln-d dash" marker-end="url(#c02f2-d)"/>
+      <text x="540" y="410" class="t-d t-s">interrupt: done!</text>
+
+      <rect x="330" y="430" width="200" height="50" rx="6" class="b-k"/>
+      <text x="430" y="451" text-anchor="middle" class="t-s">handler: copy data into</text>
+      <text x="430" y="469" text-anchor="middle" class="t-s">Node's buffer, wake process</text>
+
+      <line x1="328" y1="506" x2="162" y2="506" class="ln-u" marker-end="url(#c02f2-u)"/>
+      <text x="170" y="499" class="t-u t-s">return: 14 bytes</text>
+      <text x="150" y="534" text-anchor="middle" class="t-u t-s">readFileSync() returns</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">উপর থেকে নিচে সময় এগোচ্ছে। Amber খাড়া দাগের বাঁয়ে user space, ডানে kernel আর hardware। বাঁয়ের ধূসর বারটা লক্ষ করো: SSD যতক্ষণ কাজ করছে, তোমার process ততক্ষণ ঘুমিয়ে — কিন্তু CPU তখন অন্য process চালাচ্ছে।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"OS মানে UI — desktop, window, icon।" না। Desktop environment একটা application মাত্র। আসল OS হলো kernel + তার service গুলো, যেটা server-এ UI ছাড়াই দিব্যি চলে। তুমি যে production server-এ deploy করো, সেখানে OS পুরোদমে কাজ করছে — কোনো UI ছাড়াই।</p>
+    <p>"<code>readFileSync</code> মানে CPU বসে বসে disk-এর জন্য অপেক্ষা করে।" না — অপেক্ষা করে তোমার <em>process</em>, CPU না। Kernel তোমার process-কে ঘুম পাড়িয়ে CPU অন্য কাউকে দিয়ে দেয়। তাহলে <code>Sync</code> version খারাপ কেন? কারণ Node-এ তোমার সব JS চলে একটাই <strong>thread</strong>-এ — thread হলো একটা process-এর ভেতরে instruction চালানোর একটা স্বাধীন ধারা, kernel যাকে আলাদাভাবে ঘুম পাড়াতে বা জাগাতে পারে। সেই একমাত্র thread ঘুমালে ওই সময় তোমার server আর কোনো request ধরতে পারে না। CPU ফাঁকা থাকলেও তোমার app আটকে আছে। (Thread নিয়ে বিস্তারিত Part 5-এ, আর async I/O কীভাবে এই আটকে যাওয়া এড়ায় — Part 7-এ।)</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>যেকোনো I/O-এর গল্প একই ছাঁচে: <strong>user space-এর request → system call → kernel-এর subsystem → driver → controller → (অপেক্ষা) → interrupt → kernel → user space</strong>। File হোক বা network — ছাঁচ এক, শুধু মাঝের subsystem আর controller বদলায়।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Program আর process-এর পার্থক্য এক লাইনে?</li>
-      <li>File read-এর সময় request-টা কোন কোন layer পার হয়?</li>
-      <li>Driver জিনিসটা kernel-এর ভিতরে কেন থাকে?</li>
+      <li>CPU-র hardware কখনো বদলায় না, তবু একই CPU browser আর database দুটোই চালায় কীভাবে? Program counter এখানে কী ভূমিকা রাখে?</li>
+      <li>Memory address কী? <code>Buffer.from('Hi!')</code>-এর তিনটা byte-এর address গুলোর মধ্যে সম্পর্ক কী?</li>
+      <li>RAM থাকতে storage লাগে কেন, আর storage থাকতে RAM লাগে কেন? উত্তরে গতি আর স্থায়িত্ব দুটোই আনো।</li>
+      <li>Interrupt না থাকলে kernel-কে কীভাবে জানতে হতো যে SSD-র কাজ শেষ? আর কোনো syscall না করা <code>while(true){}</code> loop-কে kernel CPU থেকে সরায় কীভাবে?</li>
+      <li><code>readFileSync</code> চলার সময় SSD যখন data আনছে, তখন CPU কী করছে, আর তোমার Node process কী করছে?</li>
     </ul>
   </div>

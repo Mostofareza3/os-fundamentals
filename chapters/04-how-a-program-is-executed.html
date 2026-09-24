@@ -1,47 +1,290 @@
   <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
   <h2>Chapter 4 — Program কীভাবে execute হয়</h2>
-  <p class="chap-sub">Source code থেকে চলমান process পর্যন্ত পুরো pipeline — high level-এ।</p>
+  <p class="chap-sub">মানুষের লেখা source code থেকে CPU-তে চলা instruction পর্যন্ত পুরো পথ: compile, link, load, আর CPU-র নিজের loop।</p>
 
-  <h3>Source থেকে executable</h3>
-  <p>একটা ছোট C program ধরি (C এখানে শুধু tool — OS-এর সবচেয়ে কাছের ভাষা বলে):</p>
+  <p>আগের chapter-এর সারকথা: <strong>program</strong> হলো disk-এ রাখা একটা executable file — ভেতরে header, machine code আর initial data; <strong>process</strong> হলো সেই program-এর চলমান রূপ, যার জন্য kernel একটা PCB, নিজস্ব address space আর CPU context (register + program counter) রাখে। এই chapter-এ দুইটা ফাঁক ভরাট করব: ওই executable file-টা তৈরি হলো কীভাবে, আর file থেকে process-এ রূপান্তরটা ঠিক কীভাবে ঘটে।</p>
+
+  <h3>CPU সংখ্যা বোঝে, মানুষ বোঝে শব্দ</h3>
+  <p>Chapter 2-এ দেখেছি CPU শুধু তার instruction set-এর সংখ্যা বোঝে। হাতে লিখতে হলে তোমাকে <code>d10083ff</code>-এর মতো সংখ্যা মুখস্থ করতে হতো, আর ARM-এর জন্য লেখা জিনিস Intel-এ চালাতে পুরোটা আবার লিখতে হতো। কেউ এভাবে software লেখে না। মানুষ লেখে পড়ার উপযোগী ভাষায়, আর একটা program সেটাকে machine code-এ অনুবাদ করে। এই অনুবাদক program-এর নাম <strong>compiler</strong>।</p>
+  <p>উদাহরণ হিসেবে C ভাষার একটা ছোট program নেব — C এখানে শুধু একটা tool, কারণ এটা hardware-এর সবচেয়ে কাছের জনপ্রিয় ভাষা, আর <code>node</code> নিজেও মূলত C/C++-এ লেখা। C জানতে হবে না, প্রতিটা লাইন বলে দিচ্ছি:</p>
   <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
 
-int main() {
-    printf("hello\n");
+int main(void) {
+    printf("hello %d\n", 42);
     return 0;
 }</code></pre></div>
-  <p><code>gcc hello.c -o hello</code> চালালে ভিতরে কয়েকটা ধাপ ঘটে:</p>
-  <pre class="diagram">hello.c (source)
-   ↓ <span class="dim">compiler — C কে assembly/machine code-এ translate</span>
-hello.o (object file — machine code, কিন্তু অসম্পূর্ণ)
-   ↓ <span class="dim">linker — printf-এর মতো বাইরের function-এর ঠিকানা জোড়া লাগায়</span>
-hello (executable — ELF file, run করার জন্য ready)</pre>
-  <p>Object file "অসম্পূর্ণ" কেন? কারণ তোমার code <code>printf</code> call করেছে, কিন্তু <code>printf</code>-এর code তোমার file-এ নেই — সেটা C library-তে। <strong>Linker</strong>-এর কাজ এই reference গুলো resolve করা। (Static vs dynamic linking Chapter 33-এ।)</p>
+  <ul>
+    <li><code>#include &lt;stdio.h&gt;</code> — JS-এর <code>import</code>-এর কাছাকাছি: compiler-কে জানায় <code>printf</code> নামে একটা function আছে। কিন্তু <code>printf</code>-এর আসল code এখানে আসে না, শুধু তার নাম আর কী কী argument নেয় সেটা আসে।</li>
+    <li><code>int main(void) {</code> — <code>main</code> নামের function, C program-এর কাজ এখান থেকে শুরু। <code>int</code> মানে function-টা একটা integer ফেরত দেয়।</li>
+    <li><code>printf("hello %d\n", 42);</code> — <code>console.log</code>-এর মতো। <code>%d</code>-এর জায়গায় সংখ্যাটা বসে, ঠিক template literal-এর <code>${42}</code>-এর মতো; <code>\n</code> মানে নতুন লাইন।</li>
+    <li><code>return 0;</code> — <code>main</code> থেকে ০ ফেরত দেওয়া মানে process-এর exit code ০, মানে সফল (Chapter 3)।</li>
+  </ul>
+  <p>File-টা <code>hello.c</code> নামে save করো। macOS-এ <code>cc</code> command আগে থেকেই থাকে (না থাকলে <code>xcode-select --install</code>); Linux-এ <code>gcc</code>। নিচের সব command দুই জায়গাতেই চলে, শুধু output-এ ছোটখাটো পার্থক্য থাকবে — সেগুলো আলাদা করে দেখাব।</p>
 
-  <h3>ELF: executable-এর গঠন</h3>
-  <p>Linux executable-এর format হলো <strong>ELF</strong> (Executable and Linkable Format)। ভিতরে মোটা দাগে থাকে: header (এটা কী ধরনের file, execution কোথা থেকে শুরু — <strong>entry point</strong>), machine code section, initialized data section, আর dynamic library-র dependency list। JavaScript developer হিসেবে ভাবতে পারো — ELF হলো compiled program-এর <code>package.json</code> + bundle একসাথে।</p>
+  <h3>Compiler আর object file</h3>
+  <p>প্রথমে শুধু compile করো, link না (<code>-c</code> flag):</p>
+  <div class="codewrap"><pre><code>cc -c hello.c -o hello.o
+nm hello.o</code></pre></div>
+  <p><code>hello.o</code> হলো একটা <strong>object file</strong>: তোমার লেখা function গুলো machine code-এ অনুবাদ করা, কিন্তু এখনো চালানো যায় না। কেন যায় না, <code>nm</code> বলে দিচ্ছে। <code>nm</code> একটা file-এর <strong>symbol</strong> দেখায় — symbol মানে file-এর ভেতরে লিখে রাখা function বা variable-এর নাম, আর সেটা কোথায় আছে। Output:</p>
+  <div class="codewrap"><pre><code>0000000000000000 T _main
+                 U _printf</code></pre></div>
+  <p>(Linux-এ নামের সামনে <code>_</code> থাকে না: <code>main</code>, <code>printf</code>।) <code>T</code> মানে "এই file-এর code অংশে আছে" — <code>main</code> আমরা লিখেছি, তাই আছে। <code>U</code> মানে <strong>undefined</strong>: এই file <code>printf</code> ব্যবহার করে, কিন্তু তার code এখানে নেই। Machine code-এর যেখানে <code>printf</code>-কে ডাকা হয়েছে, সেখানে আসলে একটা ফাঁকা জায়গা রয়ে গেছে — "printf-এর ঠিকানা পরে এখানে বসবে"।</p>
+  <p>Compiler নিজে <code>printf</code>-এর code ঢুকিয়ে দেয় না কেন? কারণ বড় project-এ হাজারটা source file থাকে; প্রতিটা আলাদা করে object file-এ compile করলে একটা file বদলালে শুধু সেটাই আবার compile করতে হয়। জোড়া লাগানোর কাজটা আলাদা একটা ধাপ।</p>
 
-  <h3>Run করার মুহূর্তে: loader</h3>
-  <p><code>./hello</code> চালালে shell একটা system call দিয়ে kernel-কে বলে "এই executable থেকে process বানাও"। তখন kernel-এর <strong>loader</strong> অংশ কাজ করে:</p>
+  <h3>Library আর linker</h3>
+  <p><code>printf</code>-এর code আছে একটা <strong>library</strong>-তে — library হলো আগে থেকে compile করা function-এর সংকলন, যাতে সবাই বারবার একই code না লেখে। C-র standard function গুলো থাকে <strong>libc</strong>-তে; Linux-এ file-টার নাম <code>libc.so.6</code>, macOS-এ এটা <code>libSystem.B.dylib</code>-এর অংশ।</p>
+  <p>Object file আর library জোড়া দিয়ে চালানোর উপযোগী executable বানানোর কাজ করে <strong>linker</strong>। <code>cc</code>-কে <code>-c</code> ছাড়া ডাকলে সে ভেতরে linker চালায়:</p>
+  <div class="codewrap"><pre><code>cc hello.o -o hello
+./hello              # hello 42
+nm hello | grep " U "
+otool -L hello       # macOS: কোন library লাগবে
+ldd hello            # Linux: একই প্রশ্ন</code></pre></div>
+  <p>চমকপ্রদ ব্যাপার: executable <code>hello</code>-তেও <code>nm</code> এখনো দেখাচ্ছে <code>U _printf</code>! মানে linker <code>printf</code>-এর code copy করে ঢোকায়নি। সে শুধু লিখে রেখেছে "এই program চলতে <code>libSystem.B.dylib</code> লাগবে, <code>printf</code> সেখান থেকে নিও" — <code>otool -L</code> ঠিক সেটাই দেখাচ্ছে। Linux-এ <code>ldd hello</code> দেখায় <code>libc.so.6 =&gt; /lib/aarch64-linux-gnu/libc.so.6</code>। এর নাম <strong>dynamic linking</strong>: library-র code জোড়া লাগে program চালু হওয়ার মুহূর্তে। উল্টোটা, <strong>static linking</strong>-এ library-র দরকারি code executable-এর ভেতরেই copy হয়ে যায়। আজকের বেশিরভাগ program dynamic; কোনটা কখন ভালো, সেটা Chapter 33-এ।</p>
+  <p>JS দুনিয়ায় এর কাছাকাছি জিনিস হলো bundler: webpack বা esbuild তোমার <code>import</code> গুলো resolve করে একটা file বানায়। কোনো dependency bundle-এর ভেতরে ঢুকিয়ে দেওয়া হলো static linking-এর মতো, আর CDN থেকে runtime-এ load করা dynamic-এর মতো। তবে পার্থক্যটা মনে রেখো: linker কাজ করে machine code আর memory address নিয়ে — "<code>printf</code>-কে ডাকার instruction-এ আসল address বসাও" — module বা text file নিয়ে না।</p>
+  <p><code>node</code> নিজেও এভাবে তৈরি: <code>otool -L $(which node)</code> চালালে আমার Mac-এ দেখায় সে <code>libc++</code>, <code>libSystem</code>, <code>CoreFoundation</code>, <code>Security</code> — এই চারটা library-র উপর নির্ভরশীল।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="hello.c is compiled to hello.o which has main defined and printf missing; the linker combines it with a reference to libc to make the executable hello">
+      <defs>
+        <marker id="c04f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="60" width="170" height="120" rx="10" class="b"/>
+      <text x="44" y="88" class="t-h">hello.c</text>
+      <text x="44" y="108" class="t-m t-s">source code (text)</text>
+      <text x="44" y="138" class="mono">int main(void) {</text>
+      <text x="56" y="158" class="mono">printf(…);</text>
+
+      <line x1="196" y1="120" x2="258" y2="120" class="ln" marker-end="url(#c04f1-a)"/>
+      <text x="227" y="110" text-anchor="middle" class="t-s">compiler</text>
+      <text x="227" y="140" text-anchor="middle" class="t-m mono">cc -c</text>
+
+      <rect x="262" y="60" width="200" height="120" rx="10" class="b"/>
+      <text x="282" y="88" class="t-h">hello.o</text>
+      <text x="282" y="108" class="t-m t-s">object file</text>
+      <text x="282" y="138" class="t-ok t-s">T main — defined here</text>
+      <text x="282" y="160" class="t-d t-s">U printf — missing (a hole)</text>
+
+      <line x1="464" y1="120" x2="526" y2="120" class="ln" marker-end="url(#c04f1-a)"/>
+      <text x="495" y="110" text-anchor="middle" class="t-s">linker</text>
+      <text x="495" y="140" text-anchor="middle" class="t-m mono">cc</text>
+
+      <rect x="530" y="40" width="246" height="160" rx="10" class="b-u"/>
+      <text x="550" y="68" class="t-h">hello</text>
+      <text x="550" y="88" class="t-m t-s">executable (ELF / Mach-O)</text>
+      <rect x="550" y="100" width="206" height="26" rx="4" class="b"/>
+      <text x="653" y="118" text-anchor="middle" class="t-s">header · entry point</text>
+      <rect x="550" y="130" width="206" height="26" rx="4" class="b"/>
+      <text x="653" y="148" text-anchor="middle" class="t-s">machine code of main</text>
+      <rect x="550" y="160" width="206" height="26" rx="4" class="b"/>
+      <text x="653" y="178" text-anchor="middle" class="t-s">needs: libc → printf</text>
+
+      <rect x="262" y="222" width="200" height="60" rx="8" class="b-m"/>
+      <text x="362" y="246" text-anchor="middle" class="t-s">libc.so.6 / libSystem</text>
+      <text x="362" y="266" text-anchor="middle" class="t-m t-s">printf's machine code</text>
+      <path d="M464 252 H514 V126" class="ln dash"/>
+      <text x="526" y="236" class="t-m t-s">dynamic linking: only the</text>
+      <text x="526" y="254" class="t-m t-s">library's name is recorded</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Compiler তোমার code-কে machine code-এ অনুবাদ করে, কিন্তু <code>printf</code>-এর জায়গাটা ফাঁকা রাখে। Linker ফাঁকটার হিসাব মেলায় — dynamic linking-এ সে library-র code copy করে না, শুধু লিখে রাখে কোন library লাগবে। আসল জোড়া লাগে program চালু হওয়ার সময়।</p>
+
+  <h3>Executable-এর ভেতরে: header, segment, entry point</h3>
+  <p>এবার kernel-এর দিক থেকে ভাবো। তাকে একটা file দিয়ে বলা হলো "চালাও"। সে জানবে কীভাবে কোন byte গুলো code (যেগুলো চালানো যাবে কিন্তু বদলানো যাবে না), কোনগুলো data (যেগুলো বদলানো যাবে), কোথা থেকে চালানো শুরু করতে হবে, আর কোন library লাগবে? File-টা যদি এলোমেলো byte হতো, kernel-এর আন্দাজ করা ছাড়া উপায় থাকত না।</p>
+  <p>তাই executable একটা নির্দিষ্ট format মেনে লেখা হয় — Linux-এ <strong>ELF</strong> (Executable and Linkable Format), macOS-এ <strong>Mach-O</strong>। নাম আলাদা, মূল জিনিস এক:</p>
+  <ul>
+    <li><strong>Header</strong> — magic number (Chapter 3-এর <code>7f 45 4c 46</code>), কোন CPU-র জন্য, আর <strong>entry point</strong>: program-এর প্রথম instruction-টা কোথায়।</li>
+    <li><strong>Segment</strong> — file-এর এক একটা টুকরা, যেটা memory-তে একসাথে বসানো হবে, নিজস্ব permission সহ: code-এর segment "পড়া + চালানো যাবে" (<code>R E</code>), data-র segment "পড়া + লেখা যাবে" (<code>RW</code>)।</li>
+    <li><strong>Dynamic linker-এর path</strong> — library জোড়া লাগানোর দায়িত্ব কোন program নেবে (নিচে আলাদা section)।</li>
+  </ul>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — header আর segment পড়া</div>
+    <p>Linux-এ (বা <code>debian</code> Docker image-এ <code>apt install gcc binutils</code> করে):</p>
+    <div class="codewrap"><pre><code>readelf -h hello | grep Entry
+readelf -lW hello | grep -E "LOAD|interpreter"</code></pre></div>
+    <p>আমার output:</p>
+    <div class="codewrap"><pre><code>  Entry point address:               0x640
+      [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+  LOAD  0x000000 0x0000000000000000 ... 0x000884 0x000884 R E 0x10000
+  LOAD  0x00fdc8 0x000000000001fdc8 ... 0x000270 0x000278 RW  0x10000</code></pre></div>
+    <p>macOS-এ একই তথ্য: <code>otool -l hello | grep -A3 LC_MAIN</code> দেখায় <code>entryoff 1120</code>, আর <code>otool -l hello | grep -A2 LC_LOAD_DYLINKER</code> দেখায় <code>/usr/lib/dyld</code>।</p>
+  </div>
+  <p>দুইটা <code>LOAD</code> লাইন হলো দুইটা segment — প্রথমটা code (<code>R E</code>), দ্বিতীয়টা data (<code>RW</code>)। Entry point-এ একটা সূক্ষ্মতা আছে। Linux-এ <code>0x640</code> ঠিকানায় আছে <code>_start</code> নামের একটা ছোট function (<code>nm hello | grep _start</code> দিয়ে দেখো), যেটা C library নিজে যোগ করে; সে কিছু প্রস্তুতি সেরে তারপর <code>main</code> ডাকে। macOS-এ entry সরাসরি <code>main</code>: <code>entryoff 1120</code>-কে hex-এ লিখলে <code>0x460</code>, আর <code>nm hello</code> বলছে <code>_main</code> আছে <code>0x100000460</code>-এ — file-এর শুরুর ঠিকানা <code>0x100000000</code>-এর সাথে <code>0x460</code> যোগ করলেই সেটা।</p>
+
+  <h3>exec: kernel কীভাবে file থেকে process বানায়</h3>
+  <p>Terminal-এ <code>./hello</code> লিখে Enter চাপলে কী হয়? Chapter 3-এ দেখেছি shell একটা child process তৈরি করে। কিন্তু সেই নতুন child শুরুতে shell-এরই একটা copy, <code>hello</code> না। তাকে <code>hello</code>-তে রূপান্তর করতে child একটা syscall করে: <code>execve</code> — "আমার ভেতরের পুরনো program ফেলে দাও, এই file-টা চালাও"। সঙ্গে দেয় argument-এর তালিকা আর environment variable-এর তালিকা।</p>
+  <p>Kernel-এর যে অংশ এই কাজ করে তাকে বলে <strong>loader</strong>। ধাপগুলো:</p>
   <ol>
-    <li>নতুন process তৈরি করে (PID, address space)</li>
-    <li>ELF header পড়ে code আর data segment গুলো process-এর memory-তে <em>map</em> করে</li>
-    <li>Stack setup করে (argv, envp বসায়)</li>
-    <li>CPU-র <strong>program counter</strong> (instruction pointer)-কে entry point-এ set করে দেয়</li>
+    <li><strong>যাচাই:</strong> file-টা আছে কি না, magic number চেনা কি না, আর file-এ <strong>execute permission</strong> আছে কি না। <code>chmod -x hello; ./hello</code> চালিয়ে দেখো — উত্তর আসবে <code>permission denied: ./hello</code>; kernel <code>execve</code>-তেই আটকে দিয়েছে। (<code>chmod +x hello</code> দিয়ে ফেরত দাও।)</li>
+    <li><strong>পুরনো memory ফেলে দেওয়া:</strong> এই process-এর আগের program-এর (shell-এর copy) সব memory বাদ, নতুন ফাঁকা address space।</li>
+    <li><strong>Segment map করা:</strong> header দেখে code segment আর data segment-কে address space-এর নির্দিষ্ট জায়গায় বসায়, নিজ নিজ permission সহ। "বসায়" বলতে <strong>map</strong> করে — মানে ঠিক করে দেয় "address-এর এই range-এ file-এর ওই অংশ থাকবে"। পুরো file তখনই RAM-এ copy হয় না; CPU যখন কোনো অংশ প্রথমবার ছোঁয়, kernel তখন সেটুকু disk থেকে আনে (Chapter 9)। এজন্যই ১০৪ MB-এর <code>node</code> চালু হয়ে <code>node -e "console.log(process.memoryUsage().rss / 2**20)"</code>-এ দেখায় মাত্র ~৩৭ MB RAM ব্যবহার করছে।</li>
+    <li><strong>Stack তৈরি:</strong> নতুন process-এর জন্য একটা stack-এর জায়গা (কী জিনিস, Chapter 5-এ), আর তার মাথায় রেখে দেয় argument আর environment-এর তালিকা। <strong>argv</strong> মানে তুমি command-এ যা যা শব্দ লিখেছ; <strong>environment variable</strong> মানে <code>PATH</code>, <code>HOME</code>-এর মতো নাম=মান জোড়া।</li>
+    <li><strong>PC বসানো:</strong> program dynamically linked হলে kernel dynamic linker-কেও map করে, আর PC বসায় <em>তার</em> entry point-এ; না হলে সরাসরি program-এর entry point-এ। তারপর user mode-এ ফিরে যায় — CPU সেখান থেকে চালাতে শুরু করে।</li>
   </ol>
-  <p>ব্যস — এখন CPU ওই address থেকে instruction fetch করে execute করা শুরু করে। Program "চলছে" মানে আসলে এটুকুই: <strong>CPU-র program counter তোমার code-এর ভিতর দিয়ে হাঁটছে।</strong></p>
-  <p>একটা সূক্ষ্মতা: dynamic library গুলো kernel load করে না। Binary টা dynamically linked হলে kernel প্রথম লাফ দেয় <strong>dynamic linker</strong> (<code>ld.so</code>)-এর entry point-এ — সেটা user space-এ চলা একটা program, আর সে-ই <code>.so</code> গুলো map করে, তারপর তোমার code-এ control ছাড়ে। মানে process-এর প্রথম user-space instruction টা আসলে তোমার না। বিস্তারিত Chapter 34-এ।</p>
+  <p>ধাপ ৪ তোমার চেনা: Node-এর <code>process.argv</code> আর <code>process.env</code> ঠিক সেই তালিকাই পড়ে, যেটা kernel stack-এ রেখে গিয়েছিল।</p>
+  <div class="codewrap"><pre><code>node -e "console.log(process.argv)" hello world</code></pre></div>
+  <p>Output: <code>[ '/Users/you/.nvm/versions/node/v22.15.1/bin/node', 'hello', 'world' ]</code>। আর একটা জিনিস লক্ষ করো: <code>execve</code> নতুন process বানায় না, <em>একই</em> process-এর ভেতরের program বদলায়। PID একই থাকে:</p>
+  <div class="codewrap"><pre><code>sh -c 'echo "shell pid: $$"; exec node -e "console.log(\"node pid: \" + process.pid)"'</code></pre></div>
+  <p>আমার চালানোয়: <code>shell pid: 87520</code>, তারপর <code>node pid: 87520</code>। Shell-এর <code>exec</code> command সরাসরি <code>execve</code> ডাকে — তাই shell-টা নিজেই node-এ রূপান্তরিত হলো, নম্বর বদলাল না।</p>
 
-  <div class="box kern">
-    <div class="box-title">তাহলে JavaScript/Python-এর বেলায়?</div>
-    <p><code>node server.js</code> চালালে process টা আসলে <code>node</code> executable-এর — সেটাই ELF, সেটাই load হয়। তোমার <code>server.js</code> হলো ওই process-এর data, যেটা V8 engine পড়ে ভিতরে JIT compile করে চালায়। OS-এর চোখে process একটাই — node। এজন্যই <code>ps</code> দিলে দেখো "node", "server.js" না।</p>
+  <figure class="fig">
+    <svg viewBox="0 0 800 350" width="100%" role="img" aria-label="execve: a user process calls into the kernel; the loader checks the file, builds a new address space, maps segments, builds the stack and sets the PC; back in user space the dynamic linker loads libc and jumps to main">
+      <defs>
+        <marker id="c04f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c04f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c04f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="26" class="t-u t-s">USER SPACE · PID 5120 (child of zsh)</text>
+      <rect x="24" y="36" width="360" height="54" rx="8" class="b-u"/>
+      <text x="44" y="58" class="t-s">the child asks to become ./hello</text>
+      <text x="44" y="78" class="mono">execve("./hello", argv, envp)</text>
+
+      <line x1="20" y1="112" x2="780" y2="112" class="ln-k dash"/>
+      <text x="780" y="106" text-anchor="end" class="t-k t-s">SYSTEM CALL BOUNDARY</text>
+      <line x1="240" y1="90" x2="240" y2="138" class="ln-k" marker-end="url(#c04f2-k)"/>
+      <text x="24" y="134" class="t-k t-s">KERNEL · loader</text>
+
+      <rect x="24" y="142" width="138" height="62" rx="7" class="b-k"/>
+      <text x="93" y="168" text-anchor="middle" class="t-s">check magic no.</text>
+      <text x="93" y="186" text-anchor="middle" class="t-s">+ x permission</text>
+      <rect x="176" y="142" width="138" height="62" rx="7" class="b-k"/>
+      <text x="245" y="168" text-anchor="middle" class="t-s">drop old memory,</text>
+      <text x="245" y="186" text-anchor="middle" class="t-s">new address space</text>
+      <rect x="328" y="142" width="138" height="62" rx="7" class="b-k"/>
+      <text x="397" y="168" text-anchor="middle" class="t-s">map segments:</text>
+      <text x="397" y="186" text-anchor="middle" class="t-s">code R-X, data RW-</text>
+      <rect x="480" y="142" width="138" height="62" rx="7" class="b-k"/>
+      <text x="549" y="168" text-anchor="middle" class="t-s">build stack:</text>
+      <text x="549" y="186" text-anchor="middle" class="t-s">argv, envp</text>
+      <rect x="632" y="142" width="144" height="62" rx="7" class="b-k"/>
+      <text x="704" y="168" text-anchor="middle" class="t-s">PC = entry of</text>
+      <text x="704" y="186" text-anchor="middle" class="t-s">ld.so / dyld</text>
+      <line x1="162" y1="173" x2="174" y2="173" class="ln" marker-end="url(#c04f2-a)"/>
+      <line x1="314" y1="173" x2="326" y2="173" class="ln" marker-end="url(#c04f2-a)"/>
+      <line x1="466" y1="173" x2="478" y2="173" class="ln" marker-end="url(#c04f2-a)"/>
+      <line x1="618" y1="173" x2="630" y2="173" class="ln" marker-end="url(#c04f2-a)"/>
+
+      <line x1="20" y1="232" x2="780" y2="232" class="ln-k dash"/>
+      <line x1="704" y1="204" x2="704" y2="262" class="ln-u" marker-end="url(#c04f2-u)"/>
+      <text x="714" y="250" class="t-u t-s">return</text>
+      <text x="24" y="254" class="t-u t-s">USER SPACE · same PID 5120, new program</text>
+
+      <rect x="560" y="266" width="216" height="62" rx="7" class="b-u"/>
+      <text x="668" y="292" text-anchor="middle" class="t-s">ld.so / dyld runs: maps libc,</text>
+      <text x="668" y="310" text-anchor="middle" class="t-s">fills in printf's address</text>
+      <rect x="300" y="266" width="216" height="62" rx="7" class="b-u"/>
+      <text x="408" y="292" text-anchor="middle" class="t-s">jump to main()</text>
+      <text x="408" y="310" text-anchor="middle" class="t-m t-s">(Linux: via _start)</text>
+      <rect x="40" y="266" width="216" height="62" rx="7" class="b-u"/>
+      <text x="148" y="292" text-anchor="middle" class="t-s">printf → write() syscall</text>
+      <text x="148" y="310" text-anchor="middle" class="mono">hello 42</text>
+      <line x1="558" y1="297" x2="518" y2="297" class="ln" marker-end="url(#c04f2-a)"/>
+      <line x1="298" y1="297" x2="258" y2="297" class="ln" marker-end="url(#c04f2-a)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">উপরে child process <code>execve</code> দিয়ে kernel-এ ঢোকে; মাঝের amber সারি loader-এর পাঁচ ধাপ। নিচে একই PID-এ user mode-এ ফেরা — কিন্তু এবার ডান থেকে বাঁয়ে পড়ো: প্রথমে dynamic linker চলে, তারপর <code>main</code>, আর শেষে <code>printf</code> আবার syscall করে terminal-এ লেখে।</p>
+
+  <h3>Dynamic linker: প্রথম instruction আসলে তোমার না</h3>
+  <p>Dynamic linking-এর ফাঁকটা মনে করো: <code>hello</code>-এর ভেতরে <code>printf</code>-এর ঠিকানা এখনো ফাঁকা। <code>main</code> চালু হওয়ার আগে কাউকে libc খুঁজে map করতে হবে আর ফাঁকটা ভরাট করতে হবে, না হলে <code>printf</code> ডাকার মুহূর্তে CPU অর্থহীন ঠিকানায় লাফ দেবে।</p>
+  <p>Kernel এই কাজ নিজে করে না — library খোঁজার নিয়ম (কোন folder-এ, কোন version) কাজের নীতির ব্যাপার, আর kernel-কে যত ছোট রাখা যায় তত নিরাপদ। তাই এই দায়িত্ব দেওয়া হয় একটা user-space program-কে: <strong>dynamic linker</strong> (Linux-এ <code>ld.so</code>, যেমন <code>/lib/ld-linux-aarch64.so.1</code>; macOS-এ <code>dyld</code>)। ওপরের ধাপ ৫-এ kernel PC বসিয়েছিল এরই entry point-এ। Dynamic linker তারপর দরকারি library গুলো একই process-এর address space-এ map করে, ফাঁকা ঠিকানা গুলো ভরাট করে, আর শেষে program-এর entry point-এ লাফ দেয়। মানে তোমার process-এর প্রথম user-space instruction গুলো তোমার না — dynamic linker-এর।</p>
+  <p>macOS-এ dyld-কে কাজ করতে দেখা যায়:</p>
+  <div class="codewrap"><pre><code>DYLD_PRINT_LIBRARIES=1 ./hello</code></pre></div>
+  <p>Output-এর প্রথম দিকের লাইন:</p>
+  <div class="codewrap"><pre><code>dyld[87515]: &lt;39E396B6-...&gt; /private/tmp/.../hello
+dyld[87515]: &lt;4FED5EE2-...&gt; /usr/lib/libSystem.B.dylib
+dyld[87515]: &lt;9CD7B1E1-...&gt; /usr/lib/system/libcache.dylib
+...
+hello 42</code></pre></div>
+  <p><code>hello 42</code> আসার আগে dyld একের পর এক library load করেছে। আর এটা শুধু ছোট C program-এর ব্যাপার না: একটা চলমান Node process-এর খোলা file-এর তালিকায় (<code>lsof -p &lt;PID&gt;</code>) আমি পেয়েছি <code>txt REG /usr/lib/dyld</code> — dyld সেই process-এর address space-এ map করা আছে।</p>
+  <p>এত ঝামেলা কেন? কারণ libc-র code একটাই কপি হয়ে RAM-এ থাকে আর শত শত process সেটা ভাগ করে ব্যবহার করে (code-এর অংশ কেউ বদলাতে পারে না বলে ভাগ করা নিরাপদ — Chapter 5)। আর libc-তে security fix এলে একটা file বদলালেই সব program ঠিক হয়ে যায়।</p>
+
+  <h3>Fetch–decode–execute: "চলছে" মানে আসলে কী</h3>
+  <p>Loader PC বসিয়ে দিল, dynamic linker <code>main</code>-এ লাফ দিল। এখন "program চলছে" — কিন্তু CPU-র ভেতরে এর মানে কী? উত্তরটা আশ্চর্যরকম সরল: CPU একটা loop চালায়, আর থামে না।</p>
+  <ol>
+    <li><strong>Fetch:</strong> PC যে address দেখাচ্ছে, memory থেকে সেখানকার instruction পড়ো।</li>
+    <li><strong>Decode:</strong> সংখ্যাটা ভেঙে বোঝো — কোন কাজ (যোগ? memory থেকে আনা? লাফ?), কোন register নিয়ে।</li>
+    <li><strong>Execute:</strong> কাজটা করো।</li>
+    <li><strong>PC update:</strong> সাধারণত পরের instruction-এ সরাও; আর instruction-টা যদি লাফ হয়, তাহলে লাফের গন্তব্যে বসাও। তারপর আবার ১ নম্বর।</li>
+  </ol>
+  <p>আধুনিক CPU সেকেন্ডে কয়েকশো কোটিবার এটা করে (আসলে অনেকগুলো instruction একসাথে ধাপে ধাপে এগিয়ে নেয় — Chapter 14), কিন্তু ধারণাটা এটাই। নিজের program-এর instruction গুলো দেখো:</p>
+  <div class="codewrap"><pre><code>otool -tvj hello              # macOS
+objdump -d --disassemble=main hello    # Linux</code></pre></div>
+  <p>macOS-এ <code>main</code>-এর মাঝখানের অংশ:</p>
+  <div class="codewrap"><pre><code>000000010000047c   d2800548   mov  x8, #0x2a
+0000000100000480   f9000128   str  x8, [x9]
+0000000100000484   90000000   adrp x0, 0
+0000000100000488   9112b000   add  x0, x0, #0x4ac ; literal pool for: "hello %d\n"
+000000010000048c   94000005   bl   0x1000004a0    ; symbol stub for: _printf
+0000000100000490   b9400be0   ldr  w0, [sp, #0x8]</code></pre></div>
+  <p>প্রথম column address, দ্বিতীয় column instruction-টা আসলে যে ৪ byte-এর সংখ্যা, তৃতীয়টা মানুষের পড়ার জন্য তার নাম (এই নামে লেখা রূপকে বলে <strong>assembly</strong>)। কয়েকটা জিনিস লক্ষ করো। <code>mov x8, #0x2a</code> — <code>0x2a</code> মানে ৪২, তোমার সংখ্যাটা একটা register-এ রাখা হচ্ছে। Address গুলো ৪ করে বাড়ছে (<code>47c</code>, <code>480</code>, <code>484</code>…), কারণ arm64-এ প্রতিটা instruction ঠিক ৪ byte, তাই "পরের instruction" মানে PC + ৪। আর <code>bl</code> হলো লাফ: PC-কে <code>printf</code>-এর দিকে পাঠায়, আর ফেরার ঠিকানা (<code>0x100000490</code>) একটা register-এ রেখে যায়, যাতে <code>printf</code> শেষে ঠিক পরের লাইনে ফেরা যায়। (ফেরার ঠিকানা কোথায় জমা থাকে, সেটা Chapter 5-এর বড় বিষয়।)</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="The CPU fetch-decode-execute loop: the program counter points at an instruction in memory; the CPU fetches, decodes and executes it, then moves the PC forward by four bytes or to a jump target">
+      <defs>
+        <marker id="c04f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c04f3-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="36" y="38" class="t-m t-s">address</text>
+      <text x="152" y="38" class="t-m t-s">bytes</text>
+      <text x="238" y="38" class="t-m t-s">instruction</text>
+      <rect x="24" y="48" width="412" height="30" rx="4" class="b"/>
+      <text x="36" y="68" class="mono">0x…47c</text><text x="152" y="68" class="mono">d2800548</text><text x="238" y="68" class="mono">mov x8, #0x2a</text>
+      <rect x="24" y="82" width="412" height="30" rx="4" class="b"/>
+      <text x="36" y="102" class="mono">0x…480</text><text x="152" y="102" class="mono">f9000128</text><text x="238" y="102" class="mono">str x8, [x9]</text>
+      <rect x="24" y="116" width="412" height="30" rx="4" class="b"/>
+      <text x="36" y="136" class="mono">0x…484</text><text x="152" y="136" class="mono">90000000</text><text x="238" y="136" class="mono">adrp x0, 0</text>
+      <rect x="24" y="150" width="412" height="30" rx="4" class="b"/>
+      <text x="36" y="170" class="mono">0x…488</text><text x="152" y="170" class="mono">9112b000</text><text x="238" y="170" class="mono">add x0, x0, #0x4ac</text>
+      <rect x="24" y="184" width="412" height="30" rx="4" class="b-u"/>
+      <text x="36" y="204" class="mono">0x…48c</text><text x="152" y="204" class="mono">94000005</text><text x="238" y="204" class="mono">bl _printf</text>
+      <rect x="24" y="218" width="412" height="30" rx="4" class="b"/>
+      <text x="36" y="238" class="mono">0x…490</text><text x="152" y="238" class="mono">b9400be0</text><text x="238" y="238" class="mono">ldr w0, [sp, #0x8]</text>
+      <text x="24" y="276" class="t-m t-s">arm64: every instruction is exactly 4 bytes</text>
+
+      <rect x="470" y="36" width="150" height="56" rx="8" class="b-u"/>
+      <text x="545" y="58" text-anchor="middle" class="t-u">PC</text>
+      <text x="545" y="80" text-anchor="middle" class="mono">0x10000048c</text>
+      <path d="M500 92 C 500 170, 480 199, 440 199" class="ln-u" marker-end="url(#c04f3-u)"/>
+
+      <rect x="640" y="30" width="140" height="56" rx="8" class="b"/>
+      <text x="710" y="54" text-anchor="middle" class="t-h">Fetch</text>
+      <text x="710" y="73" text-anchor="middle" class="t-m t-s">read 4 bytes at PC</text>
+      <rect x="640" y="126" width="140" height="56" rx="8" class="b"/>
+      <text x="710" y="150" text-anchor="middle" class="t-h">Decode</text>
+      <text x="710" y="169" text-anchor="middle" class="t-m t-s">which op? registers?</text>
+      <rect x="640" y="222" width="140" height="56" rx="8" class="b"/>
+      <text x="710" y="246" text-anchor="middle" class="t-h">Execute</text>
+      <text x="710" y="265" text-anchor="middle" class="t-m t-s">add · load · jump</text>
+      <line x1="622" y1="60" x2="638" y2="60" class="ln" marker-end="url(#c04f3-a)"/>
+      <line x1="710" y1="86" x2="710" y2="124" class="ln" marker-end="url(#c04f3-a)"/>
+      <line x1="710" y1="182" x2="710" y2="220" class="ln" marker-end="url(#c04f3-a)"/>
+      <path d="M638 250 C 590 250, 580 180, 580 96" class="ln" marker-end="url(#c04f3-a)"/>
+      <text x="470" y="244" class="t-s">update PC:</text>
+      <text x="470" y="262" class="t-m t-s">PC + 4, or jump target</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে memory-তে রাখা <code>hello</code>-র কয়েকটা instruction; PC এই মুহূর্তে <code>bl _printf</code>-এর দিকে তাকিয়ে আছে। ডানে CPU-র loop: fetch, decode, execute, তারপর PC সরাও। সাধারণ instruction-এর পরে PC ৪ বাড়ে; <code>bl</code>-এর পরে সে সোজা <code>printf</code>-এর ঠিকানায় চলে যায়।</p>
+
+  <h3>তাহলে <code>node server.js</code>-এর বেলায়?</h3>
+  <p>JavaScript-এ তো compile বা link-এর ধাপ দেখো না। তাহলে এই পুরো গল্প কোথায় খাটে? খাটে, শুধু অন্য জায়গায়। <code>node server.js</code> চালালে kernel যে executable load করে সেটা হলো <code>node</code> — ওপরের সব ধাপ (<code>execve</code>, segment map, dyld/ld.so, <code>main</code>) ঘটে <code>node</code> binary-র জন্য। Kernel-এর কাছে <code>server.js</code> নিছক একটা argument, <code>argv[1]</code>।</p>
+  <div class="codewrap"><pre><code>node -e "setTimeout(() =&gt; {}, 60000)" server-demo &amp;
+ps -o pid,comm,args -p $!</code></pre></div>
+  <p>(<code>$!</code> মানে shell-এর শেষ background process-এর PID।) Output-এ <code>COMM</code> column বলছে <code>node</code> — kernel-এর চোখে process-টার program হলো node, তোমার script না।</p>
+  <p>তোমার JS-এর machine code তাহলে আসে কোথা থেকে? <code>node</code>-এর ভেতরের V8 engine চালু হয়ে <code>server.js</code>-কে সাধারণ file হিসেবে পড়ে (<code>read</code> syscall দিয়ে), parse করে, প্রথমে নিজের একটা <strong>interpreter</strong> দিয়ে চালায় — interpreter মানে এমন code, যেটা তোমার program-কে machine code-এ না বদলে নিজে এক এক ধাপ পড়ে পড়ে কাজটা করে দেয়। যে function বারবার চলে, V8 সেটাকে চলার মাঝখানেই machine code-এ compile করে ফেলে — এর নাম <strong>JIT</strong> (just-in-time) compilation। মানে compiler আর linker-এর কাজটা JS-এর বেলায় ঘটে program চলাকালীন, process-এর নিজের memory-র ভেতরে। দেখো:</p>
+  <div class="codewrap"><pre><code>node --trace-opt -e "function add(a, b) { return a + b } let s = 0; for (let i = 0; i &lt; 1e7; i++) s = add(s, i)" | grep add</code></pre></div>
+  <p>Output-এ আসবে <code>marking ... &lt;JSFunction add ...&gt; for optimization to TURBOFAN ... reason: hot and stable</code>, তারপর <code>completed optimizing ... add</code>। TurboFan হলো V8-এর optimizing compiler — <code>add</code> গরম হয়ে উঠতেই সে সেটাকে arm64 বা x86-64-এর machine code বানিয়ে ফেলেছে, এবং এরপর থেকে CPU সরাসরি সেই instruction গুলো fetch-decode-execute করছে।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Source → <strong>compiler</strong> (অনুবাদ, ফাঁক রেখে) → <strong>linker</strong> (ফাঁকের হিসাব) → executable file → <strong><code>execve</code></strong> (kernel-এর loader: যাচাই, map, stack, PC) → <strong>dynamic linker</strong> (library জোড়া) → <code>main</code> → CPU-র অন্তহীন fetch-decode-execute। Node-এর বেলায় পুরো শিকলটা চলে <code>node</code> binary-র জন্য; তোমার JS-এর জন্য compile হয় পরে, চলার মাঝখানে, JIT দিয়ে।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Compiler আর linker-এর কাজের পার্থক্য কী?</li>
-      <li>Loader ঠিক কী কী কাজ করে?</li>
-      <li>Entry point আর program counter-এর সম্পর্ক কী?</li>
+      <li><code>nm hello.o</code>-তে <code>printf</code>-এর পাশে <code>U</code> দেখায় কেন? Executable <code>hello</code>-তেও <code>U</code> থেকে যায় কেন — static linking হলে কী দেখাত?</li>
+      <li><code>execve</code>-র সময় kernel-এর loader ধাপে ধাপে কী করে? Node-এর <code>process.argv</code> শেষ পর্যন্ত কোথা থেকে আসে?</li>
+      <li><code>exec node ...</code> চালানোর আগে আর পরে PID একই থাকে কেন? <code>execve</code> আসলে কী বদলায়?</li>
+      <li>Dynamically linked program-এ process-এর প্রথম user-space instruction গুলো কার, আর এই দায়িত্ব kernel নিজে নেয় না কেন?</li>
+      <li><code>otool -tvj</code> বা <code>objdump -d</code>-এর output-এ address গুলো ৪ করে বাড়ে কেন? <code>bl</code> instruction PC-র সাথে কী করে? আর <code>node server.js</code>-এ তোমার JS কখন machine code হয়?</li>
     </ul>
   </div>

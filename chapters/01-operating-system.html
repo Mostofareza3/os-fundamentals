@@ -1,58 +1,244 @@
   <p class="part-label">PART 1 · THE BIG PICTURE</p>
   <h2>Chapter 1 — Operating System কেন দরকার?</h2>
-  <p class="chap-sub">Hardware আর application-এর মাঝখানে একটা layer কেন লাগে, আর সেই layer-টা আসলে কী কী responsibility নেয়।</p>
+  <p class="chap-sub">তোমার code আর hardware-এর মাঝখানে একটা বাড়তি layer বসানো আছে। এই chapter-এ দেখব সেটা না থাকলে কী কী ভেঙে পড়ত, আর সেই ভাঙন ঠেকাতে layer-টা ঠিক কী করে।</p>
 
-  <h3>Problem-টা আগে বুঝি</h3>
-  <p>Computer hardware মানে মূলত চারটা জিনিস — <strong>CPU</strong> (instruction execute করে), <strong>RAM</strong> (running data রাখে), <strong>storage</strong> (persistent data রাখে), আর <strong>network interface</strong> (বাইরের দুনিয়ার সাথে কথা বলে)। এগুলো ভয়ংকর রকমের "dumb"। CPU শুধু raw instruction চেনে, disk শুধু block number চেনে — "file" বলে কিছু চেনে না, network card শুধু raw packet পাঠাতে জানে।</p>
-  <p>অন্যদিকে application মানে তোমার লেখা code — যে চায় "এই file-টা পড়ো", "এই port-এ listen করো", "এই object-টা memory-তে রাখো"। এখন ভাবো, OS না থাকলে প্রতিটা application-কে নিজে নিজে disk-এর electronics-এর সাথে কথা বলতে হতো, নিজে RAM-এর কোন byte কার সেটা track করতে হতো, নিজে network card-এর driver লিখতে হতো।</p>
-  <p>তার উপর আরেকটা বড় সমস্যা — এক computer-এ <strong>একসাথে অনেকগুলো program চলে</strong>। Chrome, VS Code, node server, Spotify — সবাই একই CPU, একই RAM চায়। কে কখন CPU পাবে? কার data কোন RAM-এ থাকবে? একজন আরেকজনের memory-তে হাত দিলে কী হবে? এই ঝগড়া মেটানোর জন্য একজন referee লাগে।</p>
+  <p>তুমি হয়তো বছরের পর বছর <code>fs.readFile</code> আর <code>app.listen(3000)</code> লিখেছ। কিন্তু কখনো ভাবতে হয়নি file টা SSD-র কোন কোণে পড়ে আছে, বা network card-কে কোন ভাষায় বলতে হয় "এই data টা পাঠাও"। এই যে "ভাবতে হয়নি" — এটা কোনো magic না। এর পেছনে একটা পুরো software layer দিনরাত কাজ করছে, যার নাম <strong>operating system</strong> (OS)। Definition দিয়ে শুরু না করে চলো আগে দেখি এটা না থাকলে জীবন কেমন হতো।</p>
+
+  <h3>আগে জেনে নিই: machine-এর ভেতরে কী আছে</h3>
+  <p>যেকোনো computer — তোমার laptop হোক বা AWS-এর server — মোটা দাগে চারটা জিনিস দিয়ে তৈরি:</p>
+  <ul>
+    <li><strong>CPU</strong> — আসল কাজ যে করে। CPU বোঝে শুধু <strong>instruction</strong>: খুব ছোট ছোট আদেশ, যেমন "এই দুইটা সংখ্যা যোগ করো", "memory থেকে একটা মান আনো", "শর্ত সত্যি হলে অন্য জায়গায় লাফ দাও"। তোমার পুরো Node.js app শেষ পর্যন্ত কোটি কোটি এমন instruction-এ ভেঙে চলে।</li>
+    <li><strong>RAM</strong> (memory) — চলমান program-এর code আর data যেখানে থাকে। দ্রুত, কিন্তু power গেলে সব মুছে যায়।</li>
+    <li><strong>Storage</strong> (SSD বা hard disk) — file যেখানে স্থায়ীভাবে থাকে। Power গেলেও থাকে, কিন্তু RAM-এর চেয়ে বহুগুণ ধীর।</li>
+    <li><strong>Network card</strong> — অন্য machine-এর সাথে data আদান-প্রদান করে।</li>
+  </ul>
+  <p>আর <strong>program</strong> বলতে এই বইয়ে বোঝাব instruction-ভরা একটা file — যেমন <code>node</code>, Chrome, বা <code>ls</code>।</p>
+  <p>একটা CPU chip-এর ভেতরে সাধারণত কয়েকটা স্বাধীন অংশ থাকে, যাদের প্রত্যেকে আলাদাভাবে instruction চালাতে পারে। প্রতিটা অংশের নাম <strong>core</strong>। ১২ core মানে একই মুহূর্তে সর্বোচ্চ ১২টা আলাদা কাজ সত্যিকার অর্থে পাশাপাশি চলতে পারে। তোমার machine-এ কী আছে, Node দিয়েই দেখে নাও:</p>
+  <div class="codewrap"><pre><code>node -e "const os = require('os'); console.log(os.cpus().length + ' cores,', Math.round(os.totalmem() / 2**30) + ' GB RAM')"</code></pre></div>
+  <p>আমার Mac-এ output এল <code>12 cores, 24 GB RAM</code>। প্রতিটা hardware-এর ভেতরটা Chapter 2-এ খুলে দেখব। এই chapter-এর জন্য এটুকুই যথেষ্ট।</p>
+
+  <h3>OS না থাকলে কী হতো</h3>
+  <p>ধরো এমন একটা computer যেখানে কোনো OS নেই — শুধু hardware আর তোমার program। তিনটা সমস্যা সঙ্গে সঙ্গে দেখা দেবে।</p>
+
+  <h4>সমস্যা ১: প্রতিটা program-কে hardware-এর ভাষা শিখতে হতো</h4>
+  <p>Storage device নিজে "file" বলে কিছু চেনে না। সে চেনে শুধু <strong>block</strong> — নির্দিষ্ট মাপের টুকরা (সাধারণত ৫১২ byte বা ৪ KB), প্রতিটার একটা নম্বর। তাকে বলতে হয় "block নম্বর ৮৮,২১০ পড়ো", আর সেই command-এর format এক কোম্পানির SSD থেকে আরেক কোম্পানির SSD-তে আলাদা। OS না থাকলে config file পড়ার জন্য তোমাকে নিজে হিসাব করতে হতো file কোন block-এ শুরু, কত block লম্বা, আর এই নির্দিষ্ট SSD model-কে কীভাবে command পাঠাতে হয়। Network card, USB, screen — সবার জন্য একই গল্প। আর দুনিয়ার প্রতিটা app-কে এই code আলাদা আলাদা করে লিখতে হতো।</p>
+
+  <h4>সমস্যা ২: সবাই একই hardware চায়, একই সময়ে</h4>
+  <p>এই মুহূর্তে তোমার machine-এ শুধু তোমার একটা program চলছে না। Browser, editor, Slack, background-এর অসংখ্য service — সবাই চলছে। <code>ps</code> command চলমান program-দের list দেখায়, আর <code>wc -l</code> সেই list-এর লাইন গোনে:</p>
+  <div class="codewrap"><pre><code>ps aux | wc -l</code></pre></div>
+  <p>আমার Mac-এ এটা দেখাল ৭৫২ — মানে প্রায় সাড়ে সাতশো চলমান program, অথচ core মাত্র ১২টা। কে কখন CPU পাবে? RAM-এর কোন অংশ কার? দুইজন একসাথে disk-এ লিখতে চাইলে কার লেখা আগে যাবে? কেউ একজন সিদ্ধান্ত না নিলে পুরো বিশৃঙ্খলা।</p>
+
+  <h4>সমস্যা ৩: একজনের bug আরেকজনকে মেরে ফেলত</h4>
+  <p>RAM একটাই, সবার data একই RAM-এ। কোনো পাহারা না থাকলে তোমার Node server-এর একটা bug ভুল জায়গায় লিখে তোমার editor-এর unsaved file নষ্ট করে দিতে পারত। আরও খারাপ: একটা malicious program চুপচাপ তোমার password manager-এর memory পড়ে নিতে পারত।</p>
+
+  <p>OS হলো এই তিন সমস্যার সমাধান। এক বাক্যে: <strong>operating system হলো সেই software যেটা hardware-কে সহজ interface-এর পেছনে লুকায়, আর অনেক program-এর মধ্যে hardware নিরাপদে ভাগ করে দেয়।</strong> প্রথম কাজটার নাম abstraction, দ্বিতীয়টার নাম resource management। দুটো আলাদা করে দেখি।</p>
+
+  <h3>প্রথম কাজ: abstraction</h3>
+  <p>সমস্যা ১-এর মূল কথা ছিল: প্রতিটা device-এর নিজস্ব ভাষা, আর সেই ভাষা প্রতিটা app-কে শিখতে হচ্ছে। সমাধান হলো <strong>abstraction</strong> — জটিল জিনিসের ভেতরের details লুকিয়ে একটা সহজ, স্থির interface দেওয়া। JS-এ তুমি প্রতিদিন এটা করো: একটা class বা module বানিয়ে ভেতরের messy logic লুকিয়ে ফেলো, বাইরে থাকে শুধু কয়েকটা পরিষ্কার method। OS hardware-এর উপর ঠিক এটাই করে:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Hardware-এর আসল রূপ</th><th>OS যে abstraction দেয়</th><th>তুমি যেভাবে দেখো</th></tr>
+    <tr><td>Storage-এর নম্বরওয়ালা block</td><td><strong>File</strong> আর folder</td><td><code>fs.readFile('config.json')</code></td></tr>
+    <tr><td>Network card-এর কাঁচা data packet</td><td><strong>Socket</strong> — একটা network connection-এর এক প্রান্ত, যেখানে তুমি data লেখো আর পড়ো</td><td><code>net.connect()</code>, <code>fetch()</code></td></tr>
+    <tr><td>CPU-র instruction চালানোর ক্ষমতা</td><td><strong>Process</strong> — চলমান একটা program, নিজস্ব memory আর অবস্থা সহ (Chapter 3)</td><td><code>node server.js</code></td></tr>
+    <tr><td>RAM-এর physical chip</td><td><strong>Virtual memory</strong> — প্রতিটা process মনে করে পুরো memory তার একার (Chapter 9)</td><td><code>new Array(1e6)</code></td></tr>
+  </table></div>
+  <p>File-এর উদাহরণটা নিজে পরীক্ষা করো। কোনো storage-কে folder tree-র একটা জায়গায় জুড়ে দেওয়াকে বলে <strong>mount</strong> করা — যেমন USB drive লাগালে macOS সেটাকে <code>/Volumes/</code>-এর নিচে mount করে। তোমার machine-এ কী কী mount করা আছে দেখো:</p>
+  <div class="codewrap"><pre><code>df -h</code></pre></div>
+  <p>List-এ internal SSD থাকবে, USB drive লাগানো থাকলে সেটাও থাকবে, হয়তো কোনো network drive-ও। এদের hardware সম্পূর্ণ আলাদা, command-এর ভাষাও আলাদা। কিন্তু সবগুলোতে তুমি হুবহু একই code দিয়ে লিখবে: <code>fs.writeFileSync(path, data)</code>। কোন device-এ কীভাবে লিখতে হয়, সেই চিন্তা OS নিজের ঘাড়ে নিয়ে নিয়েছে। সমস্যা ১ সমাধান।</p>
+
+  <h3>দ্বিতীয় কাজ: resource management</h3>
+  <p><strong>Resource</strong> বলতে এখানে বোঝাচ্ছি hardware-এর সেই জিনিসগুলো যাদের পরিমাণ সীমিত আর সবাই চায় — CPU-র সময়, RAM, disk, network। সমস্যা ২ আর ৩ দুটোই resource নিয়ে: একটা হলো ভাগাভাগি, আরেকটা হলো পাহারা।</p>
+
+  <h4>Sharing: সবাইকে পালা করে দেওয়া</h4>
+  <p>১২টা core দিয়ে সাড়ে সাতশো program চালানোর কৌশলের নাম <strong>time-sharing</strong>: OS একটা program-কে একটা core-এ কয়েক millisecond চালায়, তারপর থামিয়ে আরেকজনকে বসায়, তারপর আরেকজনকে। এত দ্রুত পালা বদলায় যে তোমার মনে হয় সবাই একসাথে চলছে। কাকে কখন, কতক্ষণ বসানো হবে — সেই সিদ্ধান্ত নেওয়ার কাজের নাম <strong>scheduling</strong> (Part 5-এ বিস্তারিত)।</p>
+  <p>নিজের চোখে দেখো। Core যতগুলো, তার দ্বিগুণ সংখ্যক infinite loop চালাও — প্রতিটা loop একাই একটা পুরো core খেয়ে ফেলতে চায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT</div>
+    <p>শেষের <code>busyloop</code> শব্দটা শুধু একটা চিহ্ন, যাতে পরে এই process গুলোকেই খুঁজে বন্ধ করা যায়।</p>
+    <div class="codewrap"><pre><code># কয়টা core আছে? (আমার Mac-এ 12)
+node -p "require('os').availableParallelism()"
+
+# core-এর দ্বিগুণ সংখ্যক infinite loop চালাও — এখানে 24
+for i in $(seq 24); do node -e "while(true){}" busyloop &amp; done
+
+# CPU ব্যবহার দেখো (macOS; Linux-এ শুধু: top)। বের হতে q চাপো
+top -o cpu
+
+# দেখা শেষ হলে সবগুলো বন্ধ করো
+pkill -f busyloop</code></pre></div>
+    <p><code>top</code>-এ দেখবে প্রতিটা <code>node</code>-এর CPU মোটামুটি ৫০%-এর কাছাকাছি — আমার চালানোয় ৪৬% থেকে ৫৩%-এর মধ্যে ছিল। ২৪ জন দাবিদার, ১২টা core: OS প্রত্যেককে প্রায় সমান ভাগে অর্ধেক সময় দিচ্ছে। আর এর মধ্যেও তোমার terminal, browser দিব্যি সাড়া দিচ্ছে, কারণ তারাও নিয়মিত পালা পাচ্ছে।</p>
+  </div>
+  <p>সমস্যা ২ সমাধান: কেউ CPU একা দখল করে রাখতে পারে না, কারণ কখন কাকে সরাতে হবে সেই সিদ্ধান্ত program-এর হাতে না, OS-এর হাতে।</p>
+
+  <h4>Isolation: একজনকে আরেকজনের থেকে আলাদা রাখা</h4>
+  <p>OS প্রতিটা process-কে আলাদা memory দেয়, আর একটা process অন্যটার memory ছুঁতে চাইলে সেখানেই আটকে দেয় (কীভাবে আটকায়, সেটা Chapter 9-এর virtual memory-র গল্প)। এই আলাদা রাখার নাম <strong>isolation</strong>। এর সবচেয়ে চেনা ফল তুমি Chrome-এ দেখেছ: Chrome প্রতিটা tab-কে আলাদা process-এ চালায়। Chrome-এ একটা নতুন tab খুলে address bar-এ লেখো:</p>
+  <div class="codewrap"><pre><code>chrome://crash</code></pre></div>
+  <p>ওই tab-টা "Aw, Snap!" দেখিয়ে মারা যাবে, কিন্তু অন্য tab গুলোর কিছুই হবে না। মরা process-টা অন্যদের memory ছুঁতেই পারত না, তাই তার মৃত্যু অন্যদের টেনে নামাতে পারেনি। সমস্যা ৩ সমাধান।</p>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Operating System = <strong>Resource Manager + Abstraction Layer</strong>। Resource manager হিসেবে ঠিক করে কে কখন CPU/RAM/disk/network পাবে। Abstraction layer হিসেবে dumb hardware-কে ঢেকে সুন্দর interface দেয় — raw disk block-এর বদলে <em>file</em>, raw packet-এর বদলে <em>socket</em>, raw physical memory-র বদলে <em>virtual memory</em>, raw CPU time-এর বদলে <em>process</em>।</p>
+    <p>OS = <strong>abstraction + resource management</strong>। Abstraction উত্তর দেয় "hardware ব্যবহার করব কীভাবে?" — file, socket, process-এর মতো সহজ interface দিয়ে। Resource management উত্তর দেয় "কে কতটুকু পাবে, আর কে কাকে ছুঁতে পারবে না?" — time-sharing আর isolation দিয়ে।</p>
   </div>
 
-  <h3>Kernel, user space, kernel space</h3>
-  <p>OS-এর core অংশটার নাম <strong>kernel</strong>। এটা একটা special program যেটা machine boot হওয়ার সময় load হয় এবং সবসময় memory-তে থাকে। Kernel-ই আসল resource manager — process schedule করা, memory ভাগ করা, filesystem চালানো, network stack চালানো, driver দিয়ে device-এর সাথে কথা বলা — সব kernel-এর কাজ।</p>
-  <p>CPU-তে hardware level-এ দুইটা privilege mode আছে (Chapter 31-এ deep dive করবো):</p>
+  <h3>Kernel: OS-এর যে অংশের হাতে আসল ক্ষমতা</h3>
+  <p>এখন একটা প্রশ্ন ওঠে: এই নিয়মগুলো enforce করবে কে? "তুমি অন্যের memory ছুঁতে পারবে না" — কথাটা যদি অন্য সবার মতোই একটা সাধারণ program বলে, তাহলে কেউ তার কথা শুনবে কেন? একটা buggy বা malicious program তো সেই নিয়ম-রক্ষক program-টাকেই overwrite করে দিতে পারে।</p>
+  <p>তাই OS-এর একটা বিশেষ অংশ আছে যেটা বাকি সবার চেয়ে বেশি ক্ষমতা নিয়ে চলে। এর নাম <strong>kernel</strong>। Kernel হলো একটা program যেটা:</p>
   <ul>
-    <li><strong>User mode / user space</strong> — তোমার application এখানে চলে। Restricted। Hardware-এ direct হাত দিতে পারে না, অন্য process-এর memory ছুঁতে পারে না।</li>
-    <li><strong>Kernel mode / kernel space</strong> — kernel এখানে চলে। Full power। যেকোনো memory, যেকোনো device access করতে পারে।</li>
+    <li>machine চালু হওয়ার সময় (এই প্রক্রিয়াকে বলে <strong>boot</strong>) সবার আগে RAM-এ load হয়, আর বন্ধ হওয়া পর্যন্ত সেখানেই থাকে;</li>
+    <li>hardware-এ সরাসরি হাত দেওয়ার অনুমতি একমাত্র এরই আছে;</li>
+    <li>বাকি সব program-এর হয়ে সিদ্ধান্ত নেয় — কে কখন CPU পাবে, কে কোন memory পাবে, কে কোন file খুলতে পারবে।</li>
   </ul>
-  <p>তাহলে তোমার app file পড়ে কীভাবে? উত্তর: <strong>system call</strong>। Application kernel-কে অনুরোধ করে — "আমার হয়ে এই কাজটা করে দাও।" CPU controlled ভাবে kernel mode-এ ঢোকে, kernel কাজটা করে, তারপর result নিয়ে আবার user mode-এ ফেরত আসে। <code>read()</code>, <code>write()</code>, <code>open()</code>, <code>socket()</code> — এগুলো সব system call।</p>
+  <p>তোমার machine-এর kernel-এর নাম আর version জিজ্ঞেস করো:</p>
+  <div class="codewrap"><pre><code>uname -a</code></pre></div>
+  <p>আমার Mac-এ output-এর ভেতরে আছে <code>Darwin Kernel Version 25.6.0 ... xnu-12377...</code> — macOS-এর kernel-এর নাম XNU। Linux-এ দেখবে <code>Linux</code> আর একটা version নম্বর, যেমন <code>6.8.0</code>। একটা মজার পরীক্ষা: <code>docker run --rm alpine uname -r</code> চালালে আমার Mac-এ এল <code>6.10.14-linuxkit</code> — এটা Docker-এর নিজস্ব ছোট Linux VM-এর kernel। Container নিজের কোনো kernel আনে না, যে machine-এ চলে তারটাই ব্যবহার করে (Chapter 36)।</p>
 
-  <pre class="diagram"><span class="u">Application (তোমার code)</span>
-        ↓
-<span class="u">Libraries / Runtime (libc, Node.js, JVM ...)</span>
-        ↓
-━━━━━━ <span class="dim">system call boundary</span> ━━━━━━
-        ↓
-<span class="k">Kernel</span>
-  <span class="k">├── Process Management</span>
-  <span class="k">├── Memory Management</span>
-  <span class="k">├── File System</span>
-  <span class="k">├── Network Stack</span>
-  <span class="k">└── Device Drivers</span>
-        ↓
-Hardware
-  ├── CPU    ├── RAM
-  ├── Storage└── Network</pre>
-  <p class="diagram-caption">পুরো বইয়ে এই ছবিটা বারবার ফিরে আসবে — নীল মানে user space, amber মানে kernel space।</p>
+  <h4>OS আর kernel কি একই জিনিস?</h4>
+  <p>না। Kernel হলো core। "Operating system" বললে সাধারণত বোঝায় kernel <em>এবং</em> তার সাথে আসা দরকারি program আর library-র পুরো package — shell (<code>zsh</code>, <code>bash</code>), <code>ls</code>/<code>cp</code>-এর মতো command, system library, background service চালানোর manager, আর desktop থাকলে সেটাও। এরা সবাই সাধারণ program, kernel-এর বিশেষ ক্ষমতা এদের নেই।</p>
+  <div class="codewrap"><pre><code>ls /bin</code></pre></div>
+  <p>এখানে যা দেখবে (<code>ls</code>, <code>cp</code>, <code>zsh</code>, <code>ps</code>…) সবই OS-এর অংশ, কিন্তু kernel-এর না — প্রতিটা disk-এ রাখা একটা সাধারণ program, তোমার <code>node</code>-এর মতোই।</p>
 
-  <h3>একজন engineer-এর কেন এটা জানা দরকার</h3>
-  <p>কারণ তোমার code-এর performance-এর বড় অংশ ঠিক হয় এই boundary-গুলোতে। একটা slow API-এর কারণ হতে পারে excessive system call, হতে পারে disk I/O, হতে পারে memory pressure — এগুলো তোমার JavaScript-এ দেখা যায় না, দেখা যায় OS layer-এ। Black box-টা খুললে debugging আর optimization দুটোই অন্য level-এ চলে যায়।</p>
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"OS মানে desktop, window, icon।" না। Desktop environment আরেকটা program মাত্র। তুমি যে production server-এ deploy করো, সেখানে কোনো screen নেই, কোনো window নেই — অথচ kernel পুরোদমে কাজ করছে: process চালাচ্ছে, memory ভাগ করছে, network packet সামলাচ্ছে।</p>
+  </div>
+
+  <h3>User mode আর kernel mode: পাহারাটা CPU নিজেই দেয়</h3>
+  <p>Kernel-কে "বেশি ক্ষমতাবান" বললাম — কিন্তু ক্ষমতাটা আসে কোথা থেকে? শুধু software দিয়ে এটা হয় না। তোমার program-এর instruction গুলো CPU সরাসরি চালায়; kernel মাঝখানে বসে প্রতিটা instruction পরীক্ষা করে না। তোমার program যদি storage-কে সরাসরি command পাঠানোর instruction লিখে ফেলে, kernel জানতেই পারবে না।</p>
+  <p>তাই সমাধানটা বসানো হয়েছে hardware-এ, CPU-র ভেতরে। CPU সবসময় একটা নির্দিষ্ট <strong>mode</strong>-এ থাকে — CPU-র ভেতরের একটা অবস্থা, যেটা বলে এই মুহূর্তে যে code চলছে তাকে কতটা বিশ্বাস করা যায়। মূল mode দুইটা:</p>
+  <ul>
+    <li><strong>Kernel mode</strong> — সব instruction চালানো যায়, সব memory ছোঁয়া যায়। Kernel এই mode-এ চলে।</li>
+    <li><strong>User mode</strong> — সীমিত। Hardware নিয়ন্ত্রণ করার instruction গুলো (এদের বলে <strong>privileged instruction</strong>) চালানো যায় না, আর শুধু সেই memory ছোঁয়া যায় যেটা kernel এই program-কে দিয়েছে। তোমার Node app, Chrome, VS Code — সবাই এই mode-এ চলে।</li>
+  </ul>
+  <p>User mode-এ থাকা কোনো program privileged instruction চালাতে চাইলে, বা নিষিদ্ধ memory ছুঁতে চাইলে, CPU সেই instruction চালায়ই না। বরং সঙ্গে সঙ্গে থেমে kernel-কে ডেকে আনে, আর kernel সাধারণত ওই program-টাকে মেরে ফেলে। C বা C++ program-এ যে "segmentation fault" crash শোনা যায়, সেটা ঠিক এই ঘটনা।</p>
+  <p>এখান থেকে দুইটা শব্দ আসে যেগুলো পুরো বইয়ে বারবার পাবে: <strong>user space</strong> মানে user mode-এ চলা সব program আর তাদের memory; <strong>kernel space</strong> মানে kernel-এর code আর memory। (CPU কীভাবে এক mode থেকে আরেক mode-এ যায়, তার পুরো গল্প Chapter 31-এ।)</p>
+  <p>তোমার প্রতিটা program আসলে দুই mode-এর মধ্যে আসা-যাওয়া করে, আর OS হিসাব রাখে কোন mode-এ কতক্ষণ কাটল। <code>time</code> command সেই হিসাবটা দেখায়। নিচের দ্বিতীয় উদাহরণে <code>fs.statSync</code> একটা file-এর metadata (size, তারিখ ইত্যাদি) এনে দেয়:</p>
+  <div class="codewrap"><pre><code># ১) শুধু হিসাব — kernel-এর কোনো সাহায্য লাগে না
+time node -e "let s = 0; for (let i = 0; i &lt; 1e9; i++) s += i;"
+
+# ২) বিশ লাখ বার file-এর metadata চাওয়া
+time node -e "const fs = require('fs'); for (let i = 0; i &lt; 2e6; i++) fs.statSync('.');"</code></pre></div>
+  <p>আমার Mac-এর zsh-এ output (bash-এ একই সংখ্যা <code>user</code> আর <code>sys</code> নামে আলাদা লাইনে আসে):</p>
+  <div class="codewrap"><pre><code>3.54s user 0.08s system 96% cpu 3.763 total
+0.37s user 0.78s system 100% cpu 1.144 total</code></pre></div>
+  <p><code>user</code> হলো CPU user mode-এ তোমার program চালাতে কত সময় দিয়েছে। <code>system</code> হলো kernel mode-এ তোমার হয়ে কাজ করতে কত সময় দিয়েছে। প্রথমটায় প্রায় পুরোটাই user — loop-টা নিছক যোগ, kernel-এর কিছু করার নেই। দ্বিতীয়টায় system সময় user-এর দ্বিগুণ। কারণ file-এর metadata থাকে file system-এ, আর user mode থেকে সেখানে সরাসরি যাওয়ার কোনো উপায় নেই। তাহলে যায় কীভাবে? সেটাই পরের section।</p>
+
+  <h3>System call: kernel-এর কাছে কাজ চাওয়ার একমাত্র দরজা</h3>
+  <p>একটা ধাঁধা তৈরি হলো। তোমার app user mode-এ চলে, hardware ছুঁতে পারে না। অথচ <code>fs.readFileSync</code> দিব্যি file পড়ে ফেলে।</p>
+  <p>একটা সরল উপায় হতে পারত: program দরকার হলে নিজেই kernel mode-এ ঢুকে যাবে, কাজ সেরে বেরিয়ে আসবে। কিন্তু তাহলে যেকোনো program যখন খুশি kernel mode-এ ঢুকে যা খুশি করতে পারবে — পুরো পাহারাই অর্থহীন। দরকার এমন একটা দরজা যেটা দিয়ে ঢোকা যায়, কিন্তু ঢোকার পর নিয়ন্ত্রণ থাকে kernel-এর হাতে, program-এর হাতে না।</p>
+  <p>এই দরজার নাম <strong>system call</strong>, সংক্ষেপে <strong>syscall</strong>। একটা syscall এভাবে ঘটে:</p>
+  <ol>
+    <li>Program ঠিক করে সে kernel-এর কাছে কী চায়। Kernel-এর প্রতিটা সেবার একটা নম্বর আছে — "file খোলো", "file থেকে পড়ো", "network-এ পাঠাও"। Program সেই নম্বর আর দরকারি তথ্য (কোন file, কত byte) একটা নির্দিষ্ট জায়গায় রেখে দেয়।</li>
+    <li>তারপর সে একটা বিশেষ CPU instruction চালায় — Intel/AMD-র x86-64 CPU-তে এর নাম <code>syscall</code>, ARM CPU-তে (যেমন Apple Silicon) <code>svc</code>। এই instruction CPU-কে kernel mode-এ নিয়ে যায়, <em>এবং</em> সোজা kernel-এর code-এর একটা নির্দিষ্ট শুরুর জায়গায় পাঠায় — যেটা kernel boot-এর সময় নিজে ঠিক করে রেখেছে। Program নিজে বাছতে পারে না kernel-এর কোন code-এ ঢুকবে।</li>
+    <li>Kernel যাচাই করে: এই program-এর কি এই কাজের অনুমতি আছে? দেওয়া তথ্য কি বৈধ?</li>
+    <li>সব ঠিক থাকলে kernel কাজটা করে। দরকার হলে hardware-এর সাথে কথা বলে <strong>driver</strong>-এর মাধ্যমে — driver হলো kernel-এর ভেতরের সেই code, যেটা একটা নির্দিষ্ট ধরনের hardware-এর ভাষা জানে (Chapter 2)।</li>
+    <li>Result নিয়ে kernel CPU-কে আবার user mode-এ ফিরিয়ে দেয়, আর program ঠিক পরের instruction থেকে চলতে থাকে।</li>
+  </ol>
+  <p>Node-এর <code>fs.readFileSync</code>, <code>net.createServer</code>, এমনকি <code>console.log</code> — সবাই শেষ পর্যন্ত ভেতরে এক বা একাধিক syscall করে। <code>console.log</code>-এর text terminal-এ পৌঁছায় <code>write</code> syscall দিয়ে।</p>
 
   <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p>Terminal-এ চালাও: <code>uname -a</code> — এটা তোমার kernel-এর নাম আর version দেখায় (macOS-এ Darwin, Linux-এ Linux)। তারপর <code>ps aux | head -15</code> — এই মুহূর্তে চলা process-এর list। খেয়াল করো, তুমি কিছু run না করলেও কত process চলছে — এদের সবাইকে kernel-ই manage করছে।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <p><code>strace</code> হলো Linux-এর একটা tool, যেটা একটা program-এর প্রতিটা syscall ধরে ধরে print করে। macOS-এ এটা নেই, তাই Docker-এ একটা ছোট Linux container চালিয়ে দেখব। (Linux machine থাকলে Docker ছাড়াই সরাসরি চালাও; <code>SYS_PTRACE</code> অনুমতিটা container-এর ভেতরে <code>strace</code> চালাতে লাগে।)</p>
+    <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-alpine sh
+
+# এখন তুমি container-এর ভেতরে (Linux)
+apk add strace
+echo '{"port":3000}' &gt; config.json
+strace -f -e trace=openat,statx,read,close node -e "require('fs').readFileSync('config.json')" 2&gt;&amp;1 | grep -A3 config.json</code></pre></div>
+    <p>আমার output (লম্বা অংশ কেটে ছোট করা):</p>
+    <div class="codewrap"><pre><code>openat(AT_FDCWD, "config.json", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 17
+statx(17, "", ..., {... stx_size=14, ...}) = 0
+read(17, "{\"port\":3000}\n", 14) = 14
+close(17)                               = 0</code></pre></div>
   </div>
+  <p>এক লাইনের <code>readFileSync</code> kernel-এর কাছে চারবার গেল। <code>openat</code> — "file-টা খোলো"; kernel একটা নম্বর ফেরত দিল, <code>17</code>, আর এরপর থেকে এই নম্বর দিয়েই file-টাকে চেনা হলো (এই নম্বরের নাম file descriptor, Chapter 3-এ আসছে)। <code>statx</code> — "file কত বড়?" (১৪ byte)। <code>read</code> — "১৪ byte পড়ো"। <code>close</code> — "কাজ শেষ, বন্ধ করো"।</p>
+  <p>একই container-এ <code>strace -c -f node -e "require('fs').readFileSync('config.json')"</code> চালালে পুরো program-এর syscall গোনা হয়। আমার চালানোয় total এসেছিল ১,১৮৩টা — এক লাইনের script-এর জন্য! বেশিরভাগই Node নিজে চালু হওয়ার কাজ: memory চাওয়া, ভেতরের কাঠামো তৈরি করা। তোমার প্রতিটা "সাধারণ" কাজের নিচে kernel-এর সাথে এমন অবিরাম কথোপকথন চলছে।</p>
+  <p>Kernel যে সত্যিই যাচাই করে, সেটাও দেখে নাও। macOS-এ পুরো SSD-টা <code>/dev/disk0</code> নামে একটা বিশেষ file হিসেবে দেখা যায়। সেটা সরাসরি খুলতে চাও:</p>
+  <div class="codewrap"><pre><code>node -e "require('fs').openSync('/dev/disk0', 'r')"</code></pre></div>
+  <p>উত্তর আসবে <code>Error: EPERM: operation not permitted, open '/dev/disk0'</code>। Syscall-টা kernel পর্যন্ত পৌঁছেছিল, আর kernel অনুমতি যাচাই করে "না" বলে দিয়েছে। (Linux-এ একই পরীক্ষা <code>/dev/sda</code> বা <code>/dev/nvme0n1</code> দিয়ে করো; সাধারণ user হিসেবে error আসবে <code>EACCES</code>।)</p>
+
+  <p>এতক্ষণ যা যা দেখলাম, এক ছবিতে:</p>
+  <figure class="fig">
+    <svg viewBox="0 0 800 450" width="100%" role="img" aria-label="User space layers call into the kernel through the system call boundary; the kernel talks to hardware; direct access from user space to hardware is blocked">
+      <defs>
+        <marker id="c01f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c01f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+
+      <text x="24" y="62" class="t-u t-s">USER SPACE</text>
+      <text x="24" y="80" class="t-m t-s">user mode</text>
+      <rect x="150" y="40" width="500" height="48" rx="8" class="b-u"/>
+      <text x="400" y="69" text-anchor="middle" class="t-h">Your code — app.js</text>
+      <line x1="400" y1="88" x2="400" y2="108" class="ln" marker-end="url(#c01f1-a)"/>
+      <rect x="150" y="110" width="500" height="48" rx="8" class="b-u"/>
+      <text x="400" y="139" text-anchor="middle">Node.js runtime + the libraries it uses</text>
+
+      <line x1="20" y1="200" x2="780" y2="200" class="ln-k dash"/>
+      <text x="24" y="192" class="t-k t-s">SYSTEM CALL BOUNDARY</text>
+      <text x="24" y="224" class="t-k t-s">KERNEL SPACE · kernel mode</text>
+
+      <line x1="400" y1="158" x2="400" y2="234" class="ln-k" marker-end="url(#c01f1-k)"/>
+      <text x="412" y="186" class="t-k t-s">system call — open, read, write, …</text>
+
+      <path d="M650 64 H752 V190" class="ln-d dash"/>
+      <path d="M744 192 L760 208 M760 192 L744 208" class="ln-d"/>
+      <text x="740" y="226" text-anchor="end" class="t-d t-s">direct access to hardware: blocked by the CPU</text>
+
+      <rect x="60" y="236" width="680" height="112" rx="10" class="b-k"/>
+      <text x="80" y="260" class="t-k">Kernel</text>
+      <text x="138" y="260" class="t-m t-s">the only code allowed to touch hardware</text>
+      <rect x="80" y="274" width="116" height="58" rx="7" class="b"/>
+      <text x="138" y="298" text-anchor="middle" class="t-s">Process</text>
+      <text x="138" y="316" text-anchor="middle" class="t-s">management</text>
+      <rect x="211" y="274" width="116" height="58" rx="7" class="b"/>
+      <text x="269" y="298" text-anchor="middle" class="t-s">Memory</text>
+      <text x="269" y="316" text-anchor="middle" class="t-s">management</text>
+      <rect x="342" y="274" width="116" height="58" rx="7" class="b"/>
+      <text x="400" y="298" text-anchor="middle" class="t-s">File</text>
+      <text x="400" y="316" text-anchor="middle" class="t-s">system</text>
+      <rect x="473" y="274" width="116" height="58" rx="7" class="b"/>
+      <text x="531" y="298" text-anchor="middle" class="t-s">Network</text>
+      <text x="531" y="316" text-anchor="middle" class="t-s">stack</text>
+      <rect x="604" y="274" width="116" height="58" rx="7" class="b"/>
+      <text x="662" y="298" text-anchor="middle" class="t-s">Device</text>
+      <text x="662" y="316" text-anchor="middle" class="t-s">drivers</text>
+
+      <line x1="400" y1="348" x2="400" y2="382" class="ln" marker-end="url(#c01f1-a)"/>
+      <text x="412" y="370" class="t-m t-s">privileged instructions</text>
+
+      <text x="24" y="414" class="t-h t-s">HARDWARE</text>
+      <rect x="150" y="386" width="110" height="46" rx="7" class="b"/>
+      <text x="205" y="414" text-anchor="middle">CPU</text>
+      <rect x="280" y="386" width="110" height="46" rx="7" class="b"/>
+      <text x="335" y="414" text-anchor="middle">RAM</text>
+      <rect x="410" y="386" width="110" height="46" rx="7" class="b"/>
+      <text x="465" y="414" text-anchor="middle">Storage</text>
+      <rect x="540" y="386" width="110" height="46" rx="7" class="b"/>
+      <text x="595" y="414" text-anchor="middle">Network card</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">নীল অংশটা user space: তোমার code আর Node.js runtime দুটোই user mode-এ চলে। Amber দাগটা system call boundary — এর নিচে নামার একমাত্র বৈধ পথ হলো system call, আর নিচে শুধু kernel-ই hardware-এর সাথে কথা বলে। ডানের লাল পথটা দেখাচ্ছে, user space থেকে সরাসরি hardware-এ যাওয়ার চেষ্টা CPU নিজেই আটকে দেয়।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>User space-এর কোনো code hardware-এর দিকে নিজে এক পা-ও এগোতে পারে না। প্রতিটা file, প্রতিটা network packet, প্রতিটা নতুন memory — সব আসে system call দিয়ে, kernel-এর হাত ঘুরে। আর kernel প্রতিবার যাচাই করে তারপর কাজ করে।</p>
+  </div>
+
+  <h3>একজন JS engineer হিসেবে এটা কেন জানা দরকার</h3>
+  <p>কারণ তোমার app-এর অনেক রহস্যময় সমস্যার উত্তর এই boundary-তে লুকানো। কয়েকটা উদাহরণ, সামনে প্রতিটা বিস্তারিত আসবে:</p>
+  <ul>
+    <li>একটা API slow, অথচ profiler-এ তোমার JS function গুলো দ্রুত দেখাচ্ছে। হয়তো সময় যাচ্ছে <code>system</code> time-এ — মানে অতিরিক্ত syscall-এ (Chapter 32)।</li>
+    <li>Server-এ হঠাৎ <code>EMFILE: too many open files</code>। Kernel প্রতিটা process-এর খোলা file-এর সংখ্যা সীমিত রাখে — এটা resource management-এর একটা সীমা, তোমার JS-এর bug না।</li>
+    <li>Container-এ app কোনো JS error ছাড়াই হঠাৎ মারা গেল। প্রায়ই দেখা যায় memory limit পার হয়েছিল আর kernel নিজে process-টাকে মেরেছে।</li>
+  </ul>
+  <p>এসব সমস্যা তোমার JavaScript-এ দেখা যায় না, দেখা যায় OS layer-এ। এই বইয়ের বাকি অংশ সেই layer-টা খুলে দেখার গল্প।</p>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>OS-কে "resource manager + abstraction layer" বললে দুইটা অংশের মানে কী?</li>
-      <li>Kernel কী, আর সেটা user space থেকে আলাদা কেন?</li>
-      <li>Application hardware-এ direct হাত দিতে পারে না — তাহলে কাজ করায় কীভাবে?</li>
-      <li>System call এক কথায় কী?</li>
+      <li>OS না থাকলে যে তিনটা সমস্যা হতো, সেগুলো কী? OS-এর কোন কাজ (abstraction নাকি resource management) কোন সমস্যার সমাধান করে?</li>
+      <li>একই <code>fs.writeFileSync</code> code SSD আর USB drive দুটোতেই কীভাবে কাজ করে, যখন দুটো device-এর command-এর ভাষা আলাদা?</li>
+      <li>নিয়ম রক্ষার ক্ষমতা শুধু software-এ না রেখে CPU-র hardware-এ (user mode / kernel mode) রাখতে হলো কেন?</li>
+      <li><code>time</code>-এর output-এ <code>user</code> আর <code>system</code> আলাদা করে দেখায় কেন? লুপে শুধু যোগ করা code আর বারবার <code>fs.statSync</code> করা code — কোনটায় <code>system</code> বেশি হবে, আর কেন?</li>
+      <li>System call-এর সময় program নিজে বাছতে পারে না kernel-এর কোন code-এ ঢুকবে। এই নিয়ম না থাকলে কী সমস্যা হতো?</li>
     </ul>
   </div>

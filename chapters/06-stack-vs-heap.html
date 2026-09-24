@@ -1,44 +1,242 @@
   <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
   <h2>Chapter 6 — Stack vs Heap</h2>
-  <p class="chap-sub">দুইটা আলাদা allocation strategy — কেন দুটোই লাগে, আর কার কী cost।</p>
+  <p class="chap-sub">Memory পাওয়ার দুইটা আলাদা কৌশল — কেন দুটোই লাগে, JS-এর variable আর object আসলে কোথায় থাকে, আর memory ফেরত দেওয়ার দায়িত্ব কার।</p>
 
-  <h3>Stack কেন দরকার</h3>
-  <p>Function-এর local variable-দের একটা সুন্দর property আছে — এদের lifetime একদম predictable। Function ঢুকলে জন্ম, function বের হলে মৃত্যু। এমন predictable lifetime-এর জন্য stack perfect: allocation মানে শুধু stack pointer-টা একটু সরানো, deallocation মানে ফেরত সরানো। কোনো bookkeeping লাগে না, কোনো খোঁজাখুঁজি লাগে না।</p>
+  <p>Chapter 5 থেকে দুইটা জিনিস মনে করিয়ে দিই। <strong>Stack</strong>: process-এর memory-র যে region-এ প্রতিটা function call একটা <strong>frame</strong> পায় — local variable আর ফেরার ঠিকানা রাখার জায়গা; frame বানানো মানে stack pointer (SP) থেকে একটা বিয়োগ, ফেরত দেওয়া মানে একটা যোগ। <strong>Heap</strong>: আরেকটা region, যেটা চলার সময় উপরের দিকে বাড়ে। দুটোই একই RAM; পার্থক্য শুধু ব্যবহারের নিয়মে। এই chapter সেই নিয়ম নিয়ে।</p>
 
-  <h3>Heap কেন দরকার</h3>
-  <p>কিন্তু সব data-র lifetime function-এর সাথে বাঁধা না। ধরো একটা function user object বানিয়ে return করলো — function শেষ, কিন্তু object টা বেঁচে থাকতে হবে। অথবা runtime-এ ঠিক হবে কত বড় array লাগবে। এই "যতদিন দরকার ততদিন বাঁচবে, size আগে থেকে জানা নেই" ধরনের data-র জন্য <strong>heap</strong> — <code>malloc(size)</code> দিয়ে চাও, <code>free(ptr)</code> দিয়ে ফেরত দাও।</p>
+  <h3>সমস্যা: সব data-র জীবন function-এর সাথে বাঁধা না</h3>
+  <p>Stack এত সস্তা যে সব কিছু সেখানে রাখতে ইচ্ছা করে। কিন্তু stack-এর একটা কঠিন নিয়ম আছে: function return করলেই তার frame মুক্ত, আর পরের call সেই জায়গা নিজের কাজে ব্যবহার করে। এখানে একটা শব্দ দরকার: কোনো data-র <strong>lifetime</strong> মানে কতক্ষণ তার memory বৈধ থাকে, মানে কতক্ষণ ধরে সেটা পড়া আর বিশ্বাস করা যায়। Stack-এর data-র lifetime ঠিক function call-এর সমান। তিনটা পরিস্থিতিতে সেটা যথেষ্ট না:</p>
+  <ul>
+    <li><strong>Data-কে function-এর পরেও বাঁচতে হবে।</strong> <code>function createUser(name) { return { name, createdAt: Date.now() }; }</code> — object-টা তৈরি হলো <code>createUser</code>-এর ভেতরে, কিন্তু ব্যবহার হবে function শেষ হওয়ার পরে। এটা যদি <code>createUser</code>-এর frame-এ থাকত, return-এর পরের call-ই তার উপর নিজের data লিখে দিত।</li>
+    <li><strong>মাপ আগে থেকে জানা নেই।</strong> Chapter 5-এ দেখেছ <code>main</code> তার frame বানাল <code>sub sp, sp, #0x20</code> দিয়ে — ওই <code>0x20</code> (৩২ byte) একটা স্থির সংখ্যা, compile-এর সময়েই ঠিক হয়ে গেছে। কিন্তু <code>await db.query(...)</code> ১০টা row দেবে নাকি ১০ লাখ, সেটা চলার আগে কেউ জানে না।</li>
+    <li><strong>মাপ বড়।</strong> পুরো stack-ই মাত্র কয়েক MB (<code>ulimit -s</code>, Chapter 5), আর V8 তার ভেতরে মোটে ~১ MB ব্যবহার করে। ২০০ MB-র একটা file buffer সেখানে ধরবে না।</li>
+  </ul>
+  <p>তাই দ্বিতীয় একটা জায়গা লাগে, যেখানে memory চলার সময় যেকোনো মাপে চেয়ে নেওয়া যায়, আর সেটা বেঁচে থাকে যতক্ষণ না কেউ স্পষ্টভাবে ছেড়ে দেয়। এটাই <strong>heap</strong>।</p>
 
-  <div class="box concept">
-    <div class="box-title">SCOPE vs LIFETIME</div>
-    <p><strong>Scope</strong> = code-এর কোথা থেকে variable-টা দেখা যায়। <strong>Lifetime</strong> = memory-টা কতক্ষণ বৈধ থাকে। Stack data-র বেলায় দুটো মিলে যায়। Heap data-র বেলায় না — pointer/reference টা scope-এর বাইরে চলে গেলেও heap-এর memory বেঁচে থাকতে পারে। C-তে এই ফাঁক থেকেই আসে dangling pointer আর memory leak; GC language-এ garbage collector এই lifetime tracking-টাই তোমার হয়ে করে।</p>
+  <h3>Stack allocation: কেন প্রায় বিনামূল্যে</h3>
+  <p>আগে stack-এর দিকটা পাকা করে নিই, কারণ heap-এর দাম বুঝতে এটাই মাপকাঠি। Stack-এ জায়গা নেওয়াকে বলে stack <strong>allocation</strong> (allocation মানে কারও ব্যবহারের জন্য memory আলাদা করে দেওয়া)। Chapter 4-এর <code>hello</code>-র <code>main</code>-এ পুরো কাজটা দুইটা instruction:</p>
+  <div class="codewrap"><pre><code>sub  sp, sp, #0x20     ; ঢোকার সময়: 32 byte-এর frame
+...
+add  sp, sp, #0x20     ; বেরোনোর সময়: frame ফেরত</code></pre></div>
+  <p>কোনো খোঁজাখুঁজি নেই, কোনো হিসাবের খাতা নেই, kernel-কে ডাকার প্রশ্নই নেই। ফেরত দেওয়াও স্বয়ংক্রিয় — function শেষ মানেই মুক্ত, ভুলে যাওয়ার উপায় নেই। বিনিময়ে তিনটা শর্ত মানতে হয়: মাপ compile-এর সময় জানা থাকতে হবে, lifetime function-এর চেয়ে বেশি হবে না, আর মোট জায়গা সীমিত।</p>
+
+  <h3>Heap allocation: allocator কী করে</h3>
+  <p>Heap-এ শর্ত নেই, কিন্তু তাতে নতুন সমস্যা আসে। হাজার হাজার অনুরোধ আসে, প্রতিটার মাপ আলাদা — ১০০ byte, ৩ KB, ১০ MB — আর ফেরতও আসে এলোমেলো ক্রমে, যে আগে নিয়েছে সে আগে ফেরত দেবে এমন কোনো নিয়ম নেই। একটা বিয়োগ দিয়ে আর চলে না। কাউকে হিসাব রাখতে হবে heap-এর কোন অংশ ব্যবহৃত, কোনটা খালি, আর নতুন অনুরোধে মানানসই খালি জায়গা খুঁজে দিতে হবে।</p>
+  <p>এই হিসাবরক্ষকের নাম <strong>allocator</strong> — process-এর ভেতরেই চলা একটা library code (C-তে libc-র <code>malloc</code>, Node-এ V8-এর নিজস্ব allocator)। মোটা দাগে:</p>
+  <ul>
+    <li><strong>চাওয়া</strong> (<code>malloc(n)</code>): allocator তার খালি block-এর তালিকা থেকে কমপক্ষে <code>n</code> byte-এর একটা খোঁজে, "ব্যবহৃত" চিহ্ন দেয়, block-এর মাপ পাশে লিখে রাখে, আর block-এর শুরুর <strong>address</strong> ফেরত দেয়।</li>
+    <li><strong>ফেরত</strong> (<code>free</code>): block-কে আবার "খালি" চিহ্ন দেয়, পাশের খালি block থাকলে জুড়ে বড় করে।</li>
+    <li><strong>ফুরিয়ে গেলে</strong>: হাতে মানানসই খালি জায়গা না থাকলে allocator kernel-এর কাছে আরও memory চায় — syscall দিয়ে। দুই রাস্তা: <code>brk</code> (Chapter 5-এর <code>[heap]</code> region-টাকেই উপরে বাড়াও), অথবা <code>mmap</code> (address space-এর অন্য কোথাও একদম নতুন একটা region দাও)।</li>
+  </ul>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — allocator-কে kernel-এর কাছে যেতে দেখা</div>
+    <p>ছোট একটা C program, যেটা একবার ১০০ byte আর একবার ১০ MB চায় (<code>malloc</code> ফেরত দেয় address; <code>%p</code> সেটা hex-এ print করে):</p>
+    <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+int main(void) {
+    char *small = malloc(100);               /* ছোট */
+    char *big   = malloc(10 * 1024 * 1024);  /* 10 MB */
+    printf("small at %p\nbig   at %p\n", (void *)small, (void *)big);
+    free(big);
+    free(small);
+    return 0;
+}</code></pre></div>
+    <p><code>debian</code> container-এ <code>apt install gcc libc6-dev strace</code> করে compile করো, তারপর <code>strace -e trace=brk,mmap,munmap ./alloc</code>। Program শুরুর library-loading-এর লাইন বাদ দিলে শেষটা:</p>
+    <div class="codewrap"><pre><code>brk(NULL)                          = 0xaaab00d40000
+brk(0xaaab00d61000)                = 0xaaab00d61000
+mmap(NULL, 10489856, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xffffaa600000
+munmap(0xffffaa600000, 10489856)   = 0
+small at 0xaaab00d402a0
+big   at 0xffffaa600010</code></pre></div>
+  </div>
+  <p>পুরো গল্পটা output-এ আছে। ১০০ byte চাইতেই allocator <code>brk</code> দিয়ে heap region-কে <code>0x21000</code> byte (১৩২ KB) বাড়িয়ে নিল — এক কামড়ে বড় টুকরো, যাতে পরের ছোট অনুরোধ গুলোতে kernel-এর কাছে যেতে না হয়। <code>small</code> পেল সেই heap-এর ভেতরের একটা address (<code>0xaaab00d4…</code>)। ১০ MB-র বেলায় allocator আলাদা <code>mmap</code> নিল, তাই <code>big</code>-এর address একদম অন্য এলাকায় (<code>0xffff…</code>) — Chapter 5-এর ছবির memory-mapped region-এ। <code>free(big)</code>-এ allocator সেই region সঙ্গে সঙ্গে <code>munmap</code> দিয়ে kernel-কে ফেরত দিল; কিন্তু <code>free(small)</code>-এ কোনো syscall নেই — ছোট টুকরোটা সে পরের জন্য নিজের কাছে রেখে দিল।</p>
+  <p>মানে heap allocation-এর দাম: প্রতিবার খোঁজা আর হিসাব লেখা, আর মাঝে মাঝে পুরো একটা syscall। Stack-এর একটা বিয়োগের তুলনায় এটা অনেক ভারী।</p>
+
+  <h3>Pointer আর reference: stack-এর variable, heap-এর object</h3>
+  <p>Allocator ফেরত দেয় একটা address। Object-টা পড়ে থাকে heap-এ, কিন্তু যে code সেটা বানাল, তাকে তো মনে রাখতে হবে object-টা কোথায়। তাই সেই address-টা সে রেখে দেয় নিজের একটা variable-এ — সাধারণত নিজের stack frame-এ বা একটা register-এ। যে variable-এর মান আসলে একটা memory address, তাকে বলে <strong>pointer</strong>। ওপরের C code-এ <code>char *small</code> — এই <code>*</code> চিহ্নটাই বলছে <code>small</code>-এর ভেতরে একটা address থাকবে।</p>
+  <p>JS-এ তুমি কখনো address দেখো না, কিন্তু নিচে ঠিক এটাই হচ্ছে। <code>const user = { name: 'Rahim' }</code> লিখলে object-টা heap-এ তৈরি হয়, আর <code>user</code> variable-এ থাকে শুধু তার address। JS-এ একে বলে <strong>reference</strong>: এমন একটা pointer, যেটা দিয়ে address-এর গণিত করা যায় না, আর runtime নিজে সেটার উপর নজর রাখে। Chapter 2-এর <code>%DebugPrint(user)</code> যে <code>0x257501fa9999</code> দেখিয়েছিল, সেটাই ওই address। তোমার চেনা কয়েকটা JS আচরণের কারণ এখান থেকেই আসে:</p>
+  <div class="codewrap"><pre><code>const a = { count: 1 };
+const b = a;             // object copy হলো না — address copy হলো
+b.count = 99;
+console.log(a.count);    // 99 — a আর b একই object-এর দিকে তাকিয়ে আছে
+
+console.log({} === {});  // false — দুইটা আলাদা object, দুইটা আলাদা address
+console.log(a === b);    // true  — একই address</code></pre></div>
+  <p>Function-এ object পাঠালেও একই ঘটনা: callee পায় address-এর একটা copy, তাই সে object-টা বদলালে caller সেই বদল দেখে। <code>===</code> দুইটা object-এর ভেতরের মান তুলনা করে না, তুলনা করে address।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="Stack slots a and b hold the same address and point to one heap object; slot n holds 42 directly; slot f points to a heap number 4.2; an object with no references is garbage">
+      <defs>
+        <marker id="c06f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="24" width="310" height="286" rx="10" class="b"/>
+      <text x="44" y="52" class="t-u">Stack</text>
+      <text x="100" y="52" class="t-m t-s">frame of main()</text>
+
+      <rect x="40" y="70" width="278" height="40" rx="5" class="b"/>
+      <text x="56" y="95" class="mono">a</text><text x="302" y="95" text-anchor="end" class="mono">0x…9999</text>
+      <rect x="40" y="116" width="278" height="40" rx="5" class="b"/>
+      <text x="56" y="141" class="mono">b</text><text x="302" y="141" text-anchor="end" class="mono">0x…9999</text>
+      <rect x="40" y="162" width="278" height="40" rx="5" class="b"/>
+      <text x="56" y="187" class="mono">n</text><text x="302" y="187" text-anchor="end" class="mono">42</text>
+      <text x="160" y="187" text-anchor="middle" class="t-m t-s">value stored inline</text>
+      <rect x="40" y="208" width="278" height="40" rx="5" class="b"/>
+      <text x="56" y="233" class="mono">f</text><text x="302" y="233" text-anchor="end" class="mono">0x…c921</text>
+      <rect x="40" y="254" width="278" height="40" rx="5" class="b-m"/>
+      <text x="56" y="279" class="t-m t-s">return address</text>
+
+      <rect x="440" y="24" width="336" height="286" rx="10" class="b"/>
+      <text x="460" y="52" class="t-u">Heap</text>
+
+      <rect x="470" y="70" width="280" height="56" rx="6" class="b-u"/>
+      <text x="486" y="92" class="t-m mono">0x257501fa9999</text>
+      <text x="486" y="114" class="mono">{ count: 99 }</text>
+      <rect x="470" y="150" width="280" height="56" rx="6" class="b-u"/>
+      <text x="486" y="172" class="t-m mono">0x20368725c921</text>
+      <text x="486" y="194" class="mono">HeapNumber 4.2</text>
+      <rect x="470" y="232" width="280" height="56" rx="6" class="b-m"/>
+      <text x="486" y="254" class="mono">{ name: 'old' }</text>
+      <text x="486" y="276" class="t-d t-s">no reference points here → garbage</text>
+
+      <path d="M320 90 C 390 90, 400 96, 466 96" class="ln-u" marker-end="url(#c06f1-u)"/>
+      <path d="M320 136 C 390 136, 400 104, 466 104" class="ln-u" marker-end="url(#c06f1-u)"/>
+      <path d="M320 228 C 390 228, 400 178, 466 178" class="ln-u" marker-end="url(#c06f1-u)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে <code>main</code>-এর frame, ডানে heap। <code>a</code> আর <code>b</code>-এর ভেতরে একই address, তাই দুজনে একই object দেখে। ছোট integer <code>42</code> সরাসরি frame-এর ঘরেই বসে, কিন্তু <code>4.2</code> heap-এর একটা আলাদা object (নিচের misconception box দেখো)। সবচেয়ে নিচের object-এর দিকে কোনো তীর নেই — তাকে আর কেউ খুঁজে পাবে না।</p>
+
+  <h3>Scope আর lifetime: closure-এর গোপন কথা</h3>
+  <p>দুইটা শব্দ প্রায়ই গুলিয়ে যায়। <strong>Scope</strong> মানে code-এর কোন অংশ থেকে একটা নাম দেখা যায় — এটা code পড়েই বলা যায়। <strong>Lifetime</strong> মানে (ওপরে যেমন বলেছি) memory-টা কতক্ষণ বৈধ — এটা ঠিক হয় চলার সময়। Stack-এর variable-এর বেলায় দুটো মিলে যায়: function-এর বাইরে নামও দেখা যায় না, memory-ও থাকে না। কিন্তু JS-এ এটা ভাঙে:</p>
+  <div class="codewrap"><pre><code>function makeCounter() {
+  let count = 0;             // makeCounter-এর local variable
+  return () =&gt; ++count;
+}
+const next = makeCounter();  // makeCounter শেষ — তার frame মুক্ত
+console.log(next(), next(), next());   // 1 2 3</code></pre></div>
+  <p><code>count</code>-এর scope শেষ হয়ে গেছে — <code>makeCounter</code>-এর বাইরে থেকে তুমি <code>count</code> লিখতে পারবে না। অথচ তার মান বেঁচে আছে, প্রতিবার বাড়ছে। এটা সম্ভব হলো কারণ V8 code দেখে বুঝে ফেলে যে ভেতরের arrow function-টা <code>count</code> ব্যবহার করে আর বাইরে চলে যাচ্ছে। তাই সে <code>count</code>-কে stack frame-এ না রেখে heap-এ একটা ছোট object-এ রাখে (V8 এর নাম দিয়েছে <strong>Context</strong>), আর arrow function-টা সেই object-এর reference ধরে রাখে। Function আর তার ধরে রাখা variable-দের এই জুটির নামই <strong>closure</strong>। মানে JS-এ "local variable মানেই stack" কথাটা সবসময় সত্যি না — lifetime যার বেশি, সে heap-এ যায়।</p>
+
+  <h3>ফেরত দেবে কে: manual free বনাম garbage collection</h3>
+  <p>Heap-এর memory ততক্ষণ দখলে থাকে যতক্ষণ না কেউ ফেরত দেয়। প্রশ্ন হলো, কে দেবে, আর কখন? C-তে উত্তর: programmer নিজে, <code>free</code> ডেকে। সেখানে তিন রকম ভুল হয়, আর প্রতিটা ভয়ংকর:</p>
+  <ul>
+    <li><strong>Memory leak</strong> — ফেরত দিতে ভুলে যাওয়া। Process-এর memory বাড়তেই থাকে, একসময় machine-এর RAM শেষ।</li>
+    <li><strong>Dangling pointer</strong> — ফেরত দেওয়ার পরেও পুরনো address দিয়ে memory ব্যবহার করা। Allocator ততক্ষণে সেই জায়গা অন্য কাউকে দিয়ে দিতে পারে; তখন দুইজন একই memory-কে নিজের ভেবে লিখতে থাকে।</li>
+    <li><strong>Double free</strong> — একই block দুইবার ফেরত দেওয়া, যাতে allocator-এর নিজের হিসাবের খাতাই এলোমেলো হয়ে যায়।</li>
+  </ul>
+  <p>শেষ দুইটা শুধু crash না, security-র বড় ফুটো। Microsoft আর Chrome team দুই পক্ষই আলাদাভাবে জানিয়েছে, তাদের গুরুতর security bug-এর প্রায় ৭০% এই ধরনের memory-ভুল থেকে আসে।</p>
+  <p>JS, Java, Go, Python-এর মতো ভাষার উত্তর: runtime নিজেই ঠিক করবে। এর নাম <strong>garbage collection</strong> (GC), আর যে অংশ কাজটা করে সে <strong>garbage collector</strong>। নিয়মটা এরকম। কিছু জায়গাকে ধরা হয় <strong>root</strong> — এমন জায়গা যেখান থেকে program সরাসরি data-য় পৌঁছাতে পারে: stack-এ থাকা বর্তমান function গুলোর variable, global object ইত্যাদি। Root থেকে reference ধরে ধরে যত object-এ পৌঁছানো যায়, তারা জীবিত (<strong>reachable</strong>)। বাকি সব garbage — program আর কখনো তাদের খুঁজে পাবে না, তাই মুছে দেওয়া নিরাপদ। ওপরের ছবির <code>{ name: 'old' }</code> ঠিক এমন। Collector চলার সময় তোমার JS কিছু মুহূর্ত থেমে থাকতে পারে; একেই বলে <strong>GC pause</strong> (V8 কাজের বড় অংশ অন্য thread-এ সারে, তবু কিছুটা থামা এড়ানো যায় না)।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — gc.js</div>
+    <p><code>--expose-gc</code> flag দিলে <code>global.gc()</code> দিয়ে collector-কে হাতে ডাকা যায়; <code>heapUsed</code> হলো V8-এর heap-এ এই মুহূর্তে object-দের দখলে থাকা memory।</p>
+    <div class="codewrap"><pre><code>const mb = () =&gt; (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1) + ' MB';
+
+let big = new Array(5_000_000).fill(1);   // ~40 MB heap-এ
+global.gc();
+console.log('reference আছে     :', mb());
+
+big = null;                                // শেষ reference-টা কেটে দিলাম
+global.gc();
+console.log('reference কাটার পর:', mb());</code></pre></div>
+    <p><code>node --expose-gc gc.js</code> চালালে আমার Mac-এ: <code>41.2 MB</code>, তারপর <code>3.3 MB</code>। <code>big = null</code> দেওয়ায় array-টা আর কোনো root থেকে reachable না, তাই collector পুরো ৩৮ MB ফেরত নিল।</p>
+  </div>
+  <p>তাহলে GC-ওয়ালা ভাষায় leak হয় কীভাবে? হয়, যখন একটা object আর তোমার কাজে লাগে না, কিন্তু কোথাও থেকে তার reference রয়ে গেছে — collector শুধু reachability দেখে, তোমার উদ্দেশ্য দেখে না। সবচেয়ে চেনা উদাহরণ: module-level একটা cache বা array যেটা শুধু বাড়ে, কখনো খালি হয় না; অথবা event listener যোগ করা হলো কিন্তু কখনো সরানো হলো না।</p>
+  <div class="codewrap"><pre><code>const cache = [];                 // module-level — সবসময় reachable
+let tick = 0;
+const timer = setInterval(() =&gt; {
+  cache.push(new Array(100_000).fill(tick));   // প্রতি tick-এ ~800 KB, কখনো মোছা হয় না
+  const mb = process.memoryUsage().heapUsed / 1024 / 1024;
+  console.log(`tick ${++tick}: heapUsed = ${mb.toFixed(1)} MB`);
+  if (tick === 6) clearInterval(timer);
+}, 200);</code></pre></div>
+  <p>Output: <code>4.0 MB</code>, <code>4.9</code>, <code>5.7</code>, <code>6.5</code>, <code>7.2</code>, <code>8.0 MB</code> — সিঁড়ির মতো উঠছে, GC কিছুই করতে পারছে না। Server-এ এটা দিনের পর দিন চললে শেষ দৃশ্য এরকম। V8-এর heap-এর যে অংশে দীর্ঘজীবী object থাকে তার নাম <strong>old space</strong>, আর তার সর্বোচ্চ মাপ একটা flag দিয়ে ছোট করে পরিণতিটা দ্রুত দেখা যায়:</p>
+  <div class="codewrap"><pre><code>node --max-old-space-size=50 -e "const a = []; while (true) a.push({ data: new Array(1000).fill(0) })"</code></pre></div>
+  <p>কয়েক মুহূর্ত পরে: <code>FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory</code>। এটা JS error না যে <code>catch</code> করবে — পুরো process মারা যায়।</p>
+
+  <h3>আসল দাম কোথায়: allocation, locality, fragmentation</h3>
+  <p>"Stack fast, heap slow" — কথাটা শুনতে সুবিধার, কিন্তু আধা-সত্য। দামটা তিন জায়গায়, আলাদা করে দেখা দরকার।</p>
+  <h4>১. Allocation-এর দাম</h4>
+  <p>Stack-এ একটা বিয়োগ। C-র <code>malloc</code>-এ খোঁজাখুঁজি আর মাঝে মাঝে syscall, ওপরে দেখলে। V8 আবার এখানে চালাক: নতুন object গুলো সে বানায় একটা আলাদা এলাকায় (<strong>young generation</strong>), যেখানে allocation মানে stack-এর মতোই শুধু একটা pointer সামনে সরানো। দামটা সে পরে দেয় — garbage যত বেশি বানাবে, collector-কে তত বেশিবার চলতে হবে। তাই JS-এ প্রশ্নটা "heap-এ রাখলাম কি না" না, প্রশ্নটা "কত garbage বানাচ্ছি"।</p>
+  <h4>২. Locality-র দাম</h4>
+  <p>Stack বা heap — দুটোই একই RAM, পড়ার গতি একই। কিন্তু CPU সবসময় RAM পর্যন্ত যায় না। CPU-র ভেতরে ছোট কিন্তু অনেক দ্রুত একটা memory থাকে, <strong>cache</strong> — সম্প্রতি ছোঁয়া memory আর তার আশেপাশের byte গুলো সেখানে রাখা হয় (Chapter 13)। যে data পাশাপাশি থাকে আর ক্রমানুসারে পড়া হয়, সে cache-এ চমৎকার খাটে। একে বলে ভালো <strong>locality</strong>। Stack সবসময় ছোট, ঘন, আর সদ্য-ব্যবহৃত, তাই প্রায় সবসময় cache-এ থাকে। Heap-এর object গুলো ছড়ানো থাকলে প্রতিটা reference ধরে লাফ দিতে গিয়ে cache-এ পাওয়া যায় না, RAM পর্যন্ত যেতে হয় (Chapter 2-এর টেবিল: ~১০০ ns)।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — locality.js</div>
+    <div class="codewrap"><pre><code>const N = 5_000_000;
+const flat = new Float64Array(N).fill(1);                  // সংখ্যা গুলো এক টানা memory-তে
+const objs = Array.from({ length: N }, () =&gt; ({ v: 1 }));  // প্রতিটা সংখ্যা আলাদা heap object-এ
+const shuffled = objs.slice();
+for (let i = N - 1; i &gt; 0; i--) {                          // reference গুলোর ক্রম এলোমেলো করো
+  const j = Math.floor(Math.random() * (i + 1));
+  [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+}
+
+function time(label, fn) {
+  fn();                                                    // একবার চালিয়ে JIT-কে গরম করো
+  const t = performance.now();
+  fn();
+  console.log(label.padEnd(28), (performance.now() - t).toFixed(1), 'ms');
+}
+time('Float64Array (contiguous)', () =&gt; { let s = 0; for (let i = 0; i &lt; N; i++) s += flat[i]; return s; });
+time('objects, in creation order', () =&gt; { let s = 0; for (let i = 0; i &lt; N; i++) s += objs[i].v; return s; });
+time('objects, shuffled order',    () =&gt; { let s = 0; for (let i = 0; i &lt; N; i++) s += shuffled[i].v; return s; });</code></pre></div>
+    <p>আমার Mac-এ: <code>2.8 ms</code>, <code>4.0 ms</code>, <code>30.4 ms</code>। তিনটাই হুবহু একই হিসাব — পঞ্চাশ লাখটা ১ যোগ করা। পার্থক্য শুধু memory-তে data কীভাবে সাজানো। শেষেরটায় object গুলো একই, শুধু পড়ার ক্রম এলোমেলো, আর তাতেই ১০ গুণ ধীর।</p>
+  </div>
+  <h4>৩. Fragmentation-এর দাম</h4>
+  <p>Heap-এ অনেকক্ষণ ধরে নানা মাপের allocate আর free চললে খালি জায়গা গুলো ছোট ছোট টুকরো হয়ে ছড়িয়ে পড়ে, মাঝে মাঝে জীবিত block। তখন মোট খালি জায়গা অনেক থাকলেও একটা বড় অনুরোধ মেটানোর মতো <em>একটানা</em> খালি জায়গা না-ও থাকতে পারে। এর নাম <strong>fragmentation</strong>। ফল: allocator-কে kernel-এর কাছে নতুন memory চাইতে হয়, যদিও হাতে "খালি" memory পড়ে আছে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 280" width="100%" role="img" aria-label="A fragmented 128 KB heap has 56 KB free in total but no single hole larger than 16 KB, so a 32 KB request fails; after compaction the live objects are packed together and one 56 KB hole fits the request">
+      <text x="40" y="38" class="t-h t-s">Fragmented heap — 128 KB after many allocations and frees</text>
+      <rect x="40" y="50" width="90" height="46" class="b-u"/><text x="85" y="78" text-anchor="middle" class="t-s">16 KB</text>
+      <rect x="130" y="50" width="90" height="46" class="b-m"/><text x="175" y="78" text-anchor="middle" class="t-m t-s">free 16</text>
+      <rect x="220" y="50" width="45" height="46" class="b-u"/><text x="242" y="78" text-anchor="middle" class="t-s">8</text>
+      <rect x="265" y="50" width="45" height="46" class="b-m"/><text x="287" y="78" text-anchor="middle" class="t-m t-s">8</text>
+      <rect x="310" y="50" width="135" height="46" class="b-u"/><text x="377" y="78" text-anchor="middle" class="t-s">24 KB</text>
+      <rect x="445" y="50" width="90" height="46" class="b-m"/><text x="490" y="78" text-anchor="middle" class="t-m t-s">free 16</text>
+      <rect x="535" y="50" width="45" height="46" class="b-u"/><text x="557" y="78" text-anchor="middle" class="t-s">8</text>
+      <rect x="580" y="50" width="45" height="46" class="b-m"/><text x="602" y="78" text-anchor="middle" class="t-m t-s">8</text>
+      <rect x="625" y="50" width="90" height="46" class="b-u"/><text x="670" y="78" text-anchor="middle" class="t-s">16 KB</text>
+      <rect x="715" y="50" width="45" height="46" class="b-m"/><text x="737" y="78" text-anchor="middle" class="t-m t-s">8</text>
+      <text x="40" y="122" class="t-s">free in total: 56 KB · biggest single hole: 16 KB</text>
+      <text x="40" y="144" class="t-d t-s">malloc(32 KB) → no hole is big enough → ask the kernel for more memory</text>
+
+      <text x="40" y="190" class="t-h t-s">After compaction — V8's GC moves live objects together</text>
+      <rect x="40" y="202" width="405" height="46" class="b-u"/><text x="242" y="230" text-anchor="middle" class="t-s">live objects · 72 KB</text>
+      <rect x="445" y="202" width="315" height="46" class="b-ok"/><text x="602" y="230" text-anchor="middle" class="t-ok t-s">one free hole · 56 KB — 32 KB fits ✓</text>
+      <text x="40" y="270" class="t-m t-s">blue = in use · dashed = free</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">উপরে: ৫৬ KB খালি, কিন্তু সবচেয়ে বড় একটানা ফাঁক ১৬ KB, তাই ৩২ KB-র অনুরোধ মেটে না। নিচে: V8-এর collector জীবিত object গুলো এক পাশে সরিয়ে আনলে (compaction) সব খালি জায়গা এক টুকরো হয়ে যায়।</p>
+  <p>V8 এটা কমাতে পারে একটা সুবিধার জোরে: collector জানে প্রতিটা reference কোথায় আছে, তাই সে জীবিত object গুলো সরিয়ে এক পাশে জড়ো করতে পারে আর সব reference-এ নতুন address বসিয়ে দিতে পারে — এর নাম <strong>compaction</strong>। C-র <code>malloc</code> এটা পারে না: program-এর কোন variable-এ কোন raw address লুকিয়ে আছে, allocator জানে না, তাই কিছু সরাতে গেলে সেই pointer গুলো ভুল জায়গা দেখাবে।</p>
+  <p>এর সাথে জড়ানো আরেকটা বাস্তবতা: <code>free</code> করা বা GC হওয়া মানেই memory OS-এর কাছে ফেরত যাওয়া না। Kernel memory দেয় আর ফেরত নেয় নির্দিষ্ট মাপের পুরো টুকরো ধরে — এর নাম <strong>page</strong> (সাধারণত ৪ KB, Apple Silicon-এ ১৬ KB; Chapter 9)। একটা page-এর ভেতরে একটাও জীবিত object থাকলে পুরো page আটকে থাকে। তার উপর allocator ভবিষ্যতের জন্য খালি জায়গা হাতে রাখতে পছন্দ করে। নিজে দেখো — <strong>RSS</strong> (resident set size) হলো process এই মুহূর্তে আসলে কতটা RAM দখল করে আছে, kernel-এর হিসাবে:</p>
+  <div class="codewrap"><pre><code>const mb = n =&gt; (n / 2 ** 20).toFixed(1) + ' MB';
+const show = label =&gt; { global.gc(); const m = process.memoryUsage(); console.log(label.padEnd(18), 'heapUsed', mb(m.heapUsed).padStart(9), '| rss', mb(m.rss).padStart(9)); };
+show('start');
+globalThis.keep = [];                      // global — একটা root থেকে সরাসরি reachable
+for (let i = 0; i &lt; 2_000_000; i++) keep.push({ id: i, tag: 'x' + i });
+show('2M objects alive');
+globalThis.keep = null;                    // শেষ reference কেটে দিলাম
+show('all released');</code></pre></div>
+  <p><code>node --expose-gc</code> দিয়ে চালালে আমার Mac-এ: শুরুতে heapUsed <code>3.1 MB</code>, RSS <code>36.9 MB</code>; ২০ লাখ object-এর পরে <code>147.7 MB</code> আর <code>234.6 MB</code>; সব ছেড়ে দেওয়ার পরে heapUsed আবার <code>3.3 MB</code> — কিন্তু RSS তখনো <code>212.2 MB</code>। JS-এর হিসাবে memory ফেরত গেছে; kernel-এর হিসাবে process এখনো প্রায় পুরোটা ধরে আছে। Production-এ container-এর memory graph কেন peak-এর পরে সহজে নামে না, এটাই তার একটা বড় কারণ।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"JS-এ primitive (number, string, boolean) stack-এ থাকে, object heap-এ।" V8-এ নিয়মটা আসলে অন্য। ছোট integer (V8-এর ভাষায় <strong>Smi</strong>, small integer) সরাসরি variable-এর ঘরের ভেতরেই বসে। কিন্তু দশমিক সংখ্যা, বড় সংখ্যা আর সব string heap-এর object। আর closure যে variable ধরে রাখে, সেটা primitive হলেও heap-এ যায় (ওপরের <code>count</code>)। দেখো:</p>
+    <div class="codewrap"><pre><code>node --allow-natives-syntax -e "%DebugPrint(42); %DebugPrint(4.2)"</code></pre></div>
+    <p>প্রথমটা বলে <code>Smi: 0x2a (42)</code> — কোনো address নেই, মানটা নিজেই আছে। দ্বিতীয়টা বলে <code>0x20368725c921: [HeapNumber] in OldSpace</code> — একটা heap address-এ রাখা আলাদা object। দুটোই JS-এর <code>number</code>, অথচ থাকার জায়গা আলাদা। মানে "primitive নাকি object" দিয়ে জায়গা ঠিক হয় না; ঠিক হয় V8 মানটাকে ভেতরে কীভাবে উপস্থাপন করে, তা দিয়ে।</p>
   </div>
 
-  <h3>Cost-এর আসল হিসাব</h3>
-  <p>"Stack fast, heap slow" — এই oversimplification-টা এড়িয়ে যাই। আসল ছবিটা:</p>
-  <ul>
-    <li><strong>Stack allocation trivially simple</strong> — একটা pointer বাড়ানো/কমানো। প্রায় free।</li>
-    <li><strong>Heap allocation-এ কাজ বেশি</strong> — allocator-কে free space খুঁজতে হয়, bookkeeping করতে হয়, মাঝে মাঝে kernel-এর কাছে আরো memory চাইতে হয় (system call!)। কতটা costly সেটা allocator, allocation pattern আর size-এর উপর নির্ভর করে।</li>
-    <li><strong>Access speed-এ পার্থক্য allocation-এর না, locality-র</strong> — stack-এর data সাধারণত ছোট জায়গায় ঘেঁষাঘেঁষি করে থাকে বলে CPU cache-এ ভালো behave করে (Chapter 13)। Heap-এর data ছড়ানো-ছিটানো হলে cache miss বাড়ে। মানে পার্থক্যটা জায়গার "জাত"-এ না, access pattern-এ।</li>
-  </ul>
-
-  <h3>Heap-এর নিজস্ব রোগ</h3>
-  <ul>
-    <li><strong>Fragmentation:</strong> বারবার ছোট-বড় allocate/free করতে করতে free memory টুকরা টুকরা হয়ে যায় — মোট জায়গা থাকলেও বড় এক টুকরা পাওয়া যায় না।</li>
-    <li><strong>Memory leak:</strong> নেওয়া memory ফেরত না দেওয়া। GC language-এও হয় — যেমন global array-তে reference জমিয়ে রাখলে GC কিছুই করতে পারে না। Node.js app-এর memory ধীরে ধীরে বেড়ে যাওয়ার classic কারণ।</li>
-    <li><strong>Stack overflow:</strong> Heap-এর রোগ না, stack-এর — infinite/গভীর recursion-এ frame জমে stack-এর সীমা পার হয়ে যাওয়া।</li>
-  </ul>
-
-  <div class="box kern">
-    <div class="box-title">JS DEVELOPER-এর জন্য</div>
-    <p>V8-এ তোমার object/array/closure সব heap-এ থাকে, আর garbage collector সেই heap পরিষ্কার করে। "GC pause" মানে: collector heap ঘুরে ঘুরে মরা object খুঁজছে। Heap যত এলোমেলো আর বড়, GC-র কাজ তত বেশি। Chrome DevTools-এর Memory tab-এ যে heap snapshot নাও — সেটা আক্ষরিক অর্থেই এই chapter-এর heap region-এর ছবি।</p>
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p><strong>Stack</strong>: মাপ আগে জানা, lifetime function-এর সমান, allocation একটা বিয়োগ, ফেরত স্বয়ংক্রিয়, সবসময় cache-এর কাছে। <strong>Heap</strong>: যেকোনো মাপ, যেকোনো lifetime, কিন্তু একজন allocator-কে হিসাব রাখতে হয়, আর কাউকে ফেরত দিতে হয় — C-তে তুমি, JS-এ garbage collector। দুইটাকে জোড়ে <strong>reference</strong>: stack-এ রাখা একটা address, যেটা heap-এর object দেখায়। JS-এ memory সমস্যা খুঁজতে হলে প্রশ্ন করো: "এই object-কে কে এখনো reach করছে?"</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>কোন data stack-এ আর কোন data heap-এ যায় — নিয়মটা কী?</li>
-      <li>Scope আর lifetime-এর পার্থক্য একটা উদাহরণ দিয়ে?</li>
-      <li>"Stack faster than heap" কথাটার মধ্যে কতটুকু সত্যি আর কোথায় ভুল?</li>
-      <li>Fragmentation কীভাবে তৈরি হয়?</li>
+      <li>কোন তিনটা পরিস্থিতিতে data stack-এ রাখা যায় না? <code>createUser</code>-এর object stack frame-এ থাকলে return-এর পরে কী ঘটত?</li>
+      <li><code>const b = a; b.count = 99;</code> করলে <code>a.count</code> কেন বদলায়? <code>{} === {}</code> কেন <code>false</code>? উত্তরে "address" শব্দটা ব্যবহার করো।</li>
+      <li><code>makeCounter</code>-এর <code>count</code>-এর scope শেষ, তবু lifetime চলছে — V8 এটা কীভাবে সম্ভব করে?</li>
+      <li>Garbage collector কীভাবে ঠিক করে কোন object মুছবে? GC থাকা সত্ত্বেও Node server-এ memory leak হয় কীভাবে?</li>
+      <li>"Stack fast, heap slow" — এর কোন অংশ সত্যি আর কোন অংশ ভুল? <code>locality.js</code>-এর তৃতীয় loop ১০ গুণ ধীর কেন, আর GC-র পরে heapUsed নামলেও RSS নামে না কেন?</li>
     </ul>
   </div>

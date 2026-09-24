@@ -33,3 +33,39 @@ pre.diagram .dim{color:var(--muted);}
 .copybtn.done{color:var(--ok); border-color:var(--ok); opacity:1;}
 @media(hover:none){ .copybtn{opacity:1;} }
 .diagram-caption{font-size:13px; color:var(--muted); margin:-12px 0 22px; text-align:center; line-height:1.6;}
+
+/* ---------- SVG figures ----------
+   Inline SVG diagrams. Every colour comes from a token, so a figure
+   follows the dark/light switch without any per-theme markup.
+   Below ~600px the figure scrolls sideways instead of shrinking its
+   labels to an unreadable size. */
+.fig{margin:0 0 20px; padding:16px; border:1px solid var(--border); border-radius:var(--radius);
+  background:linear-gradient(180deg, var(--panel), var(--panel-2)); overflow-x:auto;}
+.fig svg{display:block; width:100%; height:auto; min-width:560px; color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-size:14px;}
+.fig + .diagram-caption{text-align:left; max-width:68ch; margin-top:-8px;}
+.fig text{fill:currentColor;}
+.fig .t-h{fill:var(--heading); font-weight:700;}
+.fig .t-m{fill:var(--muted);}
+.fig .t-u{fill:var(--user); font-weight:600;}
+.fig .t-k{fill:var(--kernel); font-weight:600;}
+.fig .t-ok{fill:var(--ok); font-weight:600;}
+.fig .t-d{fill:var(--danger); font-weight:600;}
+.fig .t-s{font-size:12px;}
+.fig .mono{font-family:var(--font-mono); font-size:12.5px;}
+.fig .b{fill:var(--panel); stroke:var(--border); stroke-width:1.5;}
+.fig .b-u{fill:var(--user-dim); stroke:var(--user); stroke-width:1.5;}
+.fig .b-k{fill:var(--kernel-dim); stroke:var(--kernel); stroke-width:1.5;}
+.fig .b-ok{fill:var(--ok-dim); stroke:var(--ok); stroke-width:1.5;}
+.fig .b-d{fill:var(--danger-dim); stroke:var(--danger); stroke-width:1.5;}
+.fig .b-m{fill:var(--bg-soft); stroke:var(--border); stroke-width:1.5; stroke-dasharray:5 4;}
+.fig .ln{stroke:var(--muted); stroke-width:1.6; fill:none;}
+.fig .ln-u{stroke:var(--user); stroke-width:1.8; fill:none;}
+.fig .ln-k{stroke:var(--kernel); stroke-width:1.8; fill:none;}
+.fig .ln-d{stroke:var(--danger); stroke-width:1.8; fill:none;}
+.fig .dash{stroke-dasharray:6 5;}
+.fig .ah{fill:var(--muted);}
+.fig .ah-u{fill:var(--user);}
+.fig .ah-k{fill:var(--kernel);}
+.fig .ah-d{fill:var(--danger);}

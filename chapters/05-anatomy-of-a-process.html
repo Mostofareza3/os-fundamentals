@@ -1,67 +1,257 @@
   <p class="part-label">PART 2 · FROM PROGRAM TO PROCESS</p>
   <h2>Chapter 5 — Anatomy of a Process</h2>
-  <p class="chap-sub">Process-এর memory-র ভিতরটা দেখতে কেমন — এই layout-টা বইয়ের সবচেয়ে বেশি ব্যবহৃত ছবিগুলোর একটা।</p>
+  <p class="chap-sub">একটা process-এর memory-র ভেতরটা দেখতে কেমন, কোন অংশে কী থাকে আর কেন — আর function call-এর হিসাব রাখা stack আসলে কীভাবে কাজ করে।</p>
 
-  <h3>Process memory layout</h3>
-  <pre class="diagram">High Address
-+------------------------+
-|   Stack                |  ← function call, local variable
-|      ↓ (নিচের দিকে বাড়ে) |
-+------------------------+
-|                        |
-|   Free space           |
-|                        |
-+------------------------+
-|      ↑ (উপরের দিকে বাড়ে) |
-|   Heap                 |  ← dynamic allocation (malloc, new, object)
-+------------------------+
-|   BSS                  |  ← uninitialized global (শূন্য দিয়ে শুরু)
-+------------------------+
-|   Data                 |  ← initialized global/static variable
-+------------------------+
-|   Code / Text          |  ← machine instructions (read-only)
-+------------------------+
-Low Address</pre>
+  <p>যা যা লাগবে, এক লাইনে মনে করিয়ে দিই। <strong>Memory address</strong>: RAM-এর প্রতিটা byte-এর নম্বর (Chapter 2)। <strong>Address space</strong>: প্রতিটা process-এর নিজস্ব address-এর জগৎ, এক process-এর address দিয়ে অন্যজনের memory-তে পৌঁছানো যায় না (Chapter 3)। <strong>Loader</strong>: <code>execve</code>-র সময় kernel-এর যে অংশ executable-এর segment গুলো permission সহ address space-এ map করে (Chapter 4)। আর <strong>PC</strong>: CPU-র যে register পরের instruction-এর address ধরে রাখে।</p>
 
+  <h3>Address space-কে ভাগ করতে হয় কেন</h3>
+  <p>Loader-এর হাতে একটা ফাঁকা address space। ৬৪-bit machine-এ এটা বিশাল — Linux-এ একটা process-এর user space-এর ভাগেই প্রায় ১২৮ TB-র address, যদিও তার বেশিরভাগ কখনো ব্যবহার হয় না, কোনো RAM-এর সাথে যুক্তও থাকে না। প্রশ্ন হলো, এর ভেতরে কোথায় কী বসবে?</p>
+  <p>এলোমেলো বসালে দুইটা সমস্যা। এক, কিছু জিনিস চলার সময় বাড়ে — নতুন object তৈরি হয়, function-এর ভেতরে function ডাকা হয় — আর বাড়তে বাড়তে পাশের জিনিসের উপর উঠে যেতে পারে। দুই, সব memory একই নিয়মে চলা উচিত না: machine code কেউ বদলাতে পারবে না, অথচ variable বদলাতেই হবে; কিছু data program-এর পুরো জীবন বাঁচবে, কিছু এক function call-এর মধ্যেই শেষ।</p>
+  <p>তাই প্রতিটা process-এর address space একটা প্রচলিত নকশা মেনে কয়েকটা <strong>region</strong>-এ ভাগ করা হয় — প্রতিটা region-এ একই ধরনের জিনিস, একই জীবনকাল, একই permission। Linux-এ যেকোনো process-এর region গুলো দেখা যায় <code>/proc/&lt;PID&gt;/maps</code> file পড়ে। সবচেয়ে পরিষ্কার উদাহরণ ছোট একটা program — <code>cat</code> নিজের map নিজেই পড়ুক:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker)</div>
+    <div class="codewrap"><pre><code>docker run --rm alpine cat /proc/self/maps</code></pre></div>
+    <p>আমার output (তোমার address আলাদা হবে — kernel প্রতিবার region গুলো একটু এলোমেলো জায়গায় বসায়, যাতে আক্রমণকারী আগে থেকে address আন্দাজ করতে না পারে):</p>
+    <div class="codewrap"><pre><code>aaaabb3d0000-aaaabb4a0000 r-xp 00000000 00:40 1073111   /bin/busybox
+aaaabb4ac000-aaaabb4b0000 r--p 000dc000 00:40 1073111   /bin/busybox
+aaaabb4b0000-aaaabb4b1000 rw-p 000e0000 00:40 1073111   /bin/busybox
+aaaac20c8000-aaaac20c9000 ---p 00000000 00:00 0         [heap]
+aaaac20c9000-aaaac20ca000 rw-p 00000000 00:00 0         [heap]
+ffff9082f000-ffff908d1000 r-xp 00000000 00:40 1073275   /lib/ld-musl-aarch64.so.1
+ffff908db000-ffff908eb000 rw-p 00000000 00:00 0
+ffff908eb000-ffff908ed000 r--p 00000000 00:00 0         [vvar]
+ffff908ed000-ffff908ee000 r-xp 00000000 00:00 0         [vdso]
+ffff908ee000-ffff908ef000 r--p 000af000 00:40 1073275   /lib/ld-musl-aarch64.so.1
+ffff908ef000-ffff908f0000 rw-p 000b0000 00:40 1073275   /lib/ld-musl-aarch64.so.1
+ffffffee8000-fffffff09000 rw-p 00000000 00:00 0         [stack]</code></pre></div>
+    <p>প্রতিটা লাইন একটা region। প্রথম column হলো address-এর range (hex-এ, শুরু–শেষ), দ্বিতীয়টা permission: <code>r</code> = পড়া যাবে, <code>w</code> = লেখা যাবে, <code>x</code> = instruction হিসেবে চালানো যাবে, <code>-</code> = যাবে না (শেষের <code>p</code> মানে region-টা এই process-এর নিজস্ব copy)। শেষ column বলে region-টা কোথা থেকে এসেছে। Alpine-এ <code>cat</code> আসলে <code>busybox</code> নামের একটা program, তাই সেই নাম দেখছ।</p>
+  </div>
+  <p>macOS-এ <code>/proc</code> নেই; একই তথ্য দেয় <code>vmmap &lt;PID&gt;</code> — output অনেক লম্বা, তাই <code>vmmap &lt;PID&gt; | grep -E "__TEXT|Stack"</code> দিয়ে ছেঁকে দেখো। একটা Node process-এ আমি পেয়েছি <code>__TEXT 104054000-108f30000 r-x/r-x ... /bin/node</code> — node-এর machine code, পড়া আর চালানো যায়, লেখা যায় না।</p>
+
+  <h3>Region গুলো, নিচ থেকে উপরে</h3>
+  <p>এবার ওপরের output-কে একটা ছবিতে সাজাই। নিচে ছোট address, উপরে বড়:</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 560" width="100%" role="img" aria-label="Process memory layout from low to high addresses: unmapped guard, text, data, BSS, heap growing up, free space, memory-mapped shared libraries, free space, stack growing down, and kernel space on top">
+      <defs>
+        <marker id="c05f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c05f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <line x1="40" y1="520" x2="40" y2="30" class="ln" marker-end="url(#c05f1-a)"/>
+      <text x="28" y="275" text-anchor="middle" class="t-m t-s" transform="rotate(-90 28 275)">higher addresses</text>
+
+      <rect x="210" y="20" width="310" height="44" rx="6" class="b-m"/>
+      <text x="365" y="47" text-anchor="middle" class="t-m">kernel space — off-limits in user mode</text>
+
+      <rect x="210" y="74" width="310" height="56" rx="6" class="b-u"/>
+      <text x="228" y="98" class="t-u">Stack</text>
+      <text x="228" y="118" class="t-m t-s">grows down ↓</text>
+      <line x1="365" y1="132" x2="365" y2="160" class="ln-u" marker-end="url(#c05f1-u)"/>
+      <text x="196" y="96" text-anchor="end" class="t-m mono">ffffffee8000</text>
+      <text x="540" y="96" class="t-s">function calls: locals,</text>
+      <text x="540" y="114" class="t-s">return addresses</text>
+      <text x="508" y="105" text-anchor="end" class="t-m mono">rw-</text>
+
+      <text x="365" y="182" text-anchor="middle" class="t-m t-s">free — nothing mapped</text>
+
+      <rect x="210" y="196" width="310" height="60" rx="6" class="b"/>
+      <text x="228" y="220" class="t-h">Memory-mapped region</text>
+      <text x="228" y="240" class="t-m t-s">libc, ld.so, other mapped files</text>
+      <text x="196" y="220" text-anchor="end" class="t-m mono">ffff9082f000</text>
+      <text x="540" y="220" class="t-s">shared libraries, and big</text>
+      <text x="540" y="238" class="t-s">chunks (V8's JS heap lives here)</text>
+      <text x="508" y="229" text-anchor="end" class="t-m mono">r-x / rw-</text>
+
+      <text x="365" y="282" text-anchor="middle" class="t-m t-s">free — nothing mapped</text>
+      <line x1="365" y1="326" x2="365" y2="298" class="ln-u" marker-end="url(#c05f1-u)"/>
+
+      <rect x="210" y="328" width="310" height="56" rx="6" class="b-u"/>
+      <text x="228" y="352" class="t-u">Heap</text>
+      <text x="228" y="372" class="t-m t-s">grows up ↑</text>
+      <text x="196" y="352" text-anchor="end" class="t-m mono">aaaac20c8000</text>
+      <text x="540" y="350" class="t-s">memory asked for at runtime,</text>
+      <text x="540" y="368" class="t-s">lives until freed (Chapter 6)</text>
+      <text x="508" y="359" text-anchor="end" class="t-m mono">rw-</text>
+
+      <rect x="210" y="394" width="310" height="36" rx="6" class="b"/>
+      <text x="228" y="417" class="t-h">BSS</text>
+      <text x="540" y="417" class="t-s">globals with no initial value</text>
+      <text x="508" y="417" text-anchor="end" class="t-m mono">rw-</text>
+      <rect x="210" y="432" width="310" height="36" rx="6" class="b"/>
+      <text x="228" y="455" class="t-h">Data</text>
+      <text x="540" y="455" class="t-s">globals with an initial value</text>
+      <text x="508" y="455" text-anchor="end" class="t-m mono">rw-</text>
+      <rect x="210" y="470" width="310" height="40" rx="6" class="b-k"/>
+      <text x="228" y="495" class="t-k">Text (code)</text>
+      <text x="196" y="495" text-anchor="end" class="t-m mono">aaaabb3d0000</text>
+      <text x="540" y="495" class="t-s">machine code</text>
+      <text x="508" y="495" text-anchor="end" class="t-m mono">r-x</text>
+
+      <rect x="210" y="518" width="310" height="30" rx="6" class="b-m"/>
+      <text x="365" y="538" text-anchor="middle" class="t-m t-s">address 0 … — unmapped guard</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ের hex সংখ্যা গুলো ওপরের <code>cat</code> experiment থেকে নেওয়া, ডানে প্রতিটা region-এর কাজ আর permission। Heap উপরের দিকে আর stack নিচের দিকে বাড়ে, মাঝখানে বিশাল ফাঁকা জায়গা রেখে — যাতে দুজনেই বাড়ার জায়গা পায়। সবার উপরে kernel-এর অংশ, user mode থেকে ছোঁয়া নিষেধ।</p>
+
+  <p>প্রতিটা region, নিচ থেকে:</p>
   <ul>
-    <li><strong>Code/Text:</strong> Executable-এর machine instructions। Read-only রাখা হয় — নিজের code নিজে overwrite করা বন্ধ করতে। বোনাস: read-only বলেই একই program-এর একাধিক process এই অংশটা physical memory-তে share করতে পারে।</li>
-    <li><strong>Data:</strong> যেসব global/static variable-এর initial value দেওয়া আছে (<code>int count = 10;</code>)।</li>
-    <li><strong>BSS:</strong> Initial value ছাড়া global গুলো (<code>int total;</code>) — process শুরুতে zero-filled থাকে। ELF file-এ এদের জন্য জায়গা নষ্ট হয় না, শুধু size লেখা থাকে।</li>
-    <li><strong>Heap:</strong> Runtime-এ চাওয়া memory — <code>malloc</code>, JS-এর object/array, সব এখানে। উপরের দিকে বাড়ে।</li>
-    <li><strong>Stack:</strong> Function call-এর জায়গা। নিচের দিকে বাড়ে।</li>
+    <li><strong>Text (code)</strong> — executable-এর machine code, Chapter 4-এর <code>R E</code> segment। Permission <code>r-x</code>: পড়া আর চালানো যায়, লেখা যায় না। ওপরের output-এর প্রথম লাইন। ঠিক পরের <code>r--p</code> লাইনটা শুধু-পড়া data — code-এ লেখা constant আর linker-এর কিছু table।</li>
+    <li><strong>Data</strong> — যেসব global variable-এর শুরুর মান code-এ লেখা আছে। C-তে <code>int count = 10;</code> (function-এর বাইরে লেখা)। মানটা executable file-এ রাখা থাকে, loader সেখান থেকে map করে। ওপরে <code>/bin/busybox</code>-এর <code>rw-p</code> লাইন।</li>
+    <li><strong>BSS</strong> — যেসব global-এর শুরুর মান দেওয়া নেই (<code>int total;</code>)। নিয়ম হলো এরা ০ দিয়ে শুরু হবে। তাই file-এ এদের জন্য হাজারটা শূন্য লিখে জায়গা নষ্ট করা হয় না, শুধু লেখা থাকে "এত byte লাগবে"। Loader সেই মাপের ০-ভরা memory দেয়। (নামটা ১৯৫০-এর দশকের একটা assembler থেকে আসা; মানে খুঁজে লাভ নেই।)</li>
+    <li><strong>Heap</strong> — program চলার সময় যে memory চেয়ে নেওয়া হয়, আগে থেকে যার মাপ জানা ছিল না। বড় address-এর দিকে বাড়ে। কে কীভাবে এখান থেকে memory পায় আর ফেরত দেয়, সেটা পুরো Chapter 6।</li>
+    <li><strong>Memory-mapped region</strong> — shared library (libc, dynamic linker নিজে) আর অন্য যেকোনো map করা জিনিস এখানে বসে। ওপরে <code>/lib/ld-musl-aarch64.so.1</code>-এর লাইনগুলো। (<code>[vvar]</code> আর <code>[vdso]</code> হলো kernel-এর দেওয়া একটা ছোট code আর data টুকরা, যাতে সময় জানার মতো কিছু syscall kernel-এ না ঢুকেই করা যায় — Chapter 32।)</li>
+    <li><strong>Stack</strong> — function call-এর হিসাব। ছোট address-এর দিকে, মানে নিচের দিকে বাড়ে। পরের দুই section এর উপর।</li>
   </ul>
+  <p>Node process-এর map দেখলে ছবিটা আরও ভিড়ের — <code>docker run --rm node:22-alpine node -e "console.log(require('fs').readFileSync('/proc/self/maps', 'utf8'))"</code>। সেখানে দেখবে node binary-র নিজের <code>r-xp</code> আর <code>rw-p</code> লাইন, <code>libstdc++</code>-এর মতো আরও library, আর অনেকগুলো নামহীন <code>rw-p</code> region — ওগুলো V8-এর নিজের JS heap-এর টুকরো। V8 এগুলো <code>[heap]</code> region থেকে নেয় না, kernel-এর কাছে সরাসরি নতুন region map করে চেয়ে নেয় (Chapter 6)। মজার একটা লাইনও পাবে, <code>rwxp</code> — পড়া, লেখা, চালানো তিনটাই। Chapter 4-এর JIT মনে করো: V8 চলার মাঝখানে machine code লেখে, তারপর সেটা চালায়।</p>
 
-  <h3>Stack ঠিক কীভাবে কাজ করে</h3>
-  <p>প্রতিটা function call-এ stack-এ একটা <strong>stack frame</strong> push হয়। Frame-এর ভিতরে থাকে: function-এর <strong>local variables</strong>, <strong>arguments</strong>, আর সবচেয়ে গুরুত্বপূর্ণ — <strong>return address</strong> (function শেষ হলে CPU কোথায় ফিরবে)। Function return করলে frame টা pop হয়ে যায়।</p>
-  <p>এই flow-টা trace করি:</p>
-  <div class="codewrap"><pre><code>void bar() { int z = 3; }
-void foo() { int y = 2; bar(); }
-int main()  { int x = 1; foo(); return 0; }</code></pre></div>
-  <pre class="diagram"><span class="dim">main() চলছে      foo() call        bar() call        bar() return      foo() return</span>
+  <h3>Permission: কোন region-এ কী করা যায়</h3>
+  <p>প্রতিটা region-এ permission আলাদা রাখার কারণ দুইটা বিপদ। এক, একটা bug ভুল address-এ লিখে program-এর নিজের machine code নষ্ট করে ফেলতে পারে — তারপর CPU কী চালাবে কেউ জানে না। দুই, আক্রমণকারী যদি input হিসেবে machine code পাঠিয়ে সেটা stack বা heap-এ ঢুকিয়ে দিতে পারে, আর CPU যদি সেটা চালিয়ে দেয় — তাহলে তোমার server-এ সে যা খুশি চালাতে পারবে। পুরনো দিনের অনেক বড় hack ঠিক এভাবে হয়েছিল।</p>
+  <p>সমাধান: code region <code>r-x</code> (লেখা নিষেধ), আর data, heap, stack <code>rw-</code> (চালানো নিষেধ)। এই নিয়ম পাহারা দেয় CPU নিজে, প্রতিটা memory access-এ (কীভাবে, Chapter 9-এর page table-এর গল্প)। নিয়ম ভাঙলে ঠিক সেটাই ঘটে যা Chapter 1-এ বলেছিলাম: CPU থামে, kernel-কে ডাকে, kernel process-টাকে মেরে ফেলে। নিজে দেখতে চাইলে এই ছোট C program — Chapter 4-এর মতোই compile করো:</p>
+  <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
 
-|          |     |          |     | bar frame|     |          |     |          |
-|          |     | foo frame|     | foo frame|     | foo frame|     |          |
-| main     |     | main     |     | main     |     | main     |     | main     |
-+----------+     +----------+     +----------+     +----------+     +----------+
-                 <span class="dim">frame push</span>       <span class="dim">আরেকটা push</span>       <span class="dim">pop</span>              <span class="dim">pop</span></pre>
-  <p class="diagram-caption">Stack literally একটা stack — LIFO। এজন্যই recursion বেশি গভীরে গেলে "stack overflow" হয়: frame জমতে জমতে জায়গা শেষ।</p>
+int main(void) {
+    printf("main-এর code আছে এই address-এ: %p\n", (void *)main);
+    *(char *)main = 0;            /* ওই address-এ একটা byte লেখার চেষ্টা */
+    printf("এই লাইন কখনো print হবে না\n");
+    return 0;
+}</code></pre></div>
+  <p>C না জানলে শুধু মাঝের লাইনটা বোঝো: <code>(char *)main</code> মানে "<code>main</code> function-এর machine code যে address-এ শুরু", আর <code>*... = 0</code> মানে "সেই address-এ ০ লেখো"। (Address নিয়ে সরাসরি কাজ করার এই ক্ষমতার নাম pointer — Chapter 6।) <code>cc writecode.c -o writecode &amp;&amp; ./writecode</code> চালালে:</p>
+  <div class="codewrap"><pre><code># macOS
+main-এর code আছে এই address-এ: 0x104158460
+zsh: bus error  ./writecode
+
+# Linux
+main-এর code আছে এই address-এ: 0xaaaab45e07d4
+Segmentation fault</code></pre></div>
+  <p>দ্বিতীয় <code>printf</code> কখনো চলেনি। macOS এই ঘটনাকে "bus error" নামে দেখায়, Linux "segmentation fault" — নাম আলাদা, ঘটনা এক: <code>r-x</code> region-এ লেখার চেষ্টায় CPU থেমেছে, kernel process মেরেছে।</p>
+  <p>Code region-এ কেউ লিখতে পারে না বলে আরেকটা সুবিধা ফাউ পাওয়া যায়: একই program-এর দশটা process চললেও তাদের code-এর জন্য RAM-এ একটাই copy রাখলে চলে — সবাই সেটাই পড়ে, কেউ বদলায় না। Chapter 4-এর shared library (libc) এভাবেই শত শত process-এর মধ্যে ভাগ হয়।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Stack আর heap হলো দুই রকম hardware memory, একটা দ্রুত আরেকটা ধীর।" না। দুটোই একই RAM, একই address space-এর দুইটা অংশ। পার্থক্য শুধু <em>কীভাবে</em> ব্যবহার করা হয় — কে জায়গা দেয়, কখন ফেরত নেয়, কোন দিকে বাড়ে। CPU-র কাছে stack-এর একটা byte আর heap-এর একটা byte পড়ার মধ্যে কোনো পার্থক্য নেই।</p>
+  </div>
+
+  <h3>Stack: function call-এর হিসাবের খাতা</h3>
+  <p>একটা সরল প্রশ্ন দিয়ে শুরু করি: function শেষ হলে CPU জানে কীভাবে কোথায় ফিরতে হবে? Chapter 4-এ দেখেছি <code>bl</code> instruction <code>printf</code>-এ লাফ দেওয়ার সময় ফেরার ঠিকানা একটা register-এ রেখে যায়। কিন্তু <code>main</code> ডাকল <code>foo</code>-কে, <code>foo</code> ডাকল <code>bar</code>-কে — তখন <code>bar</code>-এর ফেরার ঠিকানা সেই একই register-এ বসে <code>foo</code>-র ফেরার ঠিকানা মুছে ফেলবে। <code>bar</code> শেষে <code>foo</code>-তে ফেরা যাবে, কিন্তু <code>foo</code> শেষে <code>main</code>-এ ফেরার পথ হারিয়ে গেছে। একই সমস্যা local variable-এর বেলায়ও: <code>foo</code>-র <code>y</code> আর <code>bar</code>-এর <code>z</code> — দুইজনকেই কোথাও রাখতে হবে, আর recursive function হলে একই function-এর হাজারটা copy-র হাজারটা আলাদা variable।</p>
+  <p>লক্ষ করো, ফেরার ক্রম সবসময় উল্টো: যে সবার শেষে ঢুকেছে, সে সবার আগে বেরোয়। এমন শেষে-ঢোকা-আগে-বেরোনো (LIFO) হিসাবের জন্য সবচেয়ে সহজ কাঠামো হলো stack। তাই process-এর memory-তে একটা region রাখা হয় ঠিক এই কাজে:</p>
+  <ul>
+    <li>CPU-র একটা register — <strong>stack pointer</strong> (SP) — সবসময় stack-এর বর্তমান মাথার address ধরে রাখে।</li>
+    <li>একটা function শুরু হলেই SP থেকে কিছু byte বিয়োগ করে নিজের জন্য জায়গা বানায় (stack নিচের দিকে বাড়ে, তাই বিয়োগ)। এই জায়গাটার নাম <strong>stack frame</strong>। Frame-এ থাকে: ফেরার ঠিকানা (<strong>return address</strong>), local variable, আর দরকার হলে কিছু argument।</li>
+    <li>Function শেষ হলে frame থেকে return address তুলে নেয়, SP-তে সেই byte গুলো আবার যোগ করে দেয় — frame মুক্ত — আর return address-এ লাফ দেয়।</li>
+  </ul>
+  <p>এটা কোনো তত্ত্ব না — Chapter 4-এর <code>hello</code>-র <code>main</code> ঠিক এটাই করছিল। <code>otool -tvj hello</code>-এর output আবার দেখো, এবার শুরু আর শেষটা:</p>
+  <div class="codewrap"><pre><code>0000000100000460   d10083ff   sub  sp, sp, #0x20          ; frame বানাও: SP থেকে 32 byte বিয়োগ
+0000000100000464   a9017bfd   stp  x29, x30, [sp, #0x10]  ; x30 (ফেরার ঠিকানা) frame-এ সেভ
+...
+0000000100000494   a9417bfd   ldp  x29, x30, [sp, #0x10]  ; ফেরার ঠিকানা frame থেকে তোলো
+0000000100000498   910083ff   add  sp, sp, #0x20          ; frame মুক্ত: 32 byte ফেরত যোগ
+000000010000049c   d65f03c0   ret                         ; x30-এর ঠিকানায় লাফ</code></pre></div>
+  <p>ARM-এ <code>x30</code> হলো সেই register যেখানে <code>bl</code> ফেরার ঠিকানা রাখে; <code>main</code> নিজেও <code>printf</code>-কে ডাকবে বলে <code>x30</code>-এর পুরনো মান আগে নিজের frame-এ সেভ করে রাখছে — ঠিক ওপরের সমস্যার সমাধান। (Intel/AMD-এর x86-64-এ <code>call</code> instruction ফেরার ঠিকানা নিজেই stack-এ push করে, আর <code>ret</code> সেখান থেকে তোলে — পথ আলাদা, ধারণা এক।) লক্ষ করো, stack-এ জায়গা নেওয়া মানে একটা বিয়োগ, ফেরত দেওয়া মানে একটা যোগ — কাউকে জিজ্ঞেস করতে হয় না, কিছু খুঁজতে হয় না। এই কথাটা Chapter 6-এ বড় ভূমিকা রাখবে।</p>
+
+  <p>JS-এ একই জিনিস দেখা যাক। V8 তোমার JS function গুলোর frame-ও এই একই process stack-এ রাখে:</p>
+  <div class="codewrap"><pre><code>function bar() { const z = 3; console.trace('এখানে stack কেমন?'); }
+function foo() { const y = 2; bar(); }
+function main() { const x = 1; foo(); }
+main();</code></pre></div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="Five snapshots of the stack: main runs; foo is called and its frame is pushed; bar is called and pushed; bar returns and its frame is popped; foo returns and is popped. The stack pointer always marks the lowest frame">
+      <defs>
+        <marker id="c05f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="85" y="26" text-anchor="middle" class="t-h t-s">main() runs</text>
+      <text x="235" y="26" text-anchor="middle" class="t-h t-s">main calls foo()</text>
+      <text x="385" y="26" text-anchor="middle" class="t-h t-s">foo calls bar()</text>
+      <text x="535" y="26" text-anchor="middle" class="t-h t-s">bar returns</text>
+      <text x="685" y="26" text-anchor="middle" class="t-h t-s">foo returns</text>
+      <text x="85" y="44" text-anchor="middle" class="t-m t-s">—</text>
+      <text x="235" y="44" text-anchor="middle" class="t-m t-s">push</text>
+      <text x="385" y="44" text-anchor="middle" class="t-m t-s">push</text>
+      <text x="535" y="44" text-anchor="middle" class="t-m t-s">pop</text>
+      <text x="685" y="44" text-anchor="middle" class="t-m t-s">pop</text>
+
+      <!-- column 1 -->
+      <rect x="20" y="56" width="130" height="26" rx="4" class="b-m"/><text x="85" y="74" text-anchor="middle" class="t-m t-s">older frames</text>
+      <rect x="20" y="84" width="130" height="58" rx="5" class="b-u"/><text x="85" y="106" text-anchor="middle" class="t-u">main</text><text x="85" y="126" text-anchor="middle" class="t-s">ret addr · x = 1</text>
+      <line x1="85" y1="176" x2="85" y2="148" class="ln-u" marker-end="url(#c05f2-u)"/><text x="85" y="194" text-anchor="middle" class="t-u t-s">SP</text>
+
+      <!-- column 2 -->
+      <rect x="170" y="56" width="130" height="26" rx="4" class="b-m"/><text x="235" y="74" text-anchor="middle" class="t-m t-s">older frames</text>
+      <rect x="170" y="84" width="130" height="58" rx="5" class="b"/><text x="235" y="106" text-anchor="middle" class="t-h">main</text><text x="235" y="126" text-anchor="middle" class="t-s">ret addr · x = 1</text>
+      <rect x="170" y="144" width="130" height="58" rx="5" class="b-u"/><text x="235" y="166" text-anchor="middle" class="t-u">foo</text><text x="235" y="186" text-anchor="middle" class="t-s">ret addr · y = 2</text>
+      <line x1="235" y1="236" x2="235" y2="208" class="ln-u" marker-end="url(#c05f2-u)"/><text x="235" y="254" text-anchor="middle" class="t-u t-s">SP</text>
+
+      <!-- column 3 -->
+      <rect x="320" y="56" width="130" height="26" rx="4" class="b-m"/><text x="385" y="74" text-anchor="middle" class="t-m t-s">older frames</text>
+      <rect x="320" y="84" width="130" height="58" rx="5" class="b"/><text x="385" y="106" text-anchor="middle" class="t-h">main</text><text x="385" y="126" text-anchor="middle" class="t-s">ret addr · x = 1</text>
+      <rect x="320" y="144" width="130" height="58" rx="5" class="b"/><text x="385" y="166" text-anchor="middle" class="t-h">foo</text><text x="385" y="186" text-anchor="middle" class="t-s">ret addr · y = 2</text>
+      <rect x="320" y="204" width="130" height="58" rx="5" class="b-u"/><text x="385" y="226" text-anchor="middle" class="t-u">bar</text><text x="385" y="246" text-anchor="middle" class="t-s">ret addr · z = 3</text>
+      <line x1="385" y1="296" x2="385" y2="268" class="ln-u" marker-end="url(#c05f2-u)"/><text x="385" y="314" text-anchor="middle" class="t-u t-s">SP</text>
+
+      <!-- column 4 -->
+      <rect x="470" y="56" width="130" height="26" rx="4" class="b-m"/><text x="535" y="74" text-anchor="middle" class="t-m t-s">older frames</text>
+      <rect x="470" y="84" width="130" height="58" rx="5" class="b"/><text x="535" y="106" text-anchor="middle" class="t-h">main</text><text x="535" y="126" text-anchor="middle" class="t-s">ret addr · x = 1</text>
+      <rect x="470" y="144" width="130" height="58" rx="5" class="b-u"/><text x="535" y="166" text-anchor="middle" class="t-u">foo</text><text x="535" y="186" text-anchor="middle" class="t-s">ret addr · y = 2</text>
+      <rect x="470" y="204" width="130" height="58" rx="5" class="b-m"/><text x="535" y="238" text-anchor="middle" class="t-m t-s">freed</text>
+      <text x="535" y="284" text-anchor="middle" class="t-u t-s">SP ↑ back at foo</text>
+
+      <!-- column 5 -->
+      <rect x="620" y="56" width="130" height="26" rx="4" class="b-m"/><text x="685" y="74" text-anchor="middle" class="t-m t-s">older frames</text>
+      <rect x="620" y="84" width="130" height="58" rx="5" class="b-u"/><text x="685" y="106" text-anchor="middle" class="t-u">main</text><text x="685" y="126" text-anchor="middle" class="t-s">ret addr · x = 1</text>
+      <rect x="620" y="144" width="130" height="58" rx="5" class="b-m"/><text x="685" y="178" text-anchor="middle" class="t-m t-s">freed</text>
+      <text x="685" y="224" text-anchor="middle" class="t-u t-s">SP ↑ back at main</text>
+
+      <text x="20" y="334" class="t-m t-s">higher addresses at the top · the stack grows downward, toward lower addresses</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">পাঁচটা মুহূর্তের stack, বাঁ থেকে ডানে সময়। নীল frame-টা এই মুহূর্তে যে function চলছে তার; SP সবসময় সবচেয়ে নিচের frame-এ। Return হলে frame-টা "freed" — ভেতরের byte গুলো মুছে ফেলা হয় না, শুধু SP উপরে উঠে যায়, আর পরের call সেই জায়গা আবার ব্যবহার করে।</p>
+
+  <h3>Stack trace আর stack overflow</h3>
+  <p>ওপরের script চালালে <code>console.trace</code> print করে (path ছোট করে দেখাচ্ছি):</p>
+  <div class="codewrap"><pre><code>Trace: এখানে stack কেমন?
+    at bar (trace.js:1:26)
+    at foo (trace.js:2:18)
+    at main (trace.js:3:19)
+    at Object.&lt;anonymous&gt; (trace.js:4:1)
+    at Module._compile (node:internal/modules/cjs/loader:1730:14)
+    ...</code></pre></div>
+  <p>এটাই <strong>stack trace</strong>: stack-এ এই মুহূর্তে যত frame জমা আছে, তাদের তালিকা — সবচেয়ে নতুন (<code>bar</code>) উপরে, সবচেয়ে পুরনো নিচে। প্রতিটা frame-এর return address থেকে runtime বের করে কোন function-এর কোন লাইন থেকে ডাকা হয়েছিল। তুমি প্রতিদিন error-এর সাথে যে stack trace দেখো, সেটা ওপরের ছবির তৃতীয় column-এর লিখিত রূপ। (নিচের <code>Module._compile</code> ইত্যাদি Node-এর নিজের function, যারা তোমার file load করে চালিয়েছে।)</p>
+  <p>এবার সীমার কথা। Stack region-এর মাপ নির্দিষ্ট। Main thread-এর stack-এর সর্বোচ্চ মাপ দেখো:</p>
+  <div class="codewrap"><pre><code>ulimit -s     # KB-তে; আমার Mac-এ 8176, Linux-এ সাধারণত 8192 (প্রায় ৮ MB)</code></pre></div>
+  <p>Stack-এর ঠিক নিচে kernel একটা নিষিদ্ধ অংশ (<strong>guard page</strong>) রেখে দেয়। Frame জমতে জমতে stack সেখানে পৌঁছালেই permission ভাঙে, আর process মারা যায় — এটাই <strong>stack overflow</strong>। সবচেয়ে সাধারণ কারণ: শেষ-না-হওয়া বা খুব গভীর recursion।</p>
+  <p>V8 এই মৃত্যুর আগেই নিজে থামে: সে নিজের জন্য প্রায় ১ MB-র একটা সীমা রাখে, আর সেখানে পৌঁছালে একটা সাধারণ JS error ছুড়ে দেয়, যেটা তুমি <code>catch</code> করতে পারো:</p>
+  <div class="codewrap"><pre><code>node -e "function f(n) { return f(n + 1) } f(0)"</code></pre></div>
+  <p>Output: <code>RangeError: Maximum call stack size exceeded</code>। এখন একটা মজার পরীক্ষা, যেটা দেখায় frame-এর আসলেই একটা মাপ আছে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — depth.js</div>
+    <div class="codewrap"><pre><code>let depth = 0;
+function small() { depth++; small(); }
+try { small(); } catch (e) { console.log('small frame depth:', depth); }
+
+depth = 0;
+function big() {
+  depth++;
+  let a = depth, b = a + 1, c = b + 1, d = c + 1, e = d + 1,
+      f = e + 1, g = f + 1, h = g + 1, i = h + 1, j = i + 1;
+  big();
+  return a + b + c + d + e + f + g + h + i + j;
+}
+try { big(); } catch (e) { console.log('big frame depth:  ', depth); }</code></pre></div>
+    <p>আমার Mac-এ: <code>small frame depth: 9183</code>, <code>big frame depth: 5009</code>। একই ~১ MB stack, কিন্তু <code>big</code>-এর প্রতিটা frame-এ দশটা local variable বেশি, তাই প্রতিটা frame বড়, তাই কম সংখ্যক frame ধরে। (সংখ্যা গুলো Node version আর machine ভেদে বদলাবে, অনুপাতটা মোটামুটি থাকবে।)</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Stack হলো "এখন আমি কোথায় আছি আর কীভাবে ফিরবো"-র হিসাব। তোমার debugger-এ যে <strong>call stack / stack trace</strong> দেখো — সেটা আক্ষরিক অর্থেই এই memory region-এর ছবি। Exception-এর stack trace মানে: crash-এর মুহূর্তে stack-এ কোন কোন frame জমা ছিল।</p>
-  </div>
-
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p>যেকোনো চলমান process-এর PID নিয়ে চালাও: <code>cat /proc/&lt;PID&gt;/maps</code>। Output-এ খুঁজে দেখো <code>[heap]</code>, <code>[stack]</code>, আর executable-এর path-ওয়ালা লাইনগুলো (ওগুলোই code/data)। এটা এই chapter-এর diagram-এর real-life version। <code>r-xp</code> (read+execute) দেখবে code segment-এ, <code>rw-p</code> দেখবে data/heap-এ — permission গুলোও layout-এর গল্প বলে।</p>
+    <p>Process-এর address space হলো নিচ থেকে উপরে: <strong>code (r-x) → data → BSS → heap ↑ … shared libraries … ↓ stack</strong>, সবার উপরে kernel-এর নিষিদ্ধ অংশ। প্রতিটা region-এর নিজস্ব permission, যেটা CPU প্রতিটা access-এ যাচাই করে। আর stack হলো "এখন আমি কোথায়, আর কীভাবে ফিরব" — প্রতিটা call-এ একটা frame, SP-র একটা বিয়োগ; প্রতিটা return-এ একটা যোগ।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Process memory-র পাঁচটা region আর কার কী কাজ?</li>
-      <li>Stack frame-এ কী কী থাকে?</li>
-      <li>Return address জিনিসটা না থাকলে কী সমস্যা হতো?</li>
-      <li>Code segment read-only রাখার দুইটা সুবিধা কী?</li>
+      <li>Process-এর address space-এ কোন কোন region থাকে, নিচ থেকে উপরে? কোন দুইটা region চলার সময় বাড়ে, কোন দিকে, আর মাঝখানে ফাঁকা জায়গা রাখা হয় কেন?</li>
+      <li><code>/proc/self/maps</code>-এ code-এর লাইনে <code>r-xp</code> আর heap-এর লাইনে <code>rw-p</code> কেন? <code>writecode</code> program-টা মারা গেল কেন, আর code region read-only হওয়ার বাড়তি সুবিধা কী?</li>
+      <li>Return address কেবল একটা register-এ রাখলে <code>main → foo → bar</code> call-এ কী সমস্যা হতো? Stack frame কীভাবে সেটা সমাধান করে?</li>
+      <li><code>hello</code>-র disassembly-তে <code>sub sp, sp, #0x20</code> আর <code>add sp, sp, #0x20</code> কী করছে? Stack-এ জায়গা নেওয়া এত সস্তা কেন?</li>
+      <li><code>depth.js</code>-এ <code>big</code>-এর depth <code>small</code>-এর চেয়ে কম হলো কেন? V8 কেন OS-এর ৮ MB সীমায় পৌঁছানোর আগেই <code>RangeError</code> ছোড়ে?</li>
     </ul>
   </div>
