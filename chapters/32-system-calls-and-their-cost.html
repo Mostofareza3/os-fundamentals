@@ -1,36 +1,318 @@
   <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
   <h2>Chapter 32 — System Call আর তার দাম</h2>
-  <p class="chap-sub">Boundary পার হওয়ার হিসাব-নিকাশ — এবং সেটা ঘিরে গড়ে ওঠা engineering।</p>
+  <p class="chap-sub">Kernel-এ একবার ঢুকে বেরোতে কত nanosecond লাগে, ছোট ছোট কাজে সেই দাম কীভাবে জমে পাহাড় হয়, কোন syscall kernel-এ না ঢুকেই উত্তর পায় (vDSO), আর দাম কমানোর আসল কৌশল — কম পারাপারে বেশি কাজ।</p>
 
-  <h3>দামটা আসে কোথা থেকে</h3>
-  <p>একটা syscall মানে সাধারণ function call না — মানে: mode switch (CPU state বদল), kernel-এ ঢুকে register বাঁচানো, syscall dispatch, argument validation, কাজ, তারপর পুরোটা উল্টো করে ফেরা। তার উপর আছে পরোক্ষ খরচ — kernel-এর code/data cache-এ ঢোকায় তোমার code-এর cache-এর কিছুটা দখল হয়ে যায় (Chapter 17-এর সেই cache দূষণের ছোট ভাই)।</p>
-  <p>কিন্তু ভারসাম্যটাও বলি: একটা syscall-এর নিজস্ব overhead অনেক ছোট — আর তার ভিতরের <em>কাজটা</em> (disk read!) হতে পারে milliseconds-এর জগতে। অর্থাৎ <strong>overhead টা matter করে তখনই, যখন syscall গুলো ছোট এবং অনেক।</strong></p>
-  <p>একটা আধুনিক সংশোধনী, কারণ পুরনো লেখায় এই খরচকে "নগণ্য, nanosecond-এর ব্যাপার" বলা হতো: Meltdown/Spectre-এর প্রতিকার আসার পর <strong>syscall-এর দাম বেড়ে গেছে</strong>। KPTI (Chapter 31) প্রতিবার kernel-এ ঢোকা-বেরোনোয় page table বদলায়, সাথে যোগ হয় speculation-এর বিরুদ্ধে নেওয়া পদক্ষেপগুলো। ঠিক সংখ্যাটা hardware, kernel version আর কোন mitigation চালু — তার উপর নির্ভর করে, তাই মুখস্থ করার মতো কিছু নেই; যা মনে রাখার তা হলো <em>দিক</em>: ২০১৮-র পর প্রতি boundary পারাপার আগের চেয়ে দামি, তাই batching-এর যুক্তিটা আরও জোরালো হয়েছে।</p>
+  <p>আগের chapter-এ দেখেছি syscall মানে একটা দরজা পেরোনো: CPU mode বদলায়, kernel প্রতিটা argument যাচাই করে, তারপর ফেরে। প্রশ্ন হলো এতে খরচ কত, আর সেটা কখন গুরুত্বপূর্ণ। উত্তরটা জানা থাকলে বুঝবে কেন <code>console.log</code> ভরা একটা loop এত ধীর, কেন file ১ byte করে পড়া বোকামি, আর কেন <code>Date.now()</code> চিন্তা ছাড়াই যত খুশি ডাকা যায়।</p>
+
+  <h3>একটা syscall-এর দাম কোথা থেকে আসে</h3>
+  <p>একটা সাধারণ JS function call-এ CPU শুধু একটা লাফ দেয় আর ফিরে আসে। Syscall-এ অনেক বেশি কাজ হয়:</p>
+  <ol>
+    <li><strong>User দিকের প্রস্তুতি:</strong> JS থেকে Node-এর C++ অংশে যাওয়া, তারপর libc-র ছোট wrapper function। সেটা syscall-এর নম্বর আর argument register-এ বসায়।</li>
+    <li><strong>দরজা পেরোনো:</strong> বিশেষ instruction (<code>svc</code>/<code>syscall</code>) CPU-কে kernel mode-এ নিয়ে যায়। Kernel তোমার সব register কোথাও সেভ করে রাখে, যাতে পরে ঠিক আগের অবস্থায় ফেরানো যায়। CPU Meltdown-আক্রান্ত হলে KPTI page table-ও বদলায় (Chapter 31)।</li>
+    <li><strong>কাজ বাছাই আর যাচাই:</strong> Kernel একটা table-এ syscall-এর নম্বর দেখে ঠিক function-টা খুঁজে বের করে, argument যাচাই করে, তারপর কাজ করে।</li>
+    <li><strong>ফেরা:</strong> Register ফিরিয়ে দেওয়া, দরকার হলে page table আবার বদলানো, তারপর user mode।</li>
+    <li><strong>পরোক্ষ দাম:</strong> এতক্ষণ CPU-র cache, TLB (ঠিকানা অনুবাদের cache, Chapter 9) আর branch predictor (Chapter 14) kernel-এর code আর data-য় ভরেছে। ফেরার পরে তোমার code কিছুক্ষণ একটু ধীর চলে, যতক্ষণ না নিজের জিনিস আবার ফিরিয়ে আনে।</li>
+  </ol>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Anatomy of one system call. In user space, process.ppid in JavaScript calls into Node's C++ and libc's getppid wrapper, which puts the syscall number in a register. The svc or syscall instruction crosses into the kernel, which saves the user registers and, with KPTI, switches page tables; looks up the number in the syscall table and runs sys_getppid; then restores registers and returns with eret or sysret. Back in JavaScript the number arrives. The round trip costs about 60 nanoseconds on the Mac and about 110 in the Linux VM; afterwards caches and the TLB hold some kernel data, an indirect cost">
+      <defs>
+        <marker id="c32f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c32f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="22" class="t-u t-s">USER MODE</text>
+      <rect x="24" y="34" width="150" height="58" rx="8" class="b-u"/>
+      <text x="99" y="58" text-anchor="middle" class="mono">process.ppid</text>
+      <text x="99" y="78" text-anchor="middle" class="t-m t-s">your JS</text>
+      <path d="M174 63 H200" class="ln-u" marker-end="url(#c32f1-u)"/>
+      <rect x="204" y="34" width="200" height="58" rx="8" class="b-u"/>
+      <text x="304" y="58" text-anchor="middle" class="t-s">Node C++ → libc getppid()</text>
+      <text x="304" y="78" text-anchor="middle" class="t-m t-s">syscall number → register</text>
+      <text x="424" y="50" class="t-m t-s">indirect cost, afterwards:</text>
+      <text x="424" y="68" class="t-m t-s">caches, TLB and branch predictor</text>
+      <text x="424" y="86" class="t-m t-s">now hold some kernel data</text>
+      <rect x="626" y="34" width="150" height="58" rx="8" class="b-u"/>
+      <text x="701" y="58" text-anchor="middle" class="t-s">back in JS</text>
+      <text x="701" y="78" text-anchor="middle" class="t-m t-s">with the answer</text>
+
+      <line x1="24" y1="130" x2="776" y2="130" class="ln-k dash"/>
+      <path d="M304 92 V166" class="ln-k" marker-end="url(#c32f1-k)"/>
+      <text x="314" y="118" class="mono">svc / syscall</text>
+      <path d="M701 170 V96" class="ln-u" marker-end="url(#c32f1-u)"/>
+      <text x="691" y="118" text-anchor="end" class="mono">eret / sysret</text>
+
+      <text x="24" y="192" class="t-k t-s">KERNEL</text>
+      <text x="24" y="208" class="t-k t-s">MODE</text>
+      <rect x="204" y="170" width="200" height="58" rx="8" class="b-k"/>
+      <text x="304" y="194" text-anchor="middle" class="t-s">save user registers</text>
+      <text x="304" y="214" text-anchor="middle" class="t-m t-s">(KPTI: switch page table)</text>
+      <path d="M404 199 H420" class="ln-k" marker-end="url(#c32f1-k)"/>
+      <rect x="424" y="170" width="180" height="58" rx="8" class="b-k"/>
+      <text x="514" y="194" text-anchor="middle" class="mono">table[nr]</text>
+      <text x="514" y="214" text-anchor="middle" class="t-m t-s">→ sys_getppid()</text>
+      <path d="M604 199 H622" class="ln-k" marker-end="url(#c32f1-k)"/>
+      <rect x="626" y="170" width="150" height="58" rx="8" class="b-k"/>
+      <text x="701" y="194" text-anchor="middle" class="t-s">restore registers</text>
+      <text x="701" y="214" text-anchor="middle" class="t-m t-s">(KPTI: switch back)</text>
+
+      <path d="M204 246 V254 H776 V246" class="ln"/>
+      <text x="490" y="276" text-anchor="middle" class="t-s">round trip ≈ 60 ns on the Mac, ≈ 110 ns in the Linux VM (cost.js)</text>
+      <text x="490" y="294" text-anchor="middle" class="t-m t-s">a small JS function call: ≈ 1 ns</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা syscall-এর পুরো পথ। উপরের নীল সারিতে user mode-এর প্রস্তুতি, নিচের amber সারিতে kernel-এর কাজ। দুইবার দরজা পেরোনো, register সেভ করা আর ফেরানো, আর KPTI থাকলে দুইবার page table বদল। ফেরার পরেও cache আর TLB-তে kernel-এর ছাপ থেকে যায়।</p>
+
+  <p>মাপা যাক। নিচের script-এ চারটা জিনিস বিশ লাখ বার করে ডাকা হয়েছে। <code>process.uptime()</code> আর <code>process.ppid</code> দুটোই JS থেকে Node-এর C++-এ যায়, কিন্তু দ্বিতীয়টা সেখান থেকে <code>getppid</code> syscall-ও করে (parent process-এর PID জানতে চায়; Node এটা মনে রাখে না, প্রতিবার kernel-কে জিজ্ঞেস করে)। তাই দুটোর পার্থক্যই মোটামুটি kernel-এ একবার ঢুকে বেরোনোর দাম।</p>
+  <div class="codewrap"><pre><code>// cost.js — kernel-এ একবার ঢুকে বেরোতে কত সময় লাগে?
+const N = 2e6;
+function bench(name, fn) {
+  for (let i = 0; i &lt; 2e5; i++) fn();                      // আগে গরম করে নেওয়া (JIT)
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i &lt; N; i++) fn();
+  const ns = Number(process.hrtime.bigint() - t0) / N;
+  console.log(`${name.padEnd(40)} ${ns.toFixed(1).padStart(6)} ns`);
+}
+let x = 0;
+bench('JS function            (no kernel)', () =&gt; { x++; });
+bench('process.uptime()       (C++, no syscall)', () =&gt; process.uptime());
+bench('Date.now()             (vDSO)', () =&gt; Date.now());
+bench('process.ppid           (getppid syscall)', () =&gt; process.ppid);</code></pre></div>
+  <div class="codewrap"><pre><code>node cost.js                                                              # Mac
+docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim node cost.js  # Linux</code></pre></div>
+  <div class="codewrap"><pre><code># Mac (Apple Silicon)
+JS function            (no kernel)          1.2 ns
+process.uptime()       (C++, no syscall)   37.1 ns
+Date.now()             (vDSO)              23.2 ns
+process.ppid           (getppid syscall)  100.9 ns
+# Linux (Docker-এর VM)
+JS function            (no kernel)          1.3 ns
+process.uptime()       (C++, no syscall)   47.7 ns
+Date.now()             (vDSO)              30.0 ns
+process.ppid           (getppid syscall)  155.3 ns</code></pre></div>
+  <p>প্রায় কিছুই না-করা একটা syscall-এর (getppid) দাম Mac-এ ~৬০ ns (১০১ − ৩৭), Linux VM-এ ~১১০ ns। শুনতে তুচ্ছ, কিন্তু তুলনাটা দেখো: একটা ছোট JS function call ১ ns-এর মতো। মানে একটা খালি দরজা-পারাপারের দামে ৫০–১০০টা JS function চলে যায়। আর এটা শুধু যাওয়া-আসার দাম; <code>read</code> বা <code>write</code>-এ kernel-এর ভেতরের কাজ যোগ হয়। (strace দিয়ে গুনে দেখেছি: ২২ লাখ <code>getppid</code> ঠিকই হয়েছে। <code>Date.now()</code> কেন syscall-এর চেয়ে সস্তা, সেটা একটু পরে।)</p>
+
+  <h3>ছোট ছোট কাজে দাম জমে যায়</h3>
+  <p>প্রতিটা syscall-এর একটা নির্দিষ্ট দাম আছে, যত byte-ই সে সরাক না কেন। তাই একটা syscall-এ কতটা কাজ হয়, সেটাই আসল প্রশ্ন। একই ৩২ MB file (page cache-এ, তাই disk-এর প্রশ্ন নেই — Chapter 23) পাঁচ রকম মাপের <code>read()</code> দিয়ে পড়া যাক:</p>
+  <div class="codewrap"><pre><code>// chunks.js — একই ৩২ MB file, আলাদা আলাদা মাপের read() দিয়ে পড়া
+const fs = require('fs');
+const FILE = '/tmp/chunks.bin', SIZE = 32 * 1024 * 1024;
+fs.writeFileSync(FILE, Buffer.alloc(SIZE, 7));             // একবার লিখে রাখা, এখন page cache-এ
+
+for (const chunk of [16, 256, 4096, 65536, 1048576]) {
+  const buf = Buffer.alloc(chunk);
+  const fd = fs.openSync(FILE, 'r');
+  let calls = 0;
+  const t0 = process.hrtime.bigint();
+  while (fs.readSync(fd, buf, 0, chunk, null) &gt; 0) calls++;
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  fs.closeSync(fd);
+  console.log(`chunk ${String(chunk).padStart(7)} B: ${String(calls).padStart(7)} read() ` +
+              `${ms.toFixed(1).padStart(6)} ms  ${(SIZE / 2 ** 20 / (ms / 1e3)).toFixed(0).padStart(5)} MB/s  ` +
+              `${(ms * 1e6 / calls).toFixed(0).padStart(6)} ns/call`);
+}</code></pre></div>
+  <div class="codewrap"><pre><code>chunk      16 B: 2097152 read()  779.2 ms     41 MB/s     372 ns/call
+chunk     256 B:  131072 read()   50.2 ms    638 MB/s     383 ns/call
+chunk    4096 B:    8192 read()    4.1 ms   7756 MB/s     504 ns/call
+chunk   65536 B:     512 read()    1.5 ms  20950 MB/s   2983 ns/call
+chunk 1048576 B:      32 read()    1.4 ms  23235 MB/s  43038 ns/call</code></pre></div>
+  <p>একই data, একই page cache, অথচ ১৬ byte করে পড়লে সেকেন্ডে ৪১ MB, আর ১ MB করে পড়লে ২৩ GB — প্রায় ৫৭০ গুণ। শেষ column-টা পুরো গল্প বলে দেয়। ছোট chunk-এ প্রতিটা call-এর দাম ~৩৮০ ns, সেটা ১৬ byte হোক বা ২৫৬ byte। এটা নির্দিষ্ট দাম: JS থেকে C++, syscall, যাচাই, ফেরা। বড় chunk-এ call প্রতি সময় বাড়ে, কারণ এবার আসল কাজ, মানে byte copy করা, প্রাধান্য পায়। তখন নির্দিষ্ট দামটা এত byte-এ ভাগ হয়ে যায় যে প্রায় চোখেই পড়ে না।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="Chart of read throughput against chunk size, both on log scales. Measured on the Mac: 16 bytes 41 MB per second, 256 bytes 638, 4 KB 7756, 64 KB 20950, 1 MB 23235. A dashed diagonal shows the throughput if every read cost only a fixed 380 nanoseconds; the measured line follows it for small chunks. A dashed horizontal line at about 23 GB per second marks where copying the bytes becomes the limit, and the measured line flattens onto it from 64 KB">
+      <line x1="110" y1="40" x2="740" y2="40" class="grid"/>
+      <line x1="110" y1="100" x2="740" y2="100" class="grid"/>
+      <line x1="110" y1="160" x2="740" y2="160" class="grid"/>
+      <line x1="110" y1="220" x2="740" y2="220" class="grid"/>
+      <line x1="110" y1="280" x2="740" y2="280" class="axis"/>
+      <text x="100" y="44" text-anchor="end" class="t-m t-s">100 GB/s</text>
+      <text x="100" y="104" text-anchor="end" class="t-m t-s">10 GB/s</text>
+      <text x="100" y="164" text-anchor="end" class="t-m t-s">1 GB/s</text>
+      <text x="100" y="224" text-anchor="end" class="t-m t-s">100 MB/s</text>
+      <text x="100" y="284" text-anchor="end" class="t-m t-s">10 MB/s</text>
+      <text x="110" y="302" text-anchor="middle" class="t-m t-s">16 B</text>
+      <text x="267.5" y="302" text-anchor="middle" class="t-m t-s">256 B</text>
+      <text x="425" y="302" text-anchor="middle" class="t-m t-s">4 KB</text>
+      <text x="582.5" y="302" text-anchor="middle" class="t-m t-s">64 KB</text>
+      <text x="740" y="302" text-anchor="middle" class="t-m t-s">1 MB</text>
+      <text x="425" y="326" text-anchor="middle" class="t-m t-s">bytes per read() call (log scale)</text>
+
+      <path d="M110 243.8 L554.2 40" class="ln dash"/>
+      <text x="505" y="58" text-anchor="end" class="t-m t-s">if each call cost only its fixed ~380 ns</text>
+      <path d="M400 78 H740" class="ln dash"/>
+      <text x="740" y="66" text-anchor="end" class="t-m t-s">copying bytes is the limit (~23 GB/s)</text>
+
+      <path d="M110 243.2 L267.5 171.7 L425 106.6 L582.5 80.7 L740 78" class="ln-s"/>
+      <g><title>16 B chunks: 2,097,152 read() calls, 41 MB/s</title><circle cx="110" cy="243.2" r="14" fill="transparent"/><circle cx="110" cy="243.2" r="5" class="dot-s"/></g>
+      <g><title>256 B chunks: 131,072 read() calls, 638 MB/s</title><circle cx="267.5" cy="171.7" r="14" fill="transparent"/><circle cx="267.5" cy="171.7" r="5" class="dot-s"/></g>
+      <g><title>4 KB chunks: 8,192 read() calls, 7,756 MB/s</title><circle cx="425" cy="106.6" r="14" fill="transparent"/><circle cx="425" cy="106.6" r="5" class="dot-s"/></g>
+      <g><title>64 KB chunks: 512 read() calls, 20,950 MB/s</title><circle cx="582.5" cy="80.7" r="14" fill="transparent"/><circle cx="582.5" cy="80.7" r="5" class="dot-s"/></g>
+      <g><title>1 MB chunks: 32 read() calls, 23,235 MB/s</title><circle cx="740" cy="78" r="14" fill="transparent"/><circle cx="740" cy="78" r="5" class="dot-s"/></g>
+      <text x="124" y="262" class="t-s">41 MB/s</text>
+      <text x="740" y="100" text-anchor="end" class="t-s">23 GB/s</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">chunks.js-এর মাপ (Mac), দুই axis-ই log scale। ছোট chunk-এ রেখাটা dashed কর্ণ ধরে চলে: গতি ঠিক করে প্রতি call-এর নির্দিষ্ট দাম। ৬৪ KB-র পরে রেখা সমতল হয়ে যায়, কারণ তখন সীমা byte copy করার গতি। প্রতিটা বিন্দুর উপর mouse রাখলে সংখ্যা দেখাবে।</p>
+
+  <p>একই কথা <code>dd</code> দিয়েও দেখা যায়। dd হলো block ধরে ধরে copy করার পুরনো Unix tool; <code>bs</code> প্রতিটা <code>read</code>/<code>write</code>-এর মাপ ঠিক করে দেয়:</p>
+  <div class="codewrap"><pre><code># dd.sh
+dd if=/dev/zero of=/dev/null bs=1 count=1048576      # ১ MB, এক byte করে
+dd if=/dev/zero of=/dev/null bs=65536 count=16       # একই ১ MB, ৬৪ KB করে</code></pre></div>
+  <div class="codewrap"><pre><code>1048576 bytes transferred in 0.606343 secs (1729345 bytes/sec)
+1048576 bytes transferred in 0.000024 secs (43690666667 bytes/sec)</code></pre></div>
+  <p>(আমার Mac-এ, <code>bash dd.sh</code>; records in/out লাইন বাদ দিয়েছি।) ০.৬ সেকেন্ড বনাম ২৪ microsecond — পঁচিশ হাজার গুণ। Linux-এ strace দিয়ে গুনলে কারণটা সংখ্যায় পাওয়া যায়। এখানে ১ লাখ byte নিয়েছি, কারণ strace প্রতিটা syscall-এ program থামিয়ে দেখে, তাতে ১০ লাখ call-এ দেড় মিনিট লেগে যায়:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  strace -c dd if=/dev/zero of=/dev/null bs=1 count=100000 2&gt;&amp;1 | grep -E " read$| write$"
+  strace -c dd if=/dev/zero of=/dev/null bs=100000 count=1 2&gt;&amp;1 | grep -E " read$| write$"'</code></pre></div>
+  <div class="codewrap"><pre><code> 50.20    0.423554           4    100001           read
+ 49.80    0.420191           4    100003           write
+  0.00    0.000000           0         2           read
+  0.00    0.000000           0         4           write</code></pre></div>
+  <p>একই ১ লাখ byte: একবার দুই লাখ syscall, আরেকবার ছয়টা।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"System calls are slow — যত পারো এড়াও।" ভুল frame। সঠিক frame: syscall-এর একটা <em>fixed per-call overhead</em> আছে। ১টা syscall-এ 4MB পড়া = overhead তুচ্ছ। ১০ লাখ syscall-এ ৪ byte করে পড়া = overhead-ই মূল খরচ। শত্রু syscall না — শত্রু <strong>ছোট কাজে ঘনঘন boundary পারাপার</strong>।</p>
+    <p>"Syscall ধীর, যত পারো এড়াও।" এভাবে ভাবলে ভুল জায়গায় খুঁজবে। Syscall-এর একটা নির্দিষ্ট দাম আছে, একশো ns-এর ঘরে। এক call-এ ১ MB পড়লে সেই দাম ধরাই যায় না। দশ লাখ call-এ ১৬ byte করে পড়লে সেই দামটাই পুরো সময়। সমস্যা syscall না; সমস্যা হলো খুব ছোট কাজের জন্য বারবার দরজা পেরোনো। তাই প্রশ্নটা হওয়া উচিত "প্রতিটা call-এ কতটা কাজ হচ্ছে?"।</p>
   </div>
 
-  <h3>এই হিসাব থেকে জন্ম নেওয়া কৌশলগুলো</h3>
+  <h3>vDSO: kernel-এ না ঢুকেই kernel-এর উত্তর</h3>
+  <p>cost.js-এ <code>Date.now()</code> ২৩ ns, অথচ সময় তো kernel জানে। JS-এর <code>Date.now()</code>, <code>performance.now()</code>, আর Node-এর timer — সবাই শেষ পর্যন্ত kernel-এর কাছে সময় চায় (Linux-এ <code>clock_gettime</code>)। একটা ব্যস্ত server সেকেন্ডে লাখবার সময় দেখে: প্রতিটা log লাইনে, প্রতিটা request-এর সময় মাপতে। প্রতিবার ১০০ ns দিয়ে দরজা পেরোতে হলে সেটা ভালো খরচ। অথচ সময় জানা একটা নিরীহ কাজ: কিছু বদলায় না, শুধু পড়ে।</p>
+  <p>Kernel-এর সমাধান হলো <strong>vDSO</strong> (virtual dynamic shared object)। প্রতিটা process-এর address space-এ kernel নিজে দুটো ছোট page map করে দেয় (Chapter 5-এর <code>/proc/self/maps</code>-এ <code>[vdso]</code> আর <code>[vvar]</code> লাইন দুটো মনে করো):</p>
   <ul>
-    <li><strong>Batching/buffering:</strong> ছোট ছোট write জমিয়ে এক syscall-এ পাঠানো। তোমার <code>console.log</code>-এর পিছনে stdout buffering, HTTP client-এর request pipelining — সব এই এক idea।</li>
-    <li><strong>বড় buffer-এ পড়া:</strong> 64KB চেয়ে এক read, 1KB-র ৬৪ read না।</li>
-    <li><strong>epoll-ই একটা জবাব:</strong> হাজার fd-র খোঁজ এক <code>epoll_wait</code>-এ (Chapter 29)।</li>
-    <li><strong>io_uring — চূড়ান্ত রূপ:</strong> App আর kernel-এর মাঝে shared memory-র দুই ring (submission + completion)। App ring-এ request লিখে রাখে, kernel পড়ে কাজ করে result ring-এ রাখে — <em>অনেক operation, প্রায় শূন্য boundary-পারাপার।</em> পুরো design-টাই "syscall overhead"-এর বিরুদ্ধে যুদ্ধ।</li>
-    <li><strong>vDSO (মজার fact):</strong> কিছু নিরীহ syscall (যেমন সময় জানা — <code>gettimeofday</code>) এত ঘনঘন ডাকা হয় যে kernel সেগুলোর জবাব user space-এই map করে দেয় — boundary পারই হতে হয় না।</li>
+    <li><code>[vvar]</code> — একটা data page, শুধু পড়া যায়। প্রতিটা timer tick-এ kernel এখানে লিখে রাখে "শেষ tick-এর সময় কত ছিল" আর সময় গোনার হিসাব।</li>
+    <li><code>[vdso]</code> — kernel-এর দেওয়া ছোট একটা code page, যেটা user mode-এ চলে। এটা <code>[vvar]</code> থেকে শেষ tick-এর সময় পড়ে, CPU-র নিজস্ব counter register (ARM-এ <code>cntvct_el0</code>, x86-এ TSC) পড়ে দেখে তারপর কতটা সময় গেছে, আর দুটো যোগ করে। কোনো দরজা পেরোতে হয় না।</li>
   </ul>
-
+  <p>libc <code>clock_gettime</code> ডাকলে আসলে এই vDSO function চলে। প্রমাণ — দশ লাখ <code>Date.now()</code> আর দশ লাখ <code>process.ppid</code>, একসাথে strace-এ:</p>
   <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p>দুটো তুলনা করো:<br><code>strace -c dd if=/dev/zero of=/dev/null bs=1 count=100000</code> (১ byte করে!)<br><code>strace -c dd if=/dev/zero of=/dev/null bs=100000 count=1</code> (এক চালানে)<br><code>-c</code> flag syscall-এর গণনা আর সময়ের summary দেখায় — একই কাজ, syscall সংখ্যায় লক্ষগুণ পার্থক্য, সময়েও চোখে পড়ার মতো। এটাই এই chapter-এর পুরো থিসিস এক পরীক্ষায়।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker) — Date.now() কি kernel-এ যায়?</div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  strace -f -c -e trace=clock_gettime,gettimeofday,getppid -o /tmp/v node -e "
+    let s = 0;
+    for (let i = 0; i &lt; 1e6; i++) s += Date.now();       // সময় জানা, ১০ লাখ বার
+    for (let i = 0; i &lt; 1e6; i++) s += process.ppid;     // parent-এর pid, ১০ লাখ বার
+  "; cat /tmp/v'</code></pre></div>
+    <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+100.00    3.541324           3   1000000           getppid
+------ ----------- ----------- --------- --------- ----------------
+100.00    3.541324           3   1000000           total</code></pre></div>
+  </div>
+  <p><code>getppid</code> ঠিক দশ লাখ বার, আর <code>clock_gettime</code> একবারও না। দশ লাখ বার সময় জানা হয়েছে, কিন্তু kernel-এ একবারও ঢুকতে হয়নি।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 290" width="100%" role="img" aria-label="How the vDSO works. Inside the process, Date.now calls the vdso code page, which runs in user mode: it reads the vvar data page, where the kernel wrote the time at the last tick, and the CPU's own counter register, and adds them, never crossing into the kernel. The kernel writes vvar on every timer interrupt. By contrast process.ppid must cross the boundary to run sys_getppid in the kernel">
+      <defs>
+        <marker id="c32f3-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c32f3-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c32f3-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="24" class="t-u t-s">USER MODE — your process</text>
+      <rect x="24" y="40" width="130" height="44" rx="8" class="b-u"/>
+      <text x="89" y="67" text-anchor="middle" class="mono">Date.now()</text>
+      <path d="M154 62 H196" class="ln-u" marker-end="url(#c32f3-u)"/>
+      <rect x="200" y="36" width="180" height="52" rx="8" class="b-k"/>
+      <text x="290" y="58" text-anchor="middle" class="mono">[vdso] code</text>
+      <text x="290" y="77" text-anchor="middle" class="t-m t-s">from the kernel, runs here</text>
+      <path d="M380 52 H436" class="ln" marker-end="url(#c32f3-m)"/>
+      <rect x="440" y="30" width="190" height="44" rx="8" class="b-k"/>
+      <text x="535" y="50" text-anchor="middle" class="mono">[vvar] data (read-only)</text>
+      <text x="535" y="66" text-anchor="middle" class="t-m t-s">time at the last tick</text>
+      <path d="M380 76 H436 V100" class="ln" marker-end="url(#c32f3-m)"/>
+      <rect x="440" y="104" width="190" height="40" rx="8" class="b"/>
+      <text x="535" y="129" text-anchor="middle" class="t-s">CPU counter register</text>
+      <text x="290" y="116" text-anchor="middle" class="t-ok t-s">last tick + elapsed</text>
+      <text x="290" y="134" text-anchor="middle" class="t-ok t-s">= now, ~23 ns</text>
+
+      <rect x="24" y="112" width="130" height="44" rx="8" class="b-u"/>
+      <text x="89" y="139" text-anchor="middle" class="mono">process.ppid</text>
+
+      <line x1="24" y1="180" x2="776" y2="180" class="ln-k dash"/>
+      <text x="766" y="174" text-anchor="end" class="t-k t-s">Date.now() never crosses this line</text>
+
+      <path d="M89 156 V226" class="ln-k" marker-end="url(#c32f3-k)"/>
+      <text x="99" y="204" class="mono">getppid</text>
+      <text x="24" y="204" class="t-k t-s">KERNEL</text>
+      <rect x="24" y="230" width="150" height="36" rx="8" class="b-k"/>
+      <text x="99" y="253" text-anchor="middle" class="mono">sys_getppid()</text>
+      <text x="184" y="253" class="t-m t-s">~100 ns round trip</text>
+      <rect x="440" y="226" width="190" height="44" rx="8" class="b-k"/>
+      <text x="535" y="245" text-anchor="middle" class="t-s">timer interrupt</text>
+      <text x="535" y="262" text-anchor="middle" class="t-m t-s">kernel updates [vvar]</text>
+      <path d="M630 248 H786 V52 H634" class="ln-k dash" marker-end="url(#c32f3-k)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">vDSO-র কৌশল। Kernel প্রতিটা process-এ একটা code page (<code>[vdso]</code>) আর একটা data page (<code>[vvar]</code>) map করে দেয়, আর প্রতি tick-এ <code>[vvar]</code> হালনাগাদ করে (ডানের dashed পথ)। <code>Date.now()</code> user mode-এই সেগুলো পড়ে সময় বানায়। <code>process.ppid</code>-এর এমন শর্টকাট নেই, তাকে দরজা পেরোতেই হয়।</p>
+
+  <p>এই শর্টকাট শুধু নিরীহ, পড়া-মাত্র কাজে চলে: সময় জানা (<code>clock_gettime</code>, <code>gettimeofday</code>), x86-এ এখন কোন CPU-তে চলছি (<code>getcpu</code>)। File খোলা বা network-এ লেখা কখনো vDSO দিয়ে হয় না, কারণ সেখানে kernel-এর যাচাই আর আসল কাজ লাগে। আর vDSO-র ঘড়ি-পড়া নির্ভর করে machine-এর সময়ের উৎস (clocksource) কেমন তার উপর। কিছু virtual machine-এ clocksource vDSO-র উপযোগী না হলে শর্টকাটটা বন্ধ হয়ে যায়, আর প্রতিটা <code>Date.now()</code> আসল syscall হয়ে দাঁড়ায়। পুরনো কিছু cloud instance-এ এটা একটা পরিচিত ধীরতার কারণ ছিল। Linux-এ দেখো <code>cat /sys/devices/system/clocksource/clocksource0/current_clocksource</code>; Docker-এর VM-এ আমার উত্তর <code>arch_sys_counter</code>, মানে ARM-এর নিজস্ব counter, vDSO পুরোপুরি চলে।</p>
+
+  <h3>Batching: কম পারাপারে বেশি কাজ</h3>
+  <p>নির্দিষ্ট দাম কমানোর একটাই উপায়: একবার দরজা পেরিয়ে বেশি কাজ করা। JS developer-এর রোজকার সবচেয়ে বড় উদাহরণ হলো logging। দশ লাখ লাইন file-এ লেখা, তিনভাবে:</p>
+  <div class="codewrap"><pre><code># logs.sh — ১০ লাখ লাইন file-এ লেখা, তিনভাবে
+time node -e "for (let i = 0; i &lt; 1e6; i++) console.log(i)" &gt; /tmp/a.txt
+time node -e "const out = []; for (let i = 0; i &lt; 1e6; i++) out.push(i); console.log(out.join('\n'))" &gt; /tmp/b.txt
+time python3 -c "for i in range(10**6): print(i)" &gt; /tmp/c.txt</code></pre></div>
+  <div class="codewrap"><pre><code>bash logs.sh 2&gt;&amp;1 | grep real       # Mac
+real	0m1.647s
+real	0m0.079s
+real	0m0.188s</code></pre></div>
+  <p>একই output, অথচ প্রথমটা দ্বিতীয়টার চেয়ে কুড়ি গুণ ধীর। (Docker-এর Linux-এ ০.৯২, ০.১০ আর ০.১২ সেকেন্ড।) কারণ গুনে দেখো, এবার ১০ হাজার লাইনে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — writes.sh</div>
+    <div class="codewrap"><pre><code># writes.sh — ১০ হাজার লাইন file-এ লিখতে কয়টা write syscall লাগে?
+count() { strace -f -c -e trace=write,writev -o /tmp/s "$@" &gt; /tmp/out.txt; awk '/total/ {print $4}' /tmp/s; }
+echo "console.log per line : $(count node -e 'for (let i = 0; i &lt; 1e4; i++) console.log(i)')"
+echo "join, then one log   : $(count node -e 'const o = []; for (let i = 0; i &lt; 1e4; i++) o.push(i); console.log(o.join("\n"))')"
+echo "python print per line: $(count python3 -c 'for i in range(10**4): print(i)')"</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace python3 &gt;/dev/null
+  bash writes.sh'</code></pre></div>
+    <div class="codewrap"><pre><code>console.log per line : 10003
+join, then one log   : 4
+python print per line: 6</code></pre></div>
+  </div>
+  <p>Node-এর <code>console.log</code> প্রতিটা লাইনের জন্য আলাদা একটা <code>write</code> করে। stdout file বা terminal হলে Node কিছু জমিয়ে রাখে না, সাথে সাথে লেখে। এর একটা লাভ আছে: process হঠাৎ মরলেও আগে লেখা লাইন হারায় না। Python-এর <code>print</code> উল্টো: stdout যখন terminal না, তখন সে ৮ KB-র একটা buffer ভরে তারপর এক <code>write</code>-এ পাঠায়, তাই দশ হাজার লাইনে মাত্র ৬টা syscall। এর দামও আছে: Python crash করলে buffer-এ আটকে থাকা শেষ লাইনগুলো হারায় (তাই Chapter 31-এ <code>flush=True</code> দিয়েছি)। Hot loop-এ প্রতি iteration-এ log করা তাই শুধু output-এর ঝামেলা না, সরাসরি syscall-এর দাম। Production logger-রা এজন্যই ইচ্ছেমতো লেখা জমিয়ে পাঠানোর option রাখে।</p>
+
+  <p>Socket-এও একই কৌশল। একটা HTTP response প্রায়ই কয়েক টুকরায় তৈরি হয়: status line, header, body। আলাদা আলাদা <code>write()</code> দিলে প্রতিটা আলাদা syscall, আর network-এ ছোট ছোট আলাদা packet হওয়ার সম্ভাবনা (Nagle-এর গল্প, Chapter 27)। <code>cork()</code> বলে "এখনই পাঠিও না, জমাও"; <code>uncork()</code> সব একসাথে এক <code>writev</code>-এ পাঠায়। <code>writev</code> হলো এমন একটা syscall, যেটা memory-র কয়েকটা আলাদা টুকরা এক call-এ লিখে দেয়:</p>
+  <div class="codewrap"><pre><code>// cork.js — একটা response-এর তিন টুকরা: আলাদা write বনাম cork করে একসাথে
+const net = require('net');
+const server = net.createServer((sock) =&gt; {
+  sock.write('HTTP/1.1 200 OK\r\n');                 // ১) cork ছাড়া: তিনটা আলাদা write
+  sock.write('Content-Length: 2\r\n\r\n');
+  sock.write('hi');
+
+  sock.cork();                                        // ২) cork: জমাও, এখনই পাঠিও না
+  sock.write('HTTP/1.1 200 OK\r\n');
+  sock.write('Content-Length: 2\r\n\r\n');
+  sock.write('hi');
+  process.nextTick(() =&gt; sock.uncork());              // এবার একসাথে
+  sock.end();
+});
+server.listen(9100, '127.0.0.1', () =&gt; {
+  net.connect(9100, '127.0.0.1').on('data', () =&gt; {}).on('end', () =&gt; server.close());
+});</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  strace -f -e trace=write,writev node cork.js 2&gt;&amp;1 | grep -E "HTTP|Content|hi\""'</code></pre></div>
+  <div class="codewrap"><pre><code>[pid   129] write(20, "HTTP/1.1 200 OK\r\n", 17) = 17
+[pid   129] write(20, "Content-Length: 2\r\n\r\n", 21) = 21
+[pid   129] write(20, "hi", 2)          = 2
+[pid   129] writev(20, [{iov_base="HTTP/1.1 200 OK\r\n", iov_len=17}, {iov_base="Content-Length: 2\r\n\r\n", iov_len=21}, {iov_base="hi", iov_len=2}], 3) = 40</code></pre></div>
+  <p>তিনটা syscall থেকে একটা। Node-এর <code>http</code> module নিজেই header আর body এভাবে জুড়ে পাঠায়, তাই সাধারণ code-এ এটা নিয়ে ভাবতে হয় না। কিন্তু নিজে <code>net</code> দিয়ে protocol লিখলে এটা মনে রাখার মতো।</p>
+  <p>এই বইয়ে এর আগে দুটো বড় batching দেখেছ। একটা <code>epoll_wait</code> হাজার socket-এর খবর একসাথে ফেরত দেয় (Chapter 29)। আর io_uring memory-তে ভাগ করা ring-এ অনেকগুলো অনুরোধ জমা নেয়, তারপর এক syscall-এ সব পাঠায়; এমন mode-ও আছে যেখানে kernel-এর একটা thread নিজেই ring দেখতে থাকে, আর syscall প্রায় লাগেই না (Chapter 24)। সবগুলোই একই হিসাবের উত্তর: দরজা পেরোনোর নির্দিষ্ট দাম কমানো যায় না, কিন্তু প্রতিটা পারাপারে বেশি কাজ ভরে দেওয়া যায়।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>প্রতিটা syscall-এর একটা নির্দিষ্ট দাম আছে: দরজা পেরোনো, register সেভ করা ও ফেরানো, যাচাই, আর পরে cache-এ kernel-এর ছাপ। এখানে সেটা ৬০–১১০ ns, একটা JS function call-এর ৫০–১০০ গুণ। Syscall-এ যত বেশি কাজ ভরবে, এই দাম তত অদৃশ্য হবে। ১৬ byte করে পড়লে সেকেন্ডে ৪১ MB, ১ MB করে পড়লে ২৩ GB। যে কাজ শুধু পড়ে আর নিরীহ (সময় জানা), kernel সেটার জন্য vDSO দিয়ে user mode-এই উত্তর রেখে দেয়। বাকি সবকিছুর দাওয়াই batching: জমিয়ে লেখো (buffer, <code>cork</code>/<code>writev</code>), বড় করে পড়ো, আর একবারে অনেকের খবর নাও (<code>epoll</code>, io_uring)।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Syscall-এর overhead-এর উপাদানগুলো কী কী?</li>
-      <li>কখন overhead টা তুচ্ছ, কখন সেটাই মূল খরচ?</li>
-      <li>Batching আর io_uring — দুটোই কোন এক সমস্যার দুই সমাধান?</li>
+      <li>cost.js-এ <code>process.uptime()</code> আর <code>process.ppid</code> দুটোই Node-এর C++-এ যায়, তবু দ্বিতীয়টা ৬০ ns-এর মতো বেশি নেয়। ওই সময়ে কী কী ঘটে? KPTI চালু থাকা একটা machine-এ সংখ্যাটা বাড়বে কেন?</li>
+      <li>chunks.js-এ ১৬ আর ২৫৬ byte-এ call প্রতি সময় প্রায় সমান (~৩৮০ ns), কিন্তু ১ MB-এ অনেক বেশি। তবু ১ MB-এ গতি ৫৭০ গুণ। দুটো কথা একসাথে সত্যি হয় কীভাবে?</li>
+      <li><code>Date.now()</code> দশ লাখ বার ডেকেও strace-এ একটাও <code>clock_gettime</code> দেখা যায় না কেন? <code>[vdso]</code> আর <code>[vvar]</code> কে লেখে, কে পড়ে? <code>open()</code> কেন কখনো এভাবে করা যায় না?</li>
+      <li>দশ হাজার <code>console.log</code>-এ ১০,০০৩টা <code>write</code>, কিন্তু Python-এর <code>print</code>-এ ৬টা। দুই ভাষা আলাদা সিদ্ধান্ত নিয়েছে কেন, আর প্রত্যেকটার দাম কী?</li>
+      <li>cork.js-এ <code>cork()</code>/<code>uncork()</code> kernel-এর দিক থেকে কী বদলায়? এর সাথে <code>epoll_wait</code> আর io_uring-এর মিল কোথায়?</li>
     </ul>
   </div>

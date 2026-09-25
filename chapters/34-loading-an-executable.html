@@ -1,37 +1,355 @@
   <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
   <h2>Chapter 34 — Executable Load হওয়া</h2>
-  <p class="chap-sub">ELF file থেকে Chapter 5-এর সেই memory layout — বৃত্তটা পূর্ণ হলো।</p>
+  <p class="chap-sub"><code>execve</code>-এর মুহূর্তে kernel file-এর প্রথম কয়েকটা byte দেখে কী সিদ্ধান্ত নেয় (shebang, ELF, "not found"), node-এর ১১৭ MB-এর কতটা আসলে RAM-এ আসে, প্রতিবার ঠিকানা কেন বদলায় (ASLR), আর <code>node</code> চালু হতে সময়টা কোথায় যায়।</p>
 
-  <h3>exec()-এর মুহূর্তে ধাপে ধাপে</h3>
-  <ol>
-    <li>Kernel ELF header পড়ে — বৈধ executable তো?</li>
-    <li>Process-এর virtual address space সাজায় — কিন্তু চালাকিটা দেখো: <code>.text</code> আর <code>.data</code> RAM-এ <em>copy করে না</em> — file-টাকে address space-এ <strong>mmap</strong> করে দেয় (Chapter 10-এর সেই কৌশল!)। মানে "load" আসলে lazy: যে page ছোঁয়া হবে, page fault-এ সেটাই disk থেকে আসবে। এজন্যই বিশাল executable-ও প্রায় সাথে সাথে start হয়।</li>
-    <li>BSS-এর জন্য zero-filled জায়গা, stack-এর জন্য জায়গা তৈরি; stack-এর গোড়ায় বসিয়ে দেয় <code>argv</code> আর environment variables — তোমার <code>process.argv</code>-র জন্ম এখানে।</li>
-    <li>Dynamically linked হলে আগে চালু হয় <strong>dynamic linker</strong> (ld.so) — সে দরকারি .so গুলো address space-এ map করে, ঠিকানার জোড়াতালি (relocation) সারে।</li>
-    <li>Program counter → entry point। <span class="u">User mode</span>-এ যাত্রা শুরু।</li>
-  </ol>
-  <pre class="diagram"><span class="dim">ELF file (disk)</span>              <span class="u">Process address space</span>
-┌──────────────┐             +------------------+
-│ header       │             |   Stack ← argv   |
-│ .text  ──────┼── mmap ───→ |   ...            |
-│ .data  ──────┼── mmap ───→ |   Heap (নতুন)     |
-│ .bss (size)  │── zero ───→ |   BSS            |
-│ dynamic:     │             |   Data           |
-│  needs libc ─┼── ld.so ──→ |   Code / Text    |
-└──────────────┘             |   [libc.so map]  |
-                             +------------------+</pre>
-  <p class="diagram-caption">Chapter 5-এ layout-টা "দেওয়া ছিল" — এখন জানো কে, কখন, কোথা থেকে বানায়।</p>
+  <p>Chapter 4-এ loader-এর পাঁচ ধাপ দেখেছি। <code>execve</code> file যাচাই করে, পুরনো memory ফেলে দেয়, segment map করে, stack-এ argv আর env রাখে, আর PC বসায় dynamic linker (<code>ld.so</code>) বা program-এর entry point-এ। সেখানে ধরে নিয়েছিলাম সব ঠিকঠাক চলবে। এই chapter দেখে যখন ঠিকঠাক চলে না তখন কী হয়, আর "load" শব্দটার পেছনে আসলে কতটা কাজ হয়। JS developer-এর জন্য এর মানে: <code>npx</code> কীভাবে চলে, Alpine image-এ কেন "not found", আর serverless-এর cold start কোথা থেকে আসে।</p>
+
+  <h3>প্রথম দুই byte: shebang</h3>
+  <p><code>npx</code>, <code>tsc</code>, <code>eslint</code> — এগুলো আসলে JS file। তবু terminal-এ সরাসরি নাম লিখে চালানো যায়, সামনে <code>node</code> লাগে না। কীভাবে? Kernel তো JS চেনে না।</p>
+  <p>উত্তর file-এর প্রথম লাইনে: <code>head -1 $(which npx)</code> চালালে দেখবে <code>#!/usr/bin/env node</code>। <code>#!</code> দিয়ে শুরু হওয়া এই লাইনের নাম <strong>shebang</strong>। <code>execve</code> file খুলে প্রথম দুই byte-এ <code>#!</code> পেলে kernel file-টা নিজে চালায় না। বরং লাইনের বাকিটা পড়ে সেই program চালায়, আর তোমার file-এর path argument হিসেবে দিয়ে দেয়। তিন রকম file দিয়ে দেখা যাক: ঠিক shebang, shebang নেই, আর Windows-এ লেখা file (লাইনের শেষে <code>\r\n</code>):</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — shebang.sh</div>
+    <div class="codewrap"><pre><code># shebang.sh
+printf '#!/usr/bin/env node\nconsole.log("hi from", process.argv.slice(0, 2));\n' &gt; hi.js
+printf 'console.log("no shebang here")\n' &gt; plain.js
+printf '#!/usr/bin/env node\r\nconsole.log("windows line endings")\r\n' &gt; crlf.js
+chmod +x hi.js plain.js crlf.js
+echo "--- ./hi.js";    ./hi.js
+echo "--- ./plain.js"; ./plain.js
+echo "--- ./crlf.js";  ./crlf.js
+echo "--- strace ./hi.js"
+strace -f -e trace=execve ./hi.js 2&gt;&amp;1 | grep -E "execve|hi from"
+echo "--- strace ./plain.js"
+strace -e trace=execve ./plain.js 2&gt;&amp;1 | head -2</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  bash shebang.sh'</code></pre></div>
+    <div class="codewrap"><pre><code>--- ./hi.js
+hi from [ '/usr/local/bin/node', '/w/hi.js' ]
+--- ./plain.js
+./plain.js: line 1: syntax error near unexpected token `"no shebang here"'
+./plain.js: line 1: `console.log("no shebang here")'
+--- ./crlf.js
+/usr/bin/env: 'node\r': No such file or directory
+/usr/bin/env: use -[v]S to pass options in shebang lines
+--- strace ./hi.js
+execve("./hi.js", ["./hi.js"], 0xffffca55d758 /* 8 vars */) = 0
+execve("/usr/local/sbin/node", ["node", "./hi.js"], 0xffffe4ff5548 /* 8 vars */) = -1 ENOENT (No such file or directory)
+execve("/usr/local/bin/node", ["node", "./hi.js"], 0xffffe4ff5548 /* 8 vars */) = 0
+hi from [ '/usr/local/bin/node', '/w/hi.js' ]
+--- strace ./plain.js
+execve("./plain.js", ["./plain.js"], 0xffffc52bc0f0 /* 8 vars */) = -1 ENOEXEC (Exec format error)
+strace: exec: Exec format error</code></pre></div>
+  </div>
+  <p>strace-এর লাইনগুলো গল্পটা বলে দেয়:</p>
+  <ul>
+    <li><code>execve("./hi.js")</code> সফল (<code>= 0</code>), অথচ চলল <code>/usr/bin/env</code>। Kernel shebang পড়ে নিজেই সেটা চালিয়েছে। <code>env</code>-এর কাজ একটাই: PATH-এর folder-গুলোতে একে একে <code>node</code> খোঁজা। প্রথমটায় পায়নি (ENOENT), দ্বিতীয়টায় পেয়েছে। সরাসরি <code>#!/usr/local/bin/node</code> না লিখে <code>env</code> দেওয়ার কারণ এটাই: node কোথায় বসানো, সেটা machine ভেদে আলাদা (nvm, Homebrew, Docker)।</li>
+    <li><code>plain.js</code>-এ shebang নেই, ELF-ও না। Kernel বলেছে <code>ENOEXEC</code>: "এই format চিনি না"। তখন bash পুরনো একটা নিয়ম মেনে file-টাকে shell script হিসেবে চালিয়েছে, আর JS-কে shell ভেবে syntax error দিয়েছে।</li>
+    <li><code>crlf.js</code>-এ লাইনের শেষে একটা অদৃশ্য <code>\r</code>। Kernel সেটাকে নামের অংশ ধরে <code>env</code>-কে বলেছে <code>node\r</code> খুঁজতে। Windows-এ লেখা CLI script Linux-এ চালাতে গিয়ে এই error খুব চেনা; সমাধান হলো file-টা <code>\n</code> line ending-এ save করা।</li>
+  </ul>
+  <p>npm-এর <code>package.json</code>-এ <code>"bin"</code> দিলে <code>npm install</code> ঠিক এটাই করে: file-টা executable করে, আর <code>node_modules/.bin</code>-এ একটা link বানায়। Shebang-এর বাকি কাজ kernel-এর।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 376" width="100%" role="img" aria-label="What execve does with the first bytes of a file. A shell calls execve. The kernel reads the first bytes. If they are #!, it starts the interpreter named on that line with the script path as an argument, and runs the same check again for that interpreter. If they are the ELF magic, it looks in the header for an interpreter: if one is listed and present, such as ld-linux, it maps it and returns to user mode, where ld.so maps the libraries and jumps to main; a static binary goes straight to its entry point; if the listed interpreter is missing, execve fails with ENOENT and the shell prints not found, as on Alpine. Anything else fails with ENOEXEC, and bash falls back to running the file as a shell script">
+      <defs>
+        <marker id="c34f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c34f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c34f1-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="22" class="t-u t-s">USER</text>
+      <rect x="24" y="32" width="200" height="36" rx="8" class="b-u"/>
+      <text x="124" y="55" text-anchor="middle" class="mono">execve("./app")</text>
+      <line x1="24" y1="86" x2="776" y2="86" class="ln-k dash"/>
+      <path d="M124 68 V112" class="ln-k" marker-end="url(#c34f1-k)"/>
+      <text x="24" y="104" class="t-k t-s">KERNEL</text>
+
+      <rect x="24" y="116" width="200" height="44" rx="8" class="b-k"/>
+      <text x="124" y="136" text-anchor="middle" class="t-s">read the first bytes</text>
+      <text x="124" y="152" text-anchor="middle" class="t-m t-s">of the file</text>
+
+      <path d="M224 130 L296 122" class="ln-k" marker-end="url(#c34f1-k)"/>
+      <rect x="300" y="100" width="240" height="44" rx="8" class="b-k"/>
+      <text x="316" y="119" class="t-s"><tspan class="mono">#!</tspan>  start that interpreter</text>
+      <text x="316" y="136" class="mono">/usr/bin/env node ./app</text>
+      <text x="552" y="126" class="t-m t-s">→ same check again for env</text>
+
+      <path d="M224 140 L296 192" class="ln-k" marker-end="url(#c34f1-k)"/>
+      <rect x="300" y="170" width="240" height="44" rx="8" class="b-k"/>
+      <text x="316" y="189" class="t-s"><tspan class="mono">\x7fELF</tspan>  interpreter listed?</text>
+      <text x="316" y="206" class="t-m t-s">PT_INTERP in the header</text>
+
+      <path d="M224 152 L296 262" class="ln-d" marker-end="url(#c34f1-d)"/>
+      <rect x="300" y="240" width="240" height="44" rx="8" class="b-d"/>
+      <text x="316" y="259" class="t-s">anything else → ENOEXEC</text>
+      <text x="316" y="276" class="t-m t-s">"I don't know this format"</text>
+
+      <path d="M540 186 L596 172" class="ln-d" marker-end="url(#c34f1-d)"/>
+      <rect x="600" y="150" width="176" height="44" rx="8" class="b-d"/>
+      <text x="612" y="169" class="t-s">listed but missing</text>
+      <text x="612" y="186" class="t-m t-s">ENOENT → "not found"</text>
+      <path d="M540 198 L596 222" class="ln-k" marker-end="url(#c34f1-k)"/>
+      <rect x="600" y="208" width="176" height="44" rx="8" class="b-ok"/>
+      <text x="612" y="227" class="t-s">map ld.so, go there</text>
+      <text x="612" y="244" class="t-m t-s">(static: go to entry)</text>
+
+      <line x1="24" y1="304" x2="776" y2="304" class="ln-k dash"/>
+      <text x="24" y="324" class="t-u t-s">USER again</text>
+      <path d="M420 284 V316" class="ln-u" marker-end="url(#c34f1-u)"/>
+      <rect x="300" y="320" width="240" height="44" rx="8" class="b-u"/>
+      <text x="316" y="339" class="t-s">bash: no #!? run it with sh</text>
+      <text x="316" y="356" class="t-m t-s">(plain.js's syntax errors)</text>
+      <path d="M688 252 V316" class="ln-u" marker-end="url(#c34f1-u)"/>
+      <rect x="600" y="320" width="176" height="44" rx="8" class="b-u"/>
+      <text x="612" y="339" class="t-s">ld.so maps libraries,</text>
+      <text x="612" y="356" class="t-m t-s">fills holes → main</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption"><code>execve</code>-এর প্রথম সিদ্ধান্ত। Kernel file-এর প্রথম byte দেখে পথ বাছে: <code>#!</code> হলে লাইনে লেখা interpreter, ELF হলে header-এ লেখা <code>ld.so</code> (না পেলে ENOENT, এর পরের section), আর কিছু না মিললে ENOEXEC। নীল তীরগুলো user mode-এ ফেরা।</p>
+
+  <h3>Interpreter নেই: Alpine-এর "not found"</h3>
+  <p>Chapter 4-এ দেখেছি dynamically linked ELF-এর header-এ একটা path লেখা থাকে: "আমাকে চালাতে এই dynamic linker লাগবে" (<code>PT_INTERP</code>, <code>readelf</code>-এ "program interpreter")। এই path-টা libc-র সাথে বাঁধা। Debian, Ubuntu, Fedora-র মতো বেশিরভাগ Linux ব্যবহার করে <strong>glibc</strong> (GNU-র C library), যার dynamic linker <code>/lib/ld-linux-aarch64.so.1</code> (Intel/AMD-এ <code>ld-linux-x86-64.so.2</code>)। ছোট Docker image-এর জন্য জনপ্রিয় <strong>Alpine</strong> ব্যবহার করে <strong>musl</strong>, আরেকটা C library, যার dynamic linker অন্য নামের। Debian-এ build করা একটা program Alpine-এ নিয়ে যাও:</p>
+  <div class="codewrap"><pre><code># Debian-এ (glibc) build
+docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq gcc libc6-dev &gt;/dev/null
+  gcc hello.c -o hello-glibc &amp;&amp; ./hello-glibc'
+# Alpine-এ (musl) চালানো
+docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-alpine sh alpine.sh</code></pre></div>
+  <div class="codewrap"><pre><code># alpine.sh — Debian-এ (glibc) বানানো binary Alpine-এ (musl)
+ls -l hello-glibc | awk '{print $1, $5, $9}'
+./hello-glibc; echo "exit $?"
+apk add -q file strace
+file hello-glibc | grep -o "interpreter [^,]*"
+ls /lib/ld-*
+strace -e trace=execve ./hello-glibc 2&gt;&amp;1 | head -1</code></pre></div>
+  <div class="codewrap"><pre><code>-rwxr-xr-x 70448 hello-glibc
+alpine.sh: line 3: ./hello-glibc: not found
+exit 127
+interpreter /lib/ld-linux-aarch64.so.1
+/lib/ld-musl-aarch64.so.1
+execve("./hello-glibc", ["./hello-glibc"], 0xffffef15ffd0 /* 7 vars */) = -1 ENOENT (No such file or directory)</code></pre></div>
+  <p>প্রথম লাইনে file-টা আছে, executable-ও (<code>x</code>)। অথচ চালাতে গেলে "not found"। Debugging-এ এটা সবচেয়ে বিভ্রান্তিকর error-গুলোর একটা, কারণ যে file "পাওয়া যাচ্ছে না" বলছে, সেটা তোমার file না। Header চায় <code>/lib/ld-linux-aarch64.so.1</code>, আর Alpine-এ আছে শুধু <code>/lib/ld-musl-aarch64.so.1</code>। Kernel interpreter খুলতে গিয়ে পায়নি, তাই পুরো <code>execve</code> ENOENT দিয়ে ফেরত এসেছে, আর shell সেটাকে "not found" বলে দেখিয়েছে।</p>
+  <p>Node-এর native addon-এ (Chapter 33) ব্যাপারটা আরও গোলমেলে হতে পারে। নিচের addon C-র <code>snprintf</code> দিয়ে একটা string বানায়। অনেক build-এ default থাকা একটা নিরাপত্তা option (<code>_FORTIFY_SOURCE</code>) glibc-তে <code>snprintf</code>-কে বদলে দেয় তার সীমা-যাচাই করা রূপ <code>__snprintf_chk</code>-এ, আর এই function musl-এ নেই:</p>
+  <div class="codewrap"><pre><code>// label.c — label(n) → "item-&lt;n&gt;" (C-র snprintf দিয়ে string বানানো)
+#include &lt;node_api.h&gt;
+#include &lt;stdio.h&gt;
+
+static napi_value Label(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1], out;
+    int n;
+    char buf[32];
+    napi_get_cb_info(env, info, &amp;argc, argv, NULL, NULL);
+    napi_get_value_int32(env, argv[0], &amp;n);
+    snprintf(buf, sizeof buf, "item-%d", n);
+    napi_create_string_utf8(env, buf, NAPI_AUTO_LENGTH, &amp;out);
+    return out;
+}
+
+NAPI_MODULE_INIT() {
+    napi_value fn;
+    napi_create_function(env, "label", NAPI_AUTO_LENGTH, Label, NULL, &amp;fn);
+    napi_set_named_property(env, exports, "label", fn);
+    return exports;
+}</code></pre></div>
+  <div class="codewrap"><pre><code># Debian-এ build আর চালানো
+docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq gcc libc6-dev &gt;/dev/null
+  gcc -O2 -D_FORTIFY_SOURCE=2 -shared -fPIC -I/usr/local/include/node label.c -o label.node
+  nm -D --undefined-only label.node | grep snprintf
+  node -p "require(\"./label.node\").label(7)"'
+# একই addon Alpine-এ
+docker run --rm -v "$PWD":/w -w /w node:22-alpine sh -c '
+  node -e "const m = require(\"./label.node\"); console.log(\"loaded fine\"); console.log(m.label(7))"
+  echo "exit $?"'</code></pre></div>
+  <div class="codewrap"><pre><code>                 U __snprintf_chk@GLIBC_2.17
+item-7
+
+loaded fine
+Segmentation fault
+exit 139</code></pre></div>
+  <p>Debian-এ ঠিকঠাক চলল। Alpine-এ <code>require</code> দিব্যি সফল ("loaded fine"), কিন্তু প্রথম call-এই segfault। musl-এর dynamic linker <code>__snprintf_chk</code> খুঁজে পায়নি। Node addon load করে "lazy" ভাবে, মানে function-এর ঠিকানা খোঁজা হয় প্রথম ডাকের সময়, তাই load-এর সময় error আসেনি। ফাঁকটা ভরা হয়নি, আর প্রথম ডাকে CPU লাফ দিয়েছে একটা অর্থহীন ঠিকানায় (strace-এ <code>si_addr=0x660</code>)। Error message-এ addon-এর নামও নেই, শুধু exit ১৩৯। কারণ শুনে বোঝা যায়, কিন্তু আগে থেকে না জানলে খুঁজে বের করা কঠিন।</p>
+  <p>সমাধান তিনটা। Alpine-এর উপরেই build করো (<code>npm install</code> Alpine image-এর ভেতরে চালাও, Mac থেকে <code>node_modules</code> copy করো না)। অথবা package-এর musl-এর জন্য বানানো prebuilt binary নাও (নামে সাধারণত <code>linuxmusl</code> থাকে)। অথবা native addon-ওয়ালা app-এর জন্য Debian-ভিত্তিক image নাও (<code>node:22-bookworm-slim</code>)। Static binary-র এই সমস্যা নেই, কারণ তার কোনো interpreter-ই লাগে না।</p>
+
+  <h3>Load মানে copy না: node-এর ১১৭ MB-এর কতটা RAM-এ আসে</h3>
+  <p>Chapter 4-এ এক লাইনে বলেছিলাম: <code>execve</code> file-এর segment "map" করে, copy করে না। CPU যে page প্রথম ছোঁয়, page fault হয়ে সেটুকু আসে (Chapter 9)। এর নাম <strong>demand paging</strong>। এবার মেপে দেখা যাক, node binary-র কতটা শেষ পর্যন্ত আসে, আর page cache-এ (Chapter 23) না থাকলে কী হয়। <code>/proc/self/smaps</code> প্রতিটা mapping-এর Size (address space-এ কত বড়) আর Rss (এর মধ্যে কতটা এখন RAM-এ) দেয়:</p>
+  <div class="codewrap"><pre><code>// lazy.js — node binary-র কতটা আসলে RAM-এ এল?
+const fs = require('fs');
+const exe = fs.realpathSync(process.execPath);
+let size = 0, rss = 0, mine = false;
+for (const line of fs.readFileSync('/proc/self/smaps', 'utf8').split('\n')) {
+  if (/^[0-9a-f]+-[0-9a-f]+ /.test(line)) mine = line.endsWith(exe);   // নতুন mapping শুরু
+  else if (mine &amp;&amp; line.startsWith('Size:')) size += parseInt(line.slice(5));
+  else if (mine &amp;&amp; line.startsWith('Rss:'))  rss  += parseInt(line.slice(4));
+}
+const ru = process.resourceUsage();
+console.log(`node on disk: ${(fs.statSync(exe).size / 2 ** 20).toFixed(0)} MB, ` +
+            `mapped: ${(size / 1024).toFixed(0)} MB, actually in RAM: ${(rss / 1024).toFixed(0)} MB`);
+console.log(`page faults so far: ${ru.minorPageFault} minor, ${ru.majorPageFault} major; ` +
+            `${performance.now().toFixed(0)} ms since start`);</code></pre></div>
+  <div class="codewrap"><pre><code># cold.sh — একই lazy.js: page cache-এ node থাকলে, আর না থাকলে
+node lazy.js &gt; /dev/null                                   # file-টা page cache-এ আনা
+echo "warm:"; node lazy.js
+dd if=/usr/local/bin/node iflag=nocache count=0 status=none  # node-এর page গুলো cache থেকে সরাও
+echo "cold:"; node lazy.js</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash cold.sh</code></pre></div>
+  <div class="codewrap"><pre><code>warm:
+node on disk: 117 MB, mapped: 99 MB, actually in RAM: 30 MB
+page faults so far: 2347 minor, 0 major; 11 ms since start
+cold:
+node on disk: 117 MB, mapped: 99 MB, actually in RAM: 29 MB
+page faults so far: 2169 minor, 303 major; 27 ms since start</code></pre></div>
+  <p>node file ১১৭ MB, address space-এ map হয়েছে ৯৯ MB (বাকিটা symbol-এর মতো জিনিস, চলতে লাগে না)। অথচ তোমার code চলা পর্যন্ত RAM-এ এসেছে মাত্র ৩০ MB। বাকি ৭০ MB-র জায়গা ঠিক করা আছে, কিন্তু কেউ না ছুঁলে কখনো আসবে না।</p>
+  <p>দুই রকম page fault আছে। <strong>Minor fault</strong>-এ page আগে থেকেই RAM-এ, page cache-এ; kernel শুধু page table-এ বসায়, microsecond-এর কাজ। <strong>Major fault</strong>-এ page RAM-এ নেই, disk থেকে পড়তে হয়। Warm চালানোয় major fault শূন্য, আর node ১১ ms-এ তোমার code-এ পৌঁছেছে। <code>dd ... iflag=nocache count=0</code> শুধু node file-টার page গুলো page cache থেকে সরিয়ে দেয়, আর তারপর ৩০৩টা major fault, সময় আড়াই গুণ। এখানে "disk" আসলে Mac-এর দ্রুত SSD-র উপর একটা virtual disk। Network-এ বসানো cloud disk-এ এই ফাঁক অনেক বড় হয়। Serverless-এর "cold start"-এর একটা অংশ ঠিক এটাই: নতুন machine-এ runtime-এর page গুলো তখনো page cache-এ নেই।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="Bar chart of the node binary in a Linux container: 117 MB on disk, 99 MB mapped into the address space, and only 30 MB actually in RAM by the time user code runs. Below, warm start: 2347 minor page faults, 0 major, 11 milliseconds; cold start with node's pages dropped from the page cache: 303 major page faults, 27 milliseconds">
+      <text x="24" y="44" class="t-s">on disk</text>
+      <rect x="150" y="30" width="600" height="22" rx="4" style="fill:var(--series); opacity:.35"/>
+      <text x="740" y="46" text-anchor="end" class="t-s">117 MB</text>
+      <text x="24" y="86" class="t-s">mapped</text>
+      <rect x="150" y="72" width="508" height="22" rx="4" style="fill:var(--series); opacity:.6"/>
+      <text x="668" y="88" class="t-s">99 MB</text>
+      <text x="24" y="128" class="t-s">in RAM (Rss)</text>
+      <rect x="150" y="114" width="154" height="22" rx="4" style="fill:var(--series)"/>
+      <text x="314" y="130" class="t-s">30 MB — the pages something touched</text>
+      <line x1="150" y1="22" x2="150" y2="144" class="axis"/>
+
+      <rect x="24" y="168" width="360" height="62" rx="8" class="b-ok"/>
+      <text x="40" y="192" class="t-ok t-s">warm (in page cache)</text>
+      <text x="40" y="214" class="t-s">2,347 minor · 0 major faults · 11 ms</text>
+      <rect x="416" y="168" width="360" height="62" rx="8" class="b-d"/>
+      <text x="432" y="192" class="t-d t-s">cold (dropped from page cache)</text>
+      <text x="432" y="214" class="t-s">303 major faults (disk reads) · 27 ms</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">cold.sh-এর মাপ। উপরে node binary-র তিন মাপ: disk-এ, address space-এ, আর আসলে RAM-এ। নিচে একই program page cache-এ থাকলে আর না থাকলে: পার্থক্য শুধু major fault, মানে disk থেকে পড়া।</p>
+
+  <h3>ASLR: প্রতিবার নতুন ঠিকানা</h3>
+  <p>ধরো একটা program-এ bug আছে, আর আক্রমণকারী সেটা দিয়ে CPU-কে নিজের পছন্দের কোনো ঠিকানায় লাফ দেওয়াতে পারে। যেমন libc-র <code>system()</code> function-এ, যেটা যেকোনো shell command চালায়। এর জন্য তাকে জানতে হবে <code>system()</code> ঠিক কোন ঠিকানায় আছে। প্রতিবার সব একই ঠিকানায় বসলে এটা জানা সহজ: নিজের machine-এ একবার দেখে নিলেই হলো।</p>
+  <p><strong>ASLR</strong> (Address Space Layout Randomization) এই অনুমান ভেঙে দেয়। প্রতিটা <code>execve</code>-তে kernel stack, heap, <code>ld.so</code>, আর libc-র মতো library-কে এলোমেলো ঠিকানায় বসায়। Program নিজেও PIE (position-independent executable) হিসেবে build করা থাকলে, যেমন Chapter 33-এর <code>file</code>-এ দেখা "pie executable", তার code-ও নড়ে। Chapter 4-এর <code>0x754</code>-এর মতো ঠিকানাগুলো তাই আসলে file-এর শুরু থেকে দূরত্ব, চলার সময়ের আসল ঠিকানা না।</p>
+  <div class="codewrap"><pre><code># aslr.sh — একই program তিনবার: libc-র code আর stack কোথায় বসল?
+where() { grep -E "r-xp .*libc\.so|\[stack\]" /proc/self/maps | awk '{print substr($1, 1, 12), $6}' | tr '\n' ' '; echo; }
+cat /proc/sys/kernel/randomize_va_space
+for i in 1 2 3; do where; done
+echo "--- setarch -R: randomization বন্ধ"
+for i in 1 2 3; do setarch -R bash -c "$(declare -f where); where"; done</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm --security-opt seccomp=unconfined -v "$PWD":/w -w /w node:22-bookworm-slim bash aslr.sh</code></pre></div>
+  <div class="codewrap"><pre><code>2
+ffff99e00000 /usr/lib/aarch64-linux-gnu/libc.so.6 ffffcfff0000 [stack]
+ffff80670000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffff9c03000 [stack]
+ffff80660000 /usr/lib/aarch64-linux-gnu/libc.so.6 ffffd70c6000 [stack]
+--- setarch -R: randomization বন্ধ
+fffff7d60000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffffffdf000 [stack]
+fffff7d60000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffffffdf000 [stack]
+fffff7d60000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffffffdf000 [stack] </code></pre></div>
+  <p>প্রতিটা লাইন আলাদা একটা <code>grep</code> process-এর নিজের memory-র ছবি। <code>randomize_va_space = 2</code> মানে পুরো randomization চালু। তিনবারে libc আর stack তিন জায়গায় বসেছে। <code>setarch -R</code> randomization বন্ধ করে চালায়, আর তখন তিনবারই হুবহু এক ঠিকানা। Debugger কখনো কখনো এভাবে randomization বন্ধ রাখে, যাতে প্রতিবার একই ঠিকানা দেখা যায়।</p>
+  <p>একটা খুঁটিনাটি: <code>--security-opt seccomp=unconfined</code> ছাড়া <code>setarch -R</code> Docker-এ "Operation not permitted" দেয়। Docker-এর seccomp নিয়ম (Chapter 36) randomization বন্ধ করার অনুরোধটাই আটকে রাখে, কারণ সেটা আক্রমণকারীর কাজে লাগে। ASLR আক্রমণ অসম্ভব করে না; কোনো একটা ঠিকানা ফাঁস হলে পুরো library কোথায় আছে বের করা যায়। কিন্তু প্রতিটা আক্রমণে বাড়তি একটা ধাপ যোগ করে, আর অন্ধ অনুমানকে crash-এ পরিণত করে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 290" width="100%" role="img" aria-label="Three runs of the same program with ASLR, and one with it turned off. Each column is the top of the user address space. In run 1 libc's code is at ffff99e00000 and the stack at ffffcfff0000; in run 2 libc is at ffff80670000 and the stack at fffff9c03000; in run 3 libc is at ffff80660000 and the stack at ffffd70c6000. With setarch -R every run puts libc at fffff7d60000 and the stack at fffffffdf000. Not to scale">
+      <text x="110" y="24" text-anchor="middle" class="t-h t-s">run 1</text>
+      <text x="290" y="24" text-anchor="middle" class="t-h t-s">run 2</text>
+      <text x="470" y="24" text-anchor="middle" class="t-h t-s">run 3</text>
+      <text x="680" y="24" text-anchor="middle" class="t-h t-s">setarch -R (every run)</text>
+      <line x1="580" y1="12" x2="580" y2="280" class="ln dash"/>
+
+      <rect x="40" y="36" width="140" height="220" rx="6" class="b"/>
+      <rect x="48" y="86" width="124" height="30" rx="4" class="b-u"/>
+      <text x="110" y="106" text-anchor="middle" class="t-s">stack</text>
+      <rect x="48" y="170" width="124" height="30" rx="4" class="b-k"/>
+      <text x="110" y="190" text-anchor="middle" class="t-s">libc code</text>
+      <text x="110" y="132" text-anchor="middle" class="mono">ffffcfff0000</text>
+      <text x="110" y="216" text-anchor="middle" class="mono">ffff99e00000</text>
+
+      <rect x="220" y="36" width="140" height="220" rx="6" class="b"/>
+      <rect x="228" y="44" width="124" height="30" rx="4" class="b-u"/>
+      <text x="290" y="64" text-anchor="middle" class="t-s">stack</text>
+      <rect x="228" y="212" width="124" height="30" rx="4" class="b-k"/>
+      <text x="290" y="232" text-anchor="middle" class="t-s">libc code</text>
+      <text x="290" y="90" text-anchor="middle" class="mono">fffff9c03000</text>
+      <text x="290" y="204" text-anchor="middle" class="mono">ffff80670000</text>
+
+      <rect x="400" y="36" width="140" height="220" rx="6" class="b"/>
+      <rect x="408" y="104" width="124" height="30" rx="4" class="b-u"/>
+      <text x="470" y="124" text-anchor="middle" class="t-s">stack</text>
+      <rect x="408" y="212" width="124" height="30" rx="4" class="b-k"/>
+      <text x="470" y="232" text-anchor="middle" class="t-s">libc code</text>
+      <text x="470" y="150" text-anchor="middle" class="mono">ffffd70c6000</text>
+      <text x="470" y="204" text-anchor="middle" class="mono">ffff80660000</text>
+
+      <rect x="610" y="36" width="140" height="220" rx="6" class="b"/>
+      <rect x="618" y="44" width="124" height="30" rx="4" class="b-u"/>
+      <text x="680" y="64" text-anchor="middle" class="t-s">stack</text>
+      <text x="680" y="90" text-anchor="middle" class="mono">fffffffdf000</text>
+      <rect x="618" y="100" width="124" height="30" rx="4" class="b-k"/>
+      <text x="680" y="120" text-anchor="middle" class="t-s">libc code</text>
+      <text x="680" y="146" text-anchor="middle" class="mono">fffff7d60000</text>
+      <text x="680" y="168" text-anchor="middle" class="t-m t-s">same every time</text>
+      <text x="24" y="276" class="t-m t-s">higher addresses at the top · positions not to scale · addresses from aslr.sh</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">aslr.sh-এর তিনটা চালানো আর <code>setarch -R</code>। ASLR চালু থাকলে প্রতিটা process-এ libc আর stack নতুন জায়গায় বসে; বন্ধ করলে সব সময় একই ঠিকানা। (ঠিকানাগুলো আসল, অবস্থান মাপমতো না।)</p>
+
+  <h3>ld.so-র কাজ, আর node চালু হতে সময় কোথায় যায়</h3>
+  <p>ELF-এর interpreter পাওয়া গেলে kernel তাকে map করে user mode-এ ফেরে, আর তারপর <code>ld.so</code> চলে। সে কী করে, সেটা <code>LD_DEBUG</code> environment variable দিয়ে glibc-র <code>ld.so</code>-কে জোরে বলতে বলা যায়:</p>
+  <div class="codewrap"><pre><code>docker run --rm node:22-bookworm-slim bash -c '
+  LD_DEBUG=libs node -e 0 2&gt;&amp;1 | grep -E "find library|calling init"
+  LD_DEBUG=statistics node -e 0 2&gt;&amp;1 | grep "number of relocations:"'</code></pre></div>
+  <div class="codewrap"><pre><code>         8:	find library=libdl.so.2 [0]; searching
+         8:	find library=libstdc++.so.6 [0]; searching
+         8:	find library=libm.so.6 [0]; searching
+         8:	find library=libgcc_s.so.1 [0]; searching
+         8:	find library=libpthread.so.0 [0]; searching
+         8:	find library=libc.so.6 [0]; searching
+         8:	calling init: /lib/ld-linux-aarch64.so.1
+         8:	calling init: /lib/aarch64-linux-gnu/libc.so.6
+         8:	calling init: /lib/aarch64-linux-gnu/libpthread.so.0
+         8:	calling init: /lib/aarch64-linux-gnu/libgcc_s.so.1
+         8:	calling init: /lib/aarch64-linux-gnu/libm.so.6
+         8:	calling init: /lib/aarch64-linux-gnu/libstdc++.so.6
+         8:	calling init: /lib/aarch64-linux-gnu/libdl.so.2
+        16:	                 number of relocations: 2368
+        16:	           final number of relocations: 2482</code></pre></div>
+  <p>(<code>8:</code> আর <code>16:</code> হলো দুই চালানোর process-এর PID।) তিন ধাপের কাজ। এক: node-এর header-এর তালিকা ধরে ছয়টা library খুঁজে map করা; <code>LD_DEBUG=libs</code>-এর পুরো output-এ কোন folder-এ খুঁজেছে তাও দেখায়। দুই: শুরুতেই ২৩৬৮টা relocation, মানে Chapter 33-এর ফাঁক ভরাট, এবার চলার সময়; process শেষ হওয়া পর্যন্ত মোট ২৪৮২টা, কারণ কিছু ফাঁক প্রথম ডাকের সময় ভরা হয়। তিন: প্রতিটা library-র init function চালানো, যার উপর যে নির্ভর করে তাকে আগে। তাই সবার আগে libc, সবার শেষে libdl।</p>
+  <p>এরপর node-এর <code>main</code>। সেখান থেকে তোমার প্রথম লাইন পর্যন্ত যাওয়ার পথ Node নিজেই মেপে রাখে (<code>performance.nodeTiming</code>, process শুরু থেকে millisecond-এ):</p>
+  <div class="codewrap"><pre><code>// startup.js — node চালু হতে কোন ধাপে কত সময় গেল (process শুরু থেকে ms)
+const t = performance.nodeTiming;
+console.log(`V8 ready        ${t.v8Start.toFixed(1).padStart(6)} ms`);
+console.log(`Node env ready  ${t.environment.toFixed(1).padStart(6)} ms`);
+console.log(`bootstrap done  ${t.bootstrapComplete.toFixed(1).padStart(6)} ms`);
+console.log(`your code runs  ${performance.now().toFixed(1).padStart(6)} ms`);</code></pre></div>
+  <div class="codewrap"><pre><code>V8 ready           3.0 ms
+Node env ready     5.6 ms
+bootstrap done     8.2 ms
+your code runs    10.3 ms</code></pre></div>
+  <p>(আমার Mac-এ।) V8 engine তৈরি হতে ৩ ms, তারপর Node-এর নিজের JS দিয়ে লেখা ভেতরের অংশ (<code>require</code>, <code>process</code>, stream…) দাঁড় করাতে আরও ৫ ms। এত কম লাগে কারণ Node এই অংশের একটা তৈরি-করা ছবি (V8-এর heap snapshot) binary-র ভেতরেই রেখে দেয়, আর প্রতিবার সেখান থেকে ফুটিয়ে তোলে; শূন্য থেকে বানায় না। তুলনার জন্য Linux container-এ ২০ বার চালু করে গড়:</p>
+  <div class="codewrap"><pre><code># times.sh — ২০ বার চালু করে গড়
+avg() { local s=$(date +%s%N); for i in $(seq 20); do "$@" &gt; /dev/null; done; echo "$(( ($(date +%s%N) - s) / 20000000 )) ms  $*"; }
+avg /bin/true
+avg python3 -c 0
+avg node -e 0</code></pre></div>
+  <div class="codewrap"><pre><code>0 ms  /bin/true
+3 ms  python3 -c 0
+10 ms  node -e 0</code></pre></div>
+  <p>(Node image-এ python3 নেই; apt দিয়ে বসিয়ে নিয়েছি।) একটা ছোট C program-এর পুরো <code>execve</code> + <code>ld.so</code> + exit এক millisecond-এরও কম। node-এর ১০ ms-এর বেশিরভাগ তাই engine আর runtime দাঁড় করানো, load করা না। তোমার app-এর নিজের <code>require</code> করা dependency-গুলো এর উপরে যোগ হয়। বড় app-এ সেটাই প্রায়ই সবচেয়ে বড় অংশ, তাই startup ধীর লাগলে সেখান থেকেই মাপা শুরু করো।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>not found</code> মানে file-টা নেই।" <code>execve</code>-এর ENOENT তিনটা আলাদা file-এর যেকোনোটার জন্য আসতে পারে: তোমার program নিজে, shebang-এ লেখা interpreter (<code>node\r</code>), বা ELF header-এ লেখা dynamic linker (Alpine-এ <code>ld-linux</code>)। তাই "file তো আছে, তবু not found" দেখলে প্রথম প্রশ্ন: file-টা কে চালাতে বলছে? <code>head -1 file</code> (shebang) আর <code>file prog</code> (interpreter) দুই command-এ উত্তর মেলে।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">সুতোগুলো জোড়া লাগলো</div>
-    <p>Executable loading = <strong>virtual memory-র feature-দের একটা orchestra</strong>: mmap (file→memory), demand paging (lazy load), page fault (loading mechanism), shared pages (libc সবার সাথে ভাগ), copy-on-write (fork-এর পরে)। Part 3 না বুঝে এই chapter পড়লে এগুলো জাদু লাগতো; এখন এগুলো স্রেফ চেনা যন্ত্রের নতুন ব্যবহার।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p><code>execve</code> file-এর প্রথম byte দেখে সিদ্ধান্ত নেয়। <code>#!</code> হলে লাইনে লেখা interpreter চালায়। ELF হলে header-এ লেখা <code>ld.so</code> map করে, সেটা না পেলে ENOENT। আর কিছু না মিললে ENOEXEC। Load মানে copy না, map: node-এর ১১৭ MB-এর মধ্যে তোমার code চলা পর্যন্ত আসে ৩০ MB, বাকিটা শুধু কেউ ছুঁলে আসে। Page cache-এ না থাকলে প্রতিটা ছোঁয়া disk থেকে পড়া (major fault), আর সেটাই cold start। প্রতিবার ঠিকানা এলোমেলো হয় (ASLR), যাতে আক্রমণকারী আগে থেকে জানতে না পারে কোথায় লাফ দিতে হবে। শেষে <code>ld.so</code> library খোঁজে, হাজার দুয়েক ফাঁক ভরে, init চালায়, তারপর <code>main</code>। Node-এর বাকি startup হলো V8 আর runtime দাঁড় করানো।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>"Load" আসলে copy না — তাহলে কী?</li>
-      <li>বিশাল binary-ও দ্রুত start হয় কীভাবে?</li>
-      <li>Dynamic linker কখন চলে, কী করে?</li>
+      <li><code>./hi.js</code>-এর strace-এ প্রথম <code>execve</code> সফল, অথচ চলল <code>/usr/bin/env</code>। এটা কে ঠিক করল? <code>env</code> দুইবার <code>execve</code> করল কেন? <code>crlf.js</code> কেন "node\r: No such file" বলল?</li>
+      <li><code>hello-glibc</code> Alpine-এ আছে, executable-ও, তবু "not found" — কোন file পাওয়া যায়নি, আর সেটা কোথায় লেখা ছিল? label.node কেন load হলো অথচ প্রথম call-এ crash করল?</li>
+      <li>lazy.js-এ ৯৯ MB map হয়ে মাত্র ৩০ MB RAM-এ এল কেন? Warm আর cold চালানোয় সময় আর major fault-এর পার্থক্য কী বলে? Serverless cold start-এর সাথে এর সম্পর্ক কী?</li>
+      <li>aslr.sh-এ প্রতিটা লাইনে libc আলাদা ঠিকানায় কেন? ASLR কোন আক্রমণকে কঠিন করে? Docker-এ <code>setarch -R</code> কেন বাড়তি অনুমতি চায়?</li>
+      <li><code>LD_DEBUG</code>-এর output অনুযায়ী <code>ld.so</code> node-এর জন্য কোন তিন ধরনের কাজ করে, আর init কেন libc দিয়ে শুরু হয়? <code>node -e 0</code>-এর ১০ ms-এর বেশিরভাগ কোথায় যায়?</li>
     </ul>
   </div>

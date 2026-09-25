@@ -1,35 +1,356 @@
   <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
   <h2>Chapter 36 — Containers</h2>
-  <p class="chap-sub">Docker-এর ভিতরের সত্য: নতুন কোনো জাদু না — এই বইয়ের চেনা জিনিসের চতুর সাজানো।</p>
+  <p class="chap-sub">Docker-এর ভেতরের সত্য: container একটা সাধারণ process, যাকে kernel আলাদা করে দেখায় (namespace), সীমায় বাঁধে (cgroup), আর ক্ষমতা ছেঁটে দেয় (capabilities, seccomp)। সাথে Node-এর দুটো container-ফাঁদ, মেপে: ভুল CPU গোনা আর CPU limit-এর throttling।</p>
 
-  <h3>মূল সত্যটা আগে</h3>
-  <p><strong>Container কোনো VM না। Container হলো সাধারণ process — শুধু kernel তাকে সীমিত আর বিভ্রান্ত করে রাখে।</strong> কোনো guest OS নেই, নকল hardware নেই, আলাদা kernel নেই — host-এর kernel-ই সবার। <code>docker run node</code> মানে host-এ একটা node process-ই চলছে; host থেকে <code>ps</code> দিলে দেখাও যায় তাকে।</p>
-  <p>তাহলে "আলাদা machine" feeling-টা আসে কোথা থেকে? Linux kernel-এর দুটো feature থেকে:</p>
-  <ul>
-    <li><strong>Namespaces — "কী দেখতে পাবে":</strong> Process-এর বিভিন্ন দৃষ্টিশক্তির আলাদা আলাদা নকল সংস্করণ। PID namespace — container নিজেকে PID 1 দেখে, বাইরের কাউকে দেখে না; mount namespace — নিজের আলাদা filesystem গাছ (image-এর সেই ubuntu/alpine ফাইলগুলো — ব্যস, ফাইলই, kernel না!); network namespace — নিজস্ব IP, নিজস্ব port জগৎ। চেনা লাগছে? <strong>Virtual memory যা address-এর জন্য, namespace তা-ই বাকি সবকিছুর জন্য</strong> — প্রত্যেকে ভাবে জগৎটা তার একার।</li>
-    <li><strong>cgroups — "কতটুকু পাবে":</strong> Process-দলের resource-এর রেশন কার্ড — এই দলের memory সর্বোচ্চ 512MB, CPU-র 50%, এতটুকু disk I/O। Docker-এর <code>--memory</code>/<code>--cpus</code> flag মানে স্রেফ cgroup-এর ঘর পূরণ। রেশন পার হলে? Memory-র বেলায় দলের কেউ খুন হয় — সেই কুখ্যাত <strong>OOM kill</strong>, তোমার Kubernetes pod-এর "OOMKilled"-এর জন্মস্থান।</li>
-  </ul>
-  <pre class="diagram"><span class="dim">VM:</span>                              <span class="dim">Container:</span>
-┌─App─┐ ┌─App─┐                  ┌─App─┐ ┌─App─┐   <span class="dim">← স্রেফ process,</span>
-│Guest│ │Guest│                  │ ns+ │ │ ns+ │      <span class="dim">namespace-এ মোড়া</span>
-│ OS  │ │ OS  │ <span class="dim">← ২টা kernel!</span>    │cgrp │ │cgrp │
-├─────┴─┴─────┤                  ├─────┴─┴─────┤
-│ Hypervisor  │                  │ <span class="k">এক Host Kernel</span>│
-│  Hardware   │                  │  Hardware    │
-└─────────────┘                  └──────────────┘</pre>
-  <p>এখন trade-off-টা নিজেই বলে দিতে পারবে: container start হয় process start-এর গতিতে (কোনো OS boot নেই), memory খায় process-এর মতো — কিন্তু সবাই <strong>এক kernel share করে</strong>, তাই isolation VM-এর মতো শক্ত না (kernel-এর ছিদ্র মানে সবার ছিদ্র), আর Linux container-এর Linux kernel-ই লাগে — এজন্যই তোমার Mac-এ Docker Desktop গোপনে একটা Linux VM চালিয়ে তার <em>ভিতরে</em> container চালায়। দুই chapter মিলে গেল।</p>
+  <p>আগের chapter-এর শেষে একটা প্রশ্ন রেখেছিলাম। প্রতিটা VM-এ আস্ত একটা OS চলে: নিজের kernel, নিজের boot, শত শত MB memory। অথচ এই বইয়ে আমরা এক সেকেন্ডের কম সময়ে ডজন ডজন container চালিয়েছি। কীভাবে? কারণ container কোনো VM না। Container-এর ভেতরে কোনো kernel নেই, নকল hardware নেই। এই chapter-এ সেটা নিজের চোখে দেখব, আর দেখব এই বইয়ের কোন কোন পুরনো জিনিস জোড়া দিয়ে container তৈরি।</p>
 
+  <h3>Container মানে একটা সাধারণ process</h3>
+  <p>একটা container চালাও, আর তাকে দুই দিক থেকে দেখো: container-এর ভেতর থেকে, আর যে Linux kernel তাকে চালাচ্ছে তার দিক থেকে। Mac-এ সেই kernel হলো Docker-এর VM (Chapter 35)। <code>--pid=host</code> দিয়ে চালানো একটা container VM-এর সব process দেখতে পায়:</p>
+  <div class="codewrap"><pre><code># proc.sh — একটা container, দুই চোখে
+docker run -d --name osbook-demo node:22-alpine node -e "setInterval(() =&gt; {}, 1000)" &gt; /dev/null
+sleep 1
+echo "--- container-এর ভেতর থেকে"
+docker exec osbook-demo ps -o pid,user,args
+echo "--- VM-এর চোখে (host-এর PID namespace)"
+docker run --rm --pid=host alpine ps -o pid,user,args | grep setInterval
+echo "--- docker-এর হিসাবে: $(docker inspect -f '{{.State.Pid}}' osbook-demo)"
+docker rm -f osbook-demo &gt; /dev/null</code></pre></div>
+  <div class="codewrap"><pre><code>--- container-এর ভেতর থেকে
+PID   USER     COMMAND
+    1 root     node -e setInterval(() =&gt; {}, 1000)
+   14 root     ps -o pid,user,args
+--- VM-এর চোখে (host-এর PID namespace)
+88055 root     node -e setInterval(() =&gt; {}, 1000)
+--- docker-এর হিসাবে: 88055</code></pre></div>
+  <p>একই process, দুটো PID। Container-এর ভেতরে সে PID ১, আর তার সাথে আছে শুধু <code>ps</code> নিজে। VM-এর kernel-এর চোখে সে একটা সাধারণ process, PID ৮৮০৫৫, বাকি শত শত process-এর পাশেই। Container চালু করা মানে তাই কোনো OS boot করা না, একটা process চালু করা। এজন্যই সেটা এক সেকেন্ডের কম সময় নেয়। আসল Linux server-এ (Mac ছাড়া) <code>ps aux</code> চালালেই container-এর process-গুলো এভাবে দেখা যায়, আলাদা কিছু লাগে না।</p>
+  <p>(Test container-এর নাম দিয়েছি <code>osbook-demo</code>, <code>a</code> বা <code>demo1</code>-এর মতো ছোট নাম না। কারণ <code>docker rm</code> বা <code>exec</code> ওই নামের container না পেলে নামটাকে container ID-র শুরুর অংশ হিসেবে খোঁজে। ID-গুলো শুধু 0–9 আর a–f দিয়ে তৈরি, তাই <code>a</code> নামটা তোমার অন্য কোনো চালু container-এর ID-র সাথে মিলে যেতে পারে। নামে a–f-এর বাইরের একটা অক্ষর রাখলে সেই ভয় থাকে না।)</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="Virtual machines versus containers. On the left, two VMs each have their own app in guest user mode and their own guest kernel, on top of a hypervisor and the hardware: two kernels. On the right, three containers are just processes in user mode, each inside its own namespaces and cgroup limits, all on top of one shared Linux kernel that provides namespaces, cgroups, capabilities and seccomp, on the same hardware">
+      <text x="200" y="22" text-anchor="middle" class="t-h t-s">virtual machines</text>
+      <text x="600" y="22" text-anchor="middle" class="t-h t-s">containers</text>
+      <line x1="400" y1="10" x2="400" y2="320" class="ln dash"/>
+
+      <rect x="24" y="36" width="170" height="186" rx="10" class="b-m"/>
+      <text x="36" y="54" class="t-m t-s">VM 1</text>
+      <rect x="36" y="62" width="146" height="50" rx="6" class="b-u"/>
+      <text x="109" y="92" text-anchor="middle" class="t-s">your app</text>
+      <rect x="36" y="150" width="146" height="60" rx="6" class="b-k"/>
+      <text x="109" y="176" text-anchor="middle" class="t-s">guest kernel</text>
+      <text x="109" y="196" text-anchor="middle" class="t-m t-s">boots, owns RAM</text>
+      <rect x="206" y="36" width="170" height="186" rx="10" class="b-m"/>
+      <text x="218" y="54" class="t-m t-s">VM 2</text>
+      <rect x="218" y="62" width="146" height="50" rx="6" class="b-u"/>
+      <text x="291" y="92" text-anchor="middle" class="t-s">another app</text>
+      <rect x="218" y="150" width="146" height="60" rx="6" class="b-k"/>
+      <text x="291" y="176" text-anchor="middle" class="t-s">guest kernel</text>
+      <text x="291" y="196" text-anchor="middle" class="t-m t-s">boots, owns RAM</text>
+      <line x1="30" y1="131" x2="370" y2="131" class="ln-k dash"/>
+      <rect x="24" y="234" width="352" height="36" rx="8" class="b-k"/>
+      <text x="200" y="257" text-anchor="middle" class="t-s">hypervisor</text>
+      <rect x="24" y="280" width="352" height="36" rx="8" class="b"/>
+      <text x="200" y="303" text-anchor="middle" class="t-s">hardware</text>
+
+      <rect x="424" y="40" width="104" height="112" rx="8" class="b-u" stroke-dasharray="5 4"/>
+      <text x="476" y="66" text-anchor="middle" class="mono">node</text>
+      <text x="476" y="88" text-anchor="middle" class="t-m t-s">PID 1 inside</text>
+      <text x="476" y="112" text-anchor="middle" class="t-m t-s">256 MB</text>
+      <text x="476" y="130" text-anchor="middle" class="t-m t-s">0.5 CPU</text>
+      <rect x="548" y="40" width="104" height="112" rx="8" class="b-u" stroke-dasharray="5 4"/>
+      <text x="600" y="66" text-anchor="middle" class="mono">postgres</text>
+      <text x="600" y="88" text-anchor="middle" class="t-m t-s">PID 1 inside</text>
+      <text x="600" y="112" text-anchor="middle" class="t-m t-s">1 GB</text>
+      <text x="600" y="130" text-anchor="middle" class="t-m t-s">2 CPU</text>
+      <rect x="672" y="40" width="104" height="112" rx="8" class="b-u" stroke-dasharray="5 4"/>
+      <text x="724" y="66" text-anchor="middle" class="mono">nginx</text>
+      <text x="724" y="88" text-anchor="middle" class="t-m t-s">PID 1 inside</text>
+      <text x="724" y="112" text-anchor="middle" class="t-m t-s">no limit</text>
+      <text x="424" y="166" class="t-m t-s">just processes · dashed = own namespaces</text>
+      <text x="424" y="180" class="t-m t-s">numbers = cgroup limits</text>
+      <line x1="420" y1="188" x2="780" y2="188" class="ln-k dash"/>
+      <rect x="424" y="196" width="352" height="74" rx="8" class="b-k"/>
+      <text x="600" y="222" text-anchor="middle" class="t-s">one Linux kernel, shared by all</text>
+      <text x="600" y="242" text-anchor="middle" class="t-m t-s">namespaces · cgroups · capabilities · seccomp</text>
+      <rect x="424" y="280" width="352" height="36" rx="8" class="b"/>
+      <text x="600" y="303" text-anchor="middle" class="t-s">hardware (or, on a Mac, Docker's VM)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে VM: প্রতিটার নিজের kernel, মাঝে hypervisor। ডানে container: সবাই একই kernel-এর উপর সাধারণ process; আলাদা থাকার ব্যবস্থা সেই kernel-এর ভেতরে। Amber dashed রেখা user/kernel সীমানা।</p>
+
+  <h3>Namespace: কী দেখতে পাবে</h3>
+  <p>একটা process "নিজেকে আলাদা machine-এ" ভাবে কীভাবে? Kernel-এর <strong>namespace</strong> দিয়ে। একটা namespace kernel-এর কোনো একটা বিশ্বব্যাপী তালিকার আলাদা একটা কপি। Chapter 9-এ প্রতিটা process-কে নিজের address space দিয়েছিলাম; namespace একই কাজ করে PID, network, file-এর গাছ আর hostname-এর জন্য। প্রতিটা process কোন কোন namespace-এ আছে, kernel সেটা <code>/proc/self/ns/</code>-এ দেখায়:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Namespace</th><th>যা আলাদা করে</th><th>Container-এ ফল</th></tr>
+    <tr><td><code>pid</code></td><td>process নম্বরের তালিকা</td><td>নিজে PID ১, বাইরের কাউকে দেখে না</td></tr>
+    <tr><td><code>net</code></td><td>network interface, IP, port, routing</td><td>নিজের <code>localhost</code>, নিজের port ৩০০০ (Chapter 25)</td></tr>
+    <tr><td><code>mnt</code></td><td>কোন filesystem কোথায় mount করা</td><td>image-এর file-গুলোই <code>/</code></td></tr>
+    <tr><td><code>uts</code></td><td>hostname</td><td>নিজের নাম (container ID)</td></tr>
+    <tr><td><code>ipc</code>, <code>cgroup</code>, <code>user</code></td><td>shared memory, cgroup-এর তালিকা, uid-এর মানে</td><td>বাকি জিনিসগুলোও আলাদা</td></tr>
+  </table></div>
+  <div class="codewrap"><pre><code># ns.sh — দুটো container একসাথে চালু রেখে, প্রত্যেকের namespace-এর পরিচয় নম্বর
+ids='for f in pid net mnt uts; do printf "%s  " "$(readlink /proc/self/ns/$f)"; done; echo'
+docker run -d --name osbook-one alpine sleep 60 &gt; /dev/null &amp;&amp;
+docker run -d --name osbook-two alpine sleep 60 &gt; /dev/null &amp;&amp;
+echo "osbook-one: $(docker exec osbook-one sh -c "$ids")" &amp;&amp;
+echo "osbook-two: $(docker exec osbook-two sh -c "$ids")" &amp;&amp;
+echo "the VM:     $(docker run --rm --pid=host --net=host --uts=host alpine sh -c "$ids")"
+docker rm -f osbook-one osbook-two &gt; /dev/null</code></pre></div>
+  <div class="codewrap"><pre><code>osbook-one: pid:[4026532561]  net:[4026532563]  mnt:[4026532558]  uts:[4026532559]
+osbook-two: pid:[4026532696]  net:[4026532698]  mnt:[4026532693]  uts:[4026532694]
+the VM:     pid:[4026531836]  net:[4026531840]  mnt:[4026532828]  uts:[4026531838]  </code></pre></div>
+  <p>প্রতিটা container-এর চার namespace-এর নম্বর আলাদা। তৃতীয় লাইনে <code>--pid=host --net=host --uts=host</code> বলেছে "এই তিনটায় আলাদা কপি দিও না", তাই সে VM-এর আসল namespace-এ বসেছে। Kernel boot-এর সময় যে প্রথম namespace-গুলো বানায়, তাদের নম্বর এমন ছোট <code>40265318xx</code>। Mount namespace আলাদাই রয়ে গেছে, কারণ সেটা ভাগ করতে বলিনি।</p>
+  <p>Docker ছাড়াও namespace বানানো যায়। Linux-এর <code>unshare</code> command ঠিক এটাই করে: "নতুন namespace-এ এই command চালাও"। Docker-এর কাজের মূল অংশ হাতে করে দেখা যাক:</p>
   <div class="box lab">
-    <div class="box-title">EXPERIMENT (Docker থাকলে)</div>
-    <p>Container-এর ভিতরে: <code>docker run --rm -it alpine ps aux</code> — গোটা "machine"-এ হাতে গোনা process, node/shell-টার PID 1! তারপর host-এ (Linux host হলে) <code>ps aux | grep &lt;সেই command&gt;</code> — একই process, বাইরে থেকে সাধারণ PID-তে। এক process, দুই দৃষ্টিকোণ — এটাই namespace।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker) — mini.sh</div>
+    <div class="codewrap"><pre><code># mini.sh — Docker ছাড়া, শুধু namespace দিয়ে একটা "container"
+apk add -q util-linux                               # unshare command-টা এখানে
+echo "outside: hostname=$(hostname), processes: $(ps -o pid | tail -n +2 | wc -l)"
+unshare --uts --pid --fork --mount-proc sh -c '
+  hostname mini                                     # নিজের UTS namespace: নাম বদলানো যায়
+  echo "inside:  hostname=$(hostname), my PID=$$"
+  ps -o pid,args; true'
+echo "outside: hostname=$(hostname)"</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_ADMIN --security-opt seccomp=unconfined -v "$PWD":/w:ro -w /w alpine sh mini.sh</code></pre></div>
+    <div class="codewrap"><pre><code>outside: hostname=1eebc2d1d698, processes: 5
+inside:  hostname=mini, my PID=1
+PID   COMMAND
+    1 sh -c    hostname mini    ...
+    4 ps -o pid,args
+outside: hostname=1eebc2d1d698</code></pre></div>
+  </div>
+  <p>(ps-এর লম্বা লাইনটা ছোট করেছি।) <code>unshare</code>-এর ভেতরের shell নিজেকে PID ১ দেখে। তার <code>ps</code> বাইরের পাঁচটা process-এর কাউকে দেখে না। Hostname বদলেছে, অথচ বাইরে বের হতেই আগের নাম। Container runtime-এর বাকি কাজ হলো এর সাথে image-এর file-গুলোকে <code>/</code> হিসেবে mount করা (নিচে), network জোড়া দেওয়া, আর সীমা বসানো। Chapter 31-এর কথা মনে করো: hostname বদলাতে <code>CAP_SYS_ADMIN</code> লাগে। এখানে তাই <code>--cap-add SYS_ADMIN</code> দিয়েছি, আর <code>seccomp=unconfined</code>, কারণ Docker-এর seccomp নিয়ম container-এর ভেতরে নতুন namespace বানানো আটকে রাখে। এই দুটো ছাড়া চালালে পাবে <code>unshare failed: Operation not permitted</code>।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="PID namespaces nest. The VM's PID namespace, the one created at boot, sees every process: PID 1 init, the Docker daemon, containerd-shim, and the container's node process as PID 88055. Inside it, the container's own PID namespace sees only two processes: node as PID 1 and ps as PID 14. The node process is one and the same process, known by two numbers">
+      <defs>
+        <marker id="c36f2-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="20" width="752" height="214" rx="10" class="b-k"/>
+      <text x="40" y="44" class="t-k t-s">the VM's PID namespace (created at boot) — sees everything</text>
+      <text x="40" y="76" class="mono">PID 1      init</text>
+      <text x="40" y="100" class="mono">PID …      dockerd, containerd…</text>
+      <text x="40" y="124" class="mono">PID …      containerd-shim</text>
+      <text x="40" y="160" class="mono">PID 88055  node -e setInterval…</text>
+      <text x="40" y="200" class="t-m t-s">+ hundreds more</text>
+
+      <rect x="440" y="64" width="316" height="130" rx="8" class="b-u" stroke-dasharray="5 4"/>
+      <text x="456" y="86" class="t-u t-s">osbook-demo's PID namespace</text>
+      <text x="456" y="120" class="mono">PID 1   node -e setInterval…</text>
+      <text x="456" y="146" class="mono">PID 14  ps -o pid,user,args</text>
+      <text x="456" y="176" class="t-m t-s">sees nothing outside this box</text>
+      <path d="M300 156 C 360 156, 380 116, 436 116" class="ln" marker-end="url(#c36f2-m)"/>
+      <text x="320" y="186" class="t-s">same process,</text>
+      <text x="320" y="204" class="t-s">two numbers</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">PID namespace-এর বাসা। বাইরের (VM-এর) namespace সব process দেখে, container-এরটাও। Container-এর ভেতরের namespace শুধু নিজেদের দেখে। proc.sh-এর node একই process, বাইরে ৮৮০৫৫, ভেতরে ১।</p>
+
+  <h3>cgroup: কতটা পাবে</h3>
+  <p>Namespace ঠিক করে একটা process কী দেখবে, কিন্তু কতটা খাবে সেটা না। একটা container-এর memory leak পুরো machine-এর RAM খেয়ে ফেললে বাকি সবাই ভুগবে। <strong>cgroup</strong> (control group) হলো kernel-এর হিসাবের খাতা: একদল process-এর memory, CPU, I/O একসাথে গোনা আর সীমা বসানো। Chapter 23-এ দেখেছি page cache-ও এই খাতায় ওঠে। Docker-এর <code>--memory</code> আর <code>--cpus</code>, Kubernetes-এর <code>resources.limits</code> — সবাই শেষ পর্যন্ত <code>/sys/fs/cgroup/</code>-এর কয়েকটা file-এ সংখ্যা লেখে। প্রশ্ন হলো, Node এই সীমা কতটা বোঝে:</p>
+  <div class="codewrap"><pre><code>// limits.js — container-এর সীমা Node কতটা বোঝে?
+const os = require('os'), fs = require('fs'), v8 = require('v8');
+const read = (f) =&gt; { try { return fs.readFileSync('/sys/fs/cgroup/' + f, 'utf8').trim(); } catch { return '-'; } };
+console.log(`cgroup memory.max: ${read('memory.max')}, cpu.max: ${read('cpu.max')}`);
+console.log(`os.cpus().length: ${os.cpus().length}, os.availableParallelism(): ${os.availableParallelism()}`);
+console.log(`os.totalmem(): ${(os.totalmem() / 2 ** 20).toFixed(0)} MB, ` +
+            `V8 heap limit: ${(v8.getHeapStatistics().heap_size_limit / 2 ** 20).toFixed(0)} MB`);</code></pre></div>
+  <div class="codewrap"><pre><code># limits.sh — একই limits.js, তিন রকম সীমায়; তারপর availableParallelism() আলাদা --cpus-এ
+for limit in "" "--memory 256m --cpus 0.5" "--cpus 2"; do
+  echo "== ${limit:-no limit}"
+  docker run --rm $limit -v "$PWD":/w:ro -w /w node:22-bookworm-slim node limits.js
+done
+for c in 0.5 1 1.5 2.5; do
+  echo "--cpus $c → availableParallelism() = $(docker run --rm --cpus $c node:22-bookworm-slim node -p 'require("os").availableParallelism()')"
+done</code></pre></div>
+  <div class="codewrap"><pre><code>== no limit
+cgroup memory.max: max, cpu.max: max 100000
+os.cpus().length: 12, os.availableParallelism(): 12
+os.totalmem(): 7837 MB, V8 heap limit: 2096 MB
+== --memory 256m --cpus 0.5
+cgroup memory.max: 268435456, cpu.max: 50000 100000
+os.cpus().length: 12, os.availableParallelism(): 12
+os.totalmem(): 7837 MB, V8 heap limit: 259 MB
+== --cpus 2
+cgroup memory.max: max, cpu.max: 200000 100000
+os.cpus().length: 12, os.availableParallelism(): 2
+os.totalmem(): 7837 MB, V8 heap limit: 2096 MB
+--cpus 0.5 → availableParallelism() = 12
+--cpus 1 → availableParallelism() = 1
+--cpus 1.5 → availableParallelism() = 1
+--cpus 2.5 → availableParallelism() = 2</code></pre></div>
+  <p>প্রথমে cgroup file-দুটো পড়ো। <code>memory.max</code> byte-এ সীমা (২৬৮৪৩৫৪৫৬ = ২৫৬ MB)। <code>cpu.max</code>-এ দুটো সংখ্যা: "প্রতি ১,০০,০০০ µs-এ (১০০ ms) সর্বোচ্চ ৫০,০০০ µs CPU"। মানে <code>--cpus 0.5</code> কোনো core ভাগ করে দেয় না। সে সময়ের একটা কোটা দেয়, আর সেটা পরে গুরুত্বপূর্ণ হবে।</p>
+  <p>এবার Node-এর দিক। <code>os.cpus()</code> আর <code>os.totalmem()</code> সীমা একদমই দেখে না; তারা VM-এর ১২টা core আর ৭.৭ GB বলে। <code>availableParallelism()</code> কোটাকে নিচের দিকে গোল করে: ২.৫ হলে ২, ১.৫ হলে ১। কিন্তু ১-এর কম হলে (০.৫) সে হাল ছেড়ে সব core, মানে ১২ বলে। Kubernetes-এ <code>cpu: 500m</code>-এর মতো সীমা খুব সাধারণ। তাই <code>availableParallelism()</code> দিয়ে worker pool বানালে আধা CPU-র pod-এ ১২টা worker তৈরি হবে, আর সবাই মিলে একই আধা CPU নিয়ে কাড়াকাড়ি করবে (Chapter 17-এর oversubscription)। Container-এ pool-এর আকার তাই config থেকে দাও, অনুমানের উপর ছেড়ো না।</p>
+  <p>V8 উল্টো দিকে একটু বেশি চালাক: heap-এর সীমা memory cgroup দেখে ঠিক করে, ২০৯৬ MB থেকে নেমে ২৫৯ MB। কিন্তু ২৫৯ মানে পুরো container-এর সীমারও বেশি, অথচ node-এর heap-এর বাইরেও memory লাগে (code, Buffer, thread-এর stack)। swap ছাড়া (Kubernetes-এ সাধারণত যেমন থাকে) JS object দিয়ে memory ভরালে দেখো কী হয়:</p>
+  <div class="codewrap"><pre><code>// grow.js — JS object দিয়ে memory ভরাতে থাকো, আর দেখো কে আগে থামায়
+const keep = [];
+let mb = 0;
+setInterval(() =&gt; {
+  for (let i = 0; i &lt; 10; i++) keep.push(new Array(128 * 1024).fill(mb));  // ~১০ MB JS heap
+  mb += 10;
+  if (mb % 50 === 0) console.log(`${mb} MB of JS objects so far`);
+}, 5);</code></pre></div>
+  <div class="codewrap"><pre><code># oom.sh — ২৫৬ MB-এর container (swap ছাড়া), JS heap ভরানো: default আর ছোট heap limit
+for heap in "" "--max-old-space-size=160"; do
+  echo "== node ${heap:-(default heap limit)}"
+  docker run --rm --memory 256m --memory-swap 256m -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c "
+    node $heap grow.js &gt; /tmp/out 2&gt;&amp;1; code=\$?
+    grep -E 'MB of|FATAL' /tmp/out | tail -2; echo \"exit \$code\""
+done</code></pre></div>
+  <div class="codewrap"><pre><code>== node (default heap limit)
+150 MB of JS objects so far
+200 MB of JS objects so far
+exit 137
+== node --max-old-space-size=160
+150 MB of JS objects so far
+FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+exit 134</code></pre></div>
+  <p>Default-এ V8 ভেবেছে তার এখনো জায়গা আছে, কিন্তু cgroup-এর সীমা আগে এসে গেছে। Kernel-এর OOM killer (Chapter 10) SIGKILL পাঠিয়েছে: exit ১৩৭, কোনো error message নেই, log-এ কিছু নেই। Kubernetes শুধু বলবে "OOMKilled"। Heap-এর সীমা container-এর সীমার নিচে বেঁধে দিলে (এখানে ১৬০ MB, মোটামুটি ৬০–৭৫%) ব্যাপারটা বদলে যায়। V8 নিজেই থামে, পরিষ্কার "heap out of memory" message দেয় (exit ১৩৪ = ১২৮ + SIGABRT-এর ৬), আর তুমি জানো সমস্যাটা JS heap-এ।</p>
+
+  <p>এবার CPU-র কোটা। <code>cpu.max = 50000 100000</code> মানে প্রতি ১০০ ms-এর পর্বে (period) এই দল মোট ৫০ ms CPU পাবে। কোটা শেষ হলে পর্ব শেষ হওয়া পর্যন্ত দলের সব thread-কে থামিয়ে রাখা হয়। এর নাম <strong>throttling</strong>। গড় হিসাবে এটা ন্যায্য, কিন্তু একটা একক request-এর জন্য কী মানে?</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Docker) — throttle.js</div>
+    <div class="codewrap"><pre><code>// throttle.js — ১০টা "request", প্রতিটায় ~১৫০ ms-এর CPU কাজ, মাঝে ৩০০ ms বিরতি
+const fs = require('fs');
+const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+function handle() {                                    // request-এর কাজ: শুধু গোনা
+  let s = 0;
+  for (let i = 0; i &lt; 190e6; i++) s += i;
+  return s;
+}
+(async () =&gt; {
+  const wall = [], cpu = [];
+  for (let r = 0; r &lt; 10; r++) {
+    const t0 = performance.now(), c0 = process.cpuUsage().user;
+    handle();
+    wall.push(performance.now() - t0);
+    cpu.push((process.cpuUsage().user - c0) / 1000);
+    await sleep(300);                                  // পরের request আসার আগে বিরতি
+  }
+  const med = (a) =&gt; a.sort((x, y) =&gt; x - y)[a.length &gt;&gt; 1].toFixed(0);
+  console.log(`per request: CPU time ${med(cpu)} ms, wall time ${med(wall)} ms (medians)`);
+  const stat = fs.readFileSync('/sys/fs/cgroup/cpu.stat', 'utf8');
+  console.log(stat.split('\n').filter((l) =&gt; /^(nr_periods|nr_throttled|throttled_usec)/.test(l)).join(', '));
+})();</code></pre></div>
+    <div class="codewrap"><pre><code># throttle.sh
+for limit in "" "--cpus 1" "--cpus 0.5"; do
+  echo "== ${limit:-no limit}"
+  docker run --rm $limit -v "$PWD":/w:ro -w /w node:22-bookworm-slim node throttle.js
+done</code></pre></div>
+    <div class="codewrap"><pre><code>== no limit
+per request: CPU time 152 ms, wall time 152 ms (medians)
+nr_periods 0, nr_throttled 0, throttled_usec 0
+== --cpus 1
+per request: CPU time 152 ms, wall time 152 ms (medians)
+nr_periods 35, nr_throttled 1, throttled_usec 8353
+== --cpus 0.5
+per request: CPU time 169 ms, wall time 292 ms (medians)
+nr_periods 50, nr_throttled 30, throttled_usec 1254415</code></pre></div>
+  </div>
+  <p>প্রতিটা request-এর কাজ ~১৫০ ms CPU। সীমা না থাকলে বা ১ CPU হলে সেটা ১৫২ ms-এই শেষ। ০.৫ CPU-তে একই কাজ ২৯২ ms, প্রায় দ্বিগুণ। ১০টা request-এ ৩০ বার throttle, মোট ১.২৫ সেকেন্ড থামিয়ে রাখা। অথচ গড় হিসাবে এই process CPU চেয়েছে ১৫০ ms কাজ + ৩০০ ms বিরতি, মানে মাত্র ৩৩%, সীমার (৫০%) অনেক নিচে। গড় ঠিক আছে, কিন্তু প্রতিটা request-এর latency দ্বিগুণ। কারণ ১৫০ ms-এর একটানা কাজ ৫০ ms-এর টুকরোয় ভাগ হয়ে যায়, আর প্রতিটা টুকরোর পরে পর্বের বাকি অংশ অপেক্ষা।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="CPU quota throttling for one request needing about 150 milliseconds of CPU. With no limit it runs straight through and finishes at about 150 milliseconds. With --cpus 0.5 the cgroup allows 50 milliseconds per 100 millisecond period: the request runs 50 milliseconds, is throttled until the period ends, runs 50 more, is throttled again, and runs the rest, finishing at about 250 milliseconds in this schematic; the measured median was 292 milliseconds">
+      <line x1="150" y1="30" x2="150" y2="186" class="grid"/>
+      <line x1="350" y1="30" x2="350" y2="186" class="grid"/>
+      <line x1="550" y1="30" x2="550" y2="186" class="grid"/>
+      <line x1="750" y1="30" x2="750" y2="186" class="grid"/>
+      <text x="250" y="24" text-anchor="middle" class="t-m t-s">period 1: ≤ 50 ms of CPU</text>
+      <text x="450" y="24" text-anchor="middle" class="t-m t-s">period 2</text>
+      <text x="650" y="24" text-anchor="middle" class="t-m t-s">period 3</text>
+
+      <text x="24" y="66" class="t-s">no limit</text>
+      <rect x="150" y="48" width="300" height="30" rx="4" class="b-u"/>
+      <text x="300" y="68" text-anchor="middle" class="t-s">running · 150 ms</text>
+      <text x="460" y="68" class="t-ok t-s">done at ~152 ms</text>
+
+      <text x="24" y="126" class="t-s">--cpus 0.5</text>
+      <rect x="150" y="108" width="100" height="30" rx="4" class="b-u"/>
+      <text x="200" y="128" text-anchor="middle" class="t-s">50 ms</text>
+      <rect x="252" y="108" width="96" height="30" rx="4" class="b-d"/>
+      <text x="300" y="128" text-anchor="middle" class="t-s">throttled</text>
+      <rect x="350" y="108" width="100" height="30" rx="4" class="b-u"/>
+      <text x="400" y="128" text-anchor="middle" class="t-s">50 ms</text>
+      <rect x="452" y="108" width="96" height="30" rx="4" class="b-d"/>
+      <text x="500" y="128" text-anchor="middle" class="t-s">throttled</text>
+      <rect x="550" y="108" width="100" height="30" rx="4" class="b-u"/>
+      <text x="600" y="128" text-anchor="middle" class="t-s">50 ms</text>
+      <text x="660" y="128" class="t-d t-s">done at ~250 ms</text>
+
+      <line x1="150" y1="186" x2="750" y2="186" class="axis"/>
+      <text x="150" y="204" text-anchor="middle" class="t-m t-s">0</text>
+      <text x="350" y="204" text-anchor="middle" class="t-m t-s">100 ms</text>
+      <text x="550" y="204" text-anchor="middle" class="t-m t-s">200 ms</text>
+      <text x="750" y="204" text-anchor="middle" class="t-m t-s">300 ms</text>
+      <text x="24" y="236" class="t-m t-s">schematic; measured medians (throttle.js): 152 ms with no limit, 292 ms with --cpus 0.5</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা request, দুই অবস্থায়। সীমা না থাকলে ১৫০ ms-এর কাজ একটানা শেষ। <code>--cpus 0.5</code>-এ প্রতি ১০০ ms-এর পর্বে ৫০ ms চলার পরে পর্বের বাকিটা থামিয়ে রাখা (লাল), তাই একই কাজ শেষ হয় অনেক পরে। (ছবিটা ছকে আঁকা; মাপা সংখ্যা নিচে লেখা।)</p>
+  <p>Kubernetes-এ CPU limit দেওয়া Node service-এর P99 latency রহস্যজনকভাবে খারাপ হওয়ার একটা সাধারণ কারণ এটা। <code>cpu.stat</code>-এর <code>nr_throttled</code> দেখলেই ধরা পড়ে। সমাধান সাধারণত এই তিনের একটা: limit বাড়ানো, CPU request দিয়ে limit তুলে দেওয়া, বা ভারী কাজ ছোট টুকরোয় ভাগ করা (Chapter 19)।</p>
+
+  <h3>Image আর overlayfs: file-গুলো কোথা থেকে আসে</h3>
+  <p>Container-এর <code>/</code>-এ Debian বা Alpine-এর পুরো file-এর গাছ আছে। কিন্তু সেটা kernel না, শুধু file (Chapter 22)। Image হলো কয়েকটা <strong>layer</strong>-এর স্তূপ, প্রতিটা একটা file-এর সংকলন (base OS, তার উপর Node, তার উপর তোমার app)। Container চালু হলে overlayfs (Chapter 22) layer-গুলো read-only হিসেবে একটার উপর আরেকটা বসায়, আর সবার উপরে container-এর নিজের একটা খালি, লেখা-যোগ্য স্তর দেয়:</p>
+  <div class="codewrap"><pre><code># layers.sh — image-এর স্তর, আর container যা বদলায় তা কোথায় যায়
+docker image inspect node:22-bookworm-slim -f 'image layers: {{len .RootFS.Layers}}'
+docker run --name osbook-diff node:22-bookworm-slim sh -c '
+  echo hello &gt; /tmp/new.txt                   # নতুন file
+  rm /etc/debian_version                      # image-এর একটা file মোছা
+  opts=$(grep " / " /proc/mounts | cut -d" " -f4)
+  echo "root is: $(grep " / " /proc/mounts | cut -d" " -f3)"
+  echo "read-only lower dirs: $(echo "$opts" | tr "," "\n" | grep ^lowerdir= | tr ":" "\n" | wc -l)"
+  echo "$opts" | tr "," "\n" | grep ^upperdir= | cut -c1-70'
+docker diff osbook-diff
+docker rm osbook-diff &gt; /dev/null
+docker run --rm node:22-bookworm-slim cat /etc/debian_version   # নতুন container: image অক্ষত</code></pre></div>
+  <div class="codewrap"><pre><code>image layers: 5
+root is: overlay
+read-only lower dirs: 6
+upperdir=/var/lib/docker/overlay2/3b57e0a62ecc33099328f852482001c23ad0
+C /tmp
+A /tmp/new.txt
+C /etc
+D /etc/debian_version
+12.15</code></pre></div>
+  <p>Image-এর ৫টা layer, আর Docker-এর নিজের ছোট একটা (<code>/etc/hosts</code>-এর মতো file-এর জন্য), মোট ৬টা read-only স্তর। Container যা লেখে, সব যায় <code>upperdir</code>-এ। <code>docker diff</code> সেটাই দেখায়: A যোগ হয়েছে, D মোছা হয়েছে, C বদলেছে। "মোছা" আসলে উপরের স্তরে একটা চিহ্ন, যেটা নিচের file-টাকে লুকিয়ে রাখে। Image নিজে কখনো বদলায় না, তাই পরের container <code>/etc/debian_version</code> আবার পেয়েছে।</p>
+  <p>এর দুটো সুবিধা আছে। দশটা container একই image থেকে চালালে disk-এ image একবারই থাকে। আর যেহেতু নিচের file-গুলো একই, তাদের page cache-ও (Chapter 23) একবার থাকে: দশটা node container-এর node binary RAM-এ একটাই, Chapter 33-এর shared library-র মতো। Container যত file লেখে, সেগুলো container মুছলেই হারায়। আর image-এ আগে থেকে থাকা একটা বড় file-এ এক byte বদলালেও overlayfs পুরো file-টা আগে উপরের স্তরে copy করে নেয় (copy-up)। তাই database-এর data-র মতো জিনিস রাখা হয় volume-এ, মানে overlayfs এড়িয়ে সরাসরি host-এর একটা folder-এ।</p>
+
+  <h3>নিরাপত্তা: এক kernel, অনেক ঘর</h3>
+  <p>Container-এর সবচেয়ে বড় সুবিধা, মানে একটাই kernel, সেটাই তার সবচেয়ে বড় দুর্বলতা। প্রতিটা container একই kernel-এর কাছে syscall করে (<code>docker run --rm alpine uname -r</code> সবখানে <code>6.10.14-linuxkit</code>)। Kernel-এর একটা bug মানে সব container-এর bug। VM-এ মাঝে hypervisor-এর দেয়াল ছিল; এখানে দেয়াল হলো kernel-এর নিজের নিয়ম। তাই Docker কয়েক স্তরের সুরক্ষা একসাথে বসায়:</p>
+  <ul>
+    <li><strong>Namespace</strong> — অন্যদের process, network, file দেখতেই দেয় না।</li>
+    <li><strong>Capabilities</strong> (Chapter 31) — container-এর root <code>uid=0</code>, আর proc.sh-এ দেখলে VM-এর চোখেও সে root। কিন্তু ৪১টা capability-র মাত্র ১৪টা পায়।</li>
+    <li><strong>Seccomp</strong> — kernel-এর একটা filter, যেটা একটা process-এর জন্য কিছু syscall দরজাতেই আটকে দেয় (কখনো পুরোপুরি, কখনো নির্দিষ্ট argument-এ), kernel-এর আসল কাজ শুরুর আগেই। Docker-এর default নিয়ম কয়েক ডজন বিপজ্জনক বা কম-দরকারি syscall আটকায়। <code>grep Seccomp /proc/self/status</code> container-এ দেখায় <code>2</code> (filter চালু), আর <code>--security-opt seccomp=unconfined</code> দিলে <code>0</code>।</li>
+    <li><strong>cgroup</strong> — একজন সবার resource খেয়ে ফেলতে পারে না।</li>
+  </ul>
+  <p>এই বইয়ে experiment-এর জন্য এর কয়েকটা ইচ্ছে করে ঢিলা করেছি। কোনটা কী খুলেছে, একসাথে দেখে নাও:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Flag</th><th>যা খোলে</th><th>কোথায় লেগেছে</th></tr>
+    <tr><td><code>--cap-add SYS_PTRACE</code></td><td>অন্যের process-এ ptrace (strace)</td><td>Chapter 1 থেকে সব strace</td></tr>
+    <tr><td><code>--cap-add NET_ADMIN</code></td><td>network সাজানো</td><td>Chapter 31</td></tr>
+    <tr><td><code>--cap-add SYS_ADMIN</code></td><td>অনেক কিছু একসাথে (mount, namespace, hostname…)</td><td>mini.sh</td></tr>
+    <tr><td><code>--security-opt seccomp=unconfined</code></td><td>syscall filter পুরো বন্ধ</td><td>io_uring (Chapter 24), <code>setarch -R</code> (Chapter 34), <code>unshare</code></td></tr>
+    <tr><td><code>--security-opt systempaths=unconfined</code></td><td>লুকানো <code>/proc</code> file</td><td><code>/proc/interrupts</code> (Chapter 31)</td></tr>
+    <tr><td><code>--pid=host</code>, <code>--net=host</code></td><td>host-এর namespace ভাগ করা</td><td>proc.sh, ns.sh</td></tr>
+    <tr><td><code>--privileged</code></td><td>উপরের প্রায় সব, আর device-ও</td><td>কোথাও না — দরকারও হয়নি</td></tr>
+  </table></div>
+  <p>Production-এ দিক উল্টো: <code>--user</code> দিয়ে root না হয়ে চালাও, অপ্রয়োজনীয় capability ফেলে দাও (<code>--cap-drop ALL</code>, তারপর যা লাগে শুধু সেটা যোগ), আর <code>--privileged</code> কখনো না। কারো অচেনা code চালাতে হলে (যেমন user-এর দেওয়া script) শুধু container-এর উপর ভরসা করা হয় না। তখন ব্যবহার হয় VM, বা মাঝামাঝি কিছু: প্রতিটা container-কে নিজের ছোট VM দেওয়া (Firecracker, Kata), বা syscall-গুলো একটা আলাদা user-space kernel-এ ধরা (gVisor)।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Container হলো হালকা একটা VM।" না। VM-এ আলাদা kernel, নকল hardware, hypervisor-এর দেয়াল। Container-এ এর কোনোটাই নেই: সে একটা process (proc.sh-এর ৮৮০৫৫), যাকে kernel আলাদা করে দেখায় (namespace), সীমায় বাঁধে (cgroup) আর ক্ষমতা ছাঁটে (capability, seccomp)। এই পার্থক্য থেকেই সব আসে। Container এক সেকেন্ডে চালু হয়, কারণ OS boot নেই। Linux container-এর Linux kernel লাগে, তাই Mac-এ Docker-কে একটা VM চালাতে হয় (Chapter 35)। আর isolation VM-এর মতো শক্ত না, কারণ kernel সবার এক।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Container = একটা সাধারণ Linux process + চারটা kernel feature, যার সবগুলো এই বইয়ে আগেই দেখেছ। Namespace ঠিক করে সে কী দেখবে: নিজের PID ১, নিজের network, নিজের file-গাছ। cgroup ঠিক করে সে কতটা পাবে: <code>memory.max</code> পেরোলে OOM kill (১৩৭), আর <code>cpu.max</code> একটা সময়ের কোটা, যেটা লম্বা request-কে টুকরো করে থামিয়ে রাখে। Capability আর seccomp ঠিক করে সে kernel-এর কাছে কী চাইতে পারবে। File আসে image-এর read-only layer থেকে, overlayfs দিয়ে, উপরে container-এর নিজের পাতলা লেখার স্তর। Node-এর জন্য দুটো শিক্ষা: <code>os.cpus()</code> সীমা দেখে না, আর <code>availableParallelism()</code> ১-এর কম CPU-তে ভুল বলে; আর heap-এর সীমা container-এর সীমার নিচে বেঁধে দাও।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>"Container is not a lightweight VM" — প্রমাণসহ?</li>
-      <li>Namespace আর cgroup — কে কোন প্রশ্নের উত্তর ("কী দেখবে" vs "কত পাবে")?</li>
-      <li>Mac-এ Docker-এর VM লাগে কেন?</li>
-      <li>OOMKilled আসলে কার সিদ্ধান্ত?</li>
+      <li>proc.sh-এ একই node process ভেতরে PID ১ আর বাইরে ৮৮০৫৫ কেন? Container চালু হতে VM-এর চেয়ে এত কম সময় লাগে কেন?</li>
+      <li>ns.sh-এ দুই container-এর namespace নম্বর আলাদা, কিন্তু <code>--pid=host</code>-ওয়ালা container-এর pid নম্বর VM-এর সাথে মেলে কেন? mini.sh কেন <code>SYS_ADMIN</code> আর <code>seccomp=unconfined</code> ছাড়া চলে না?</li>
+      <li><code>--memory 256m</code>-এ V8-এর heap limit ২৫৯ MB হলো, আর grow.js exit ১৩৭ দিয়ে কোনো message ছাড়াই মরল। <code>--max-old-space-size=160</code> দিলে কী বদলাল, আর কেন?</li>
+      <li><code>cpu.max = 50000 100000</code> মানে কী? throttle.js-এ গড় CPU ব্যবহার সীমার নিচে থেকেও প্রতিটা request প্রায় দ্বিগুণ সময় নিল কেন? <code>--cpus 0.5</code>-এ <code>availableParallelism()</code> ১২ বললে worker pool-এর কী হবে?</li>
+      <li>layers.sh-এ container <code>/etc/debian_version</code> মুছল, তবু পরের container সেটা পেল কেন? দশটা একই image-এর container-এ node binary RAM-এ কয়বার থাকে? আর এক kernel ভাগ করা নিরাপত্তার দিক থেকে কেন ঝুঁকি?</li>
     </ul>
   </div>

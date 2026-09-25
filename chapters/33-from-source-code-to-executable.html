@@ -1,39 +1,428 @@
   <p class="part-label">PART 9 · COMPILERS, LINKERS AND EXECUTABLES</p>
   <h2>Chapter 33 — Source Code থেকে Executable</h2>
-  <p class="chap-sub">Chapter 4-এ ছবিটা এঁকেছিলাম দূর থেকে — এবার একটু কাছে গিয়ে।</p>
+  <p class="chap-sub">gcc-র ভেতরের চারটা আলাদা program, linker আসলে কী করে ("undefined reference" আর "multiple definition" নিজে ঘটিয়ে), static বনাম dynamic linking মেপে দেখা — size, memory, security fix — আর Node-এর native addon যে আসলে একটা shared library।</p>
 
-  <h3>পুরো pipeline</h3>
-  <pre class="diagram">hello.c
-  ↓ <span class="dim">Preprocessing  — #include/#define বসানো: শুধুই text-এর কাজ</span>
-expanded source
-  ↓ <span class="dim">Compilation    — C → assembly (এখানেই optimization-এর জাদু)</span>
-hello.s
-  ↓ <span class="dim">Assembly       — assembly → machine code</span>
-hello.o  <span class="dim">(object file — code আছে, কিন্তু বাইরের ঠিকানাগুলো ফাঁকা)</span>
-  ↓ <span class="dim">Linking        — সব object + library জোড়া, ঠিকানা বসানো</span>
-hello  <span class="dim">(ELF executable)</span></pre>
-  <p>Object file-এর সেই "ফাঁকা ঠিকানা"-গুলোর তালিকার নাম symbol table — "আমার <code>printf</code> লাগবে, কে দেবে?" Linker-এর কাজ এই চাওয়া-পাওয়ার ঘটকালি। কোথাও জোড়া না মিললেই পাও সেই বিখ্যাত <code>undefined reference</code> error — এখন জানো ওটা কার অভিযোগ।</p>
+  <p>Chapter 4-এ পথটা এক নজরে দেখেছি: compiler তোমার C-কে machine code-এ অনুবাদ করে কিন্তু <code>printf</code>-এর জায়গা ফাঁকা রাখে (<code>nm</code>-এ <code>U</code>), linker সেই ফাঁকের হিসাব মেলায়, আর dynamic linking-এ library-র code copy না করে শুধু নাম লিখে রাখে। এই chapter সেই পথের প্রতিটা ধাপ খুলে দেখে। কারণ JS দুনিয়াতেও এর ফল রোজ চোখে পড়ে: native module-এর build error, Docker image-এ "library খুঁজে পাচ্ছে না", <code>npm install</code>-এ হঠাৎ gcc চলা।</p>
+  <p>C এখানে শুধু tool, প্রতিটা লাইন বলে দেব। সব Linux command চালিয়েছি Node-এর Docker image-এ gcc বসিয়ে:</p>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq gcc libc6-dev file &gt;/dev/null
+  bash stages.sh'          # stages.sh-এর জায়গায় যে script চালাতে চাও</code></pre></div>
 
-  <h3>Static vs dynamic linking — আসল সিদ্ধান্তটা</h3>
+  <h3>এক command-এর ভেতরে চারটা program</h3>
+  <p><code>gcc hello.c -o hello</code> দেখতে এক ধাপ, কিন্তু gcc আসলে একটা পরিচালক: সে পরপর চারটা আলাদা কাজ চালায়। প্রতিটা ধাপে থামিয়ে ফলটা দেখা যায়। Chapter 4-এর <code>hello.c</code>-এ একটা <code>#define</code> যোগ করেছি। <code>#define</code> মানে "এই নামের জায়গায় এই লেখা বসাও", JS-এর <code>const</code>-এর মতো, কিন্তু কাজটা হয় compile-এর আগেই, text বদলে দিয়ে:</p>
+  <div class="codewrap"><pre><code>// hello.c
+#include &lt;stdio.h&gt;
+#define ANSWER 42
+
+int main(void) {
+    printf("hello %d\n", ANSWER);
+    return 0;
+}</code></pre></div>
+  <div class="codewrap"><pre><code># stages.sh
+gcc -E hello.c -o hello.i      # ১) preprocess: #include আর #define বসানো
+gcc -S hello.c -o hello.s      # ২) compile: C থেকে assembly
+gcc -c hello.s -o hello.o      # ৩) assemble: assembly থেকে machine code
+gcc hello.o -o hello           # ৪) link: library জুড়ে executable
+wc -l hello.c hello.i hello.s
+ls -l hello.o hello | awk '{print $5, $9}'
+./hello</code></pre></div>
+  <div class="codewrap"><pre><code>    7 hello.c
+  749 hello.i
+   34 hello.s
+  790 total
+70448 hello
+1616 hello.o
+hello 42</code></pre></div>
+  <ol>
+    <li><strong>Preprocess (<code>-E</code>)</strong>: ৭ লাইন থেকে ৭৪৯ লাইন! <code>#include &lt;stdio.h&gt;</code> মানে আক্ষরিক অর্থেই "ওই file-টা এখানে paste করো", আর stdio.h নিজেও আরও file include করে। <code>hello.i</code>-এর শেষে তোমার main আছে, তবে এখন <code>printf("hello %d\n", 42);</code> — <code>ANSWER</code> শব্দটা আর নেই। এই ধাপ C বোঝে না; শুধু text কাটা-জোড়া করে।</li>
+    <li><strong>Compile (<code>-S</code>)</strong>: আসল compiler (<code>cc1</code>) C পড়ে এই CPU-র assembly লেখে। Assembly হলো machine code-এর মানুষ-পড়ার রূপ (Chapter 4)। <code>hello.s</code>-এর main-এ আছে <code>mov w1, 42</code> আর <code>bl printf</code>। Optimization-এর সব কাজ এই ধাপেই হয় (নিচে দেখবে)।</li>
+    <li><strong>Assemble (<code>-c</code>)</strong>: <code>as</code> নামের program assembly-কে machine code-এর byte-এ বদলায়। ফল <code>hello.o</code>, ১৬১৬ byte। অন্য file-এর function-এর জায়গায় থাকে ফাঁক।</li>
+    <li><strong>Link</strong>: <code>collect2</code>, যেটা ভেতরে <code>ld</code> (linker) চালায়, সব object file আর library জুড়ে দেয়। ফল <code>hello</code>, ৭০ KB।</li>
+  </ol>
+  <p><code>gcc -### hello.c -o hello</code> চালালে gcc কাজ না করে শুধু বলে সে কোন কোন program চালাত। আমার output-এ সেখানে ছিল <code>/usr/lib/gcc/aarch64-linux-gnu/12/cc1</code>, <code>as</code>, আর <code>/usr/lib/gcc/aarch64-linux-gnu/12/collect2</code>।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 400" width="100%" role="img" aria-label="The four stages inside gcc, with measured sizes. hello.c, 7 lines, goes through the preprocessor with gcc -E, which pastes in stdio.h and replaces ANSWER with 42, giving hello.i with 749 lines. The compiler proper, cc1, with gcc -S, turns C into assembly for this CPU and does the optimizing, giving hello.s with 34 lines. The assembler, as, with gcc -c, turns text into machine-code bytes and leaves holes for other files' functions, giving hello.o, 1,616 bytes, with printf undefined. The linker, ld, lays out all objects and libraries and fills the holes, and for libc just records that libc.so.6 is needed, giving hello, a 70,448-byte ELF executable">
+      <defs>
+        <marker id="c33f1-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="40" y="20" width="220" height="44" rx="8" class="b-u"/>
+      <text x="56" y="47" class="mono">hello.c</text>
+      <text x="244" y="47" text-anchor="end" class="t-m t-s">7 lines of C</text>
+      <path d="M150 64 V96" class="ln" marker-end="url(#c33f1-m)"/>
+      <text x="164" y="85" class="mono">gcc -E</text>
+      <text x="300" y="76" class="t-h t-s">preprocessor</text>
+      <text x="300" y="94" class="t-s">pastes stdio.h in, turns ANSWER into 42 — text only</text>
+
+      <rect x="40" y="100" width="220" height="44" rx="8" class="b"/>
+      <text x="56" y="127" class="mono">hello.i</text>
+      <text x="244" y="127" text-anchor="end" class="t-m t-s">749 lines of C</text>
+      <path d="M150 144 V176" class="ln" marker-end="url(#c33f1-m)"/>
+      <text x="164" y="165" class="mono">gcc -S</text>
+      <text x="300" y="156" class="t-h t-s">compiler (cc1)</text>
+      <text x="300" y="174" class="t-s">C → assembly for this CPU; all the optimizing happens here</text>
+
+      <rect x="40" y="180" width="220" height="44" rx="8" class="b"/>
+      <text x="56" y="207" class="mono">hello.s</text>
+      <text x="244" y="207" text-anchor="end" class="t-m t-s">34 lines of asm</text>
+      <path d="M150 224 V256" class="ln" marker-end="url(#c33f1-m)"/>
+      <text x="164" y="245" class="mono">gcc -c</text>
+      <text x="300" y="236" class="t-h t-s">assembler (as)</text>
+      <text x="300" y="254" class="t-s">text → machine-code bytes; calls to other files stay as holes</text>
+
+      <rect x="40" y="260" width="220" height="44" rx="8" class="b"/>
+      <text x="56" y="287" class="mono">hello.o</text>
+      <text x="244" y="287" text-anchor="end" class="t-m t-s">1,616 B · U printf</text>
+      <path d="M150 304 V336" class="ln" marker-end="url(#c33f1-m)"/>
+      <text x="164" y="325" class="mono">gcc</text>
+      <text x="300" y="316" class="t-h t-s">linker (collect2 → ld)</text>
+      <text x="300" y="334" class="t-s">lays out all .o files, fills holes; for libc only records a name</text>
+
+      <rect x="40" y="340" width="220" height="44" rx="8" class="b-ok"/>
+      <text x="56" y="367" class="mono">hello</text>
+      <text x="244" y="367" text-anchor="end" class="t-m t-s">70,448 B · ELF</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা <code>gcc</code> command-এর ভেতরে চারটা ধাপ, প্রতিটার পাশে stages.sh-এর মাপা ফল। বাঁয়ে প্রতিটা ধাপের পরে তৈরি হওয়া file, ডানে কোন program কাজটা করে আর কী করে।</p>
+
+  <p>Compile ধাপের জাদুটা দেখার মতো। একটা loop যেটা ০ থেকে n−1 পর্যন্ত যোগ করে, সেটা Mac-এর compiler (clang) দিয়ে দুইভাবে compile করো। <code>-O0</code> মানে কোনো optimization না, <code>-O2</code> মানে ভালোমতো optimize করো:</p>
+  <div class="codewrap"><pre><code>// sum.c — 0 থেকে n-1 পর্যন্ত যোগফল
+int sum(int n) {
+    int s = 0;
+    for (int i = 0; i &lt; n; i++) s += i;
+    return s;
+}</code></pre></div>
+  <div class="codewrap"><pre><code>cc -O0 -S sum.c -o sum-O0.s
+cc -O2 -S sum.c -o sum-O2.s</code></pre></div>
+  <div class="codewrap"><pre><code>; -O0 (শুধু loop-এর অংশ; পুরো function-এ ২২টা instruction। মন্তব্যগুলো আমার)
+LBB0_1:
+	ldr	w8, [sp, #4]        ; i-কে memory থেকে আনো
+	ldr	w9, [sp, #12]       ; n-কে আনো
+	subs	w8, w8, w9
+	b.ge	LBB0_4              ; i &gt;= n হলে বেরিয়ে যাও
+	...
+	add	w8, w8, w9          ; s += i
+	str	w8, [sp, #8]        ; s-কে memory-তে রাখো
+	...
+	b	LBB0_1              ; আবার loop-এর মাথায়
+
+; -O2 (পুরো function)
+_sum:
+	sub	w8, w0, #1
+	sub	w9, w0, #2
+	umull	x9, w8, w9
+	lsr	x9, x9, #1
+	add	w8, w8, w9
+	cmp	w0, #1
+	csel	w0, wzr, w8, lt
+	ret</code></pre></div>
+  <p><code>-O2</code>-এ loop-টাই নেই! Compiler বুঝে ফেলেছে এই যোগফল একটা সূত্র: (n−1)(n−2)/2 + (n−1), মানে n(n−1)/2। তাই একটা গুণ, একটা ভাগ (<code>lsr</code>, মানে ডানে shift করা, ২ দিয়ে ভাগ), আর n ১-এর কম হলে ০ (<code>csel</code>)। n যত বড়ই হোক, আটটা instruction। Chapter 4-এর V8 TurboFan চলার মাঝখানে ঠিক এই জাতের কাজ করে; C compiler সেটা আগেই সেরে রাখে।</p>
+
+  <h3>Linker-এর আসল কাজ: নাম মেলানো আর ফাঁক ভরাট</h3>
+  <p>বড় program মানে অনেক source file। প্রতিটা আলাদা করে compile হয় (একটা বদলালে শুধু সেটাই আবার compile করতে হয়)। কিন্তু তখন এক file-এর code অন্য file-এর function-এর ঠিকানা জানে না। Linker-এর দুটো কাজ: প্রতিটা "লাগবে" (<code>U</code>) নামের জন্য ঠিক একটা "আছে" (<code>T</code>) খুঁজে বের করা, আর machine code-এর ফাঁকগুলোতে আসল ঠিকানা বসানো। দুই কাজেই ভুল ঘটিয়ে দেখা যাক:</p>
+  <div class="codewrap"><pre><code>// main.c
+#include &lt;stdio.h&gt;
+int add(int a, int b);                 // ঘোষণা: "add নামে একটা function কোথাও আছে"
+
+int main(void) {
+    printf("%d\n", add(2, 3));
+    return 0;
+}
+
+// math.c
+int add(int a, int b) { return a + b; }
+
+// extra.c
+int add(int a, int b) { return a + b + 1; }   // ভুল করে আরেকটা add</code></pre></div>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — link.sh</div>
+    <div class="codewrap"><pre><code>gcc -c main.c math.c extra.c           # তিনটা আলাদা object file
+nm main.o math.o
+echo "--- ১) math.o ছাড়া link"
+gcc main.o -o app
+echo "--- ২) দুইটা add নিয়ে link"
+gcc main.o math.o extra.o -o app
+echo "--- ৩) ঠিকমতো"
+gcc main.o math.o -o app &amp;&amp; ./app</code></pre></div>
+    <div class="codewrap"><pre><code>main.o:
+                 U add
+0000000000000000 T main
+                 U printf
+
+math.o:
+0000000000000000 T add
+--- ১) math.o ছাড়া link
+/usr/bin/ld: main.o: in function `main':
+main.c:(.text+0x10): undefined reference to `add'
+collect2: error: ld returned 1 exit status
+--- ২) দুইটা add নিয়ে link
+/usr/bin/ld: extra.o: in function `add':
+extra.c:(.text+0x0): multiple definition of `add'; math.o:math.c:(.text+0x0): first defined here
+collect2: error: ld returned 1 exit status
+--- ৩) ঠিকমতো
+5</code></pre></div>
+  </div>
+  <p>দুটো error-ই <code>/usr/bin/ld</code>-এর, compiler-এর না। প্রথমটায় <code>main.o</code> <code>add</code> চেয়েছে (U), কিন্তু দেওয়া file-গুলোর কেউ দেয়নি (T নেই)। Error message ঠিক জায়গাটাও বলে দিচ্ছে: <code>main</code>-এর code-এর 0x10 byte-এ। দ্বিতীয়টায় দুজন একই নাম দিয়েছে, linker ঠিক করতে পারে না কোনটা নেবে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"undefined reference মানে <code>#include</code> ভুলে গেছি।" না। <code>#include</code> শুধু ঘোষণা আনে ("এমন একটা function আছে"), আর ঘোষণা না থাকলে error আসে compile ধাপে। "undefined reference" আসে link ধাপে: ঘোষণা ঠিক ছিল, কিন্তু function-এর আসল code (T) যে file বা library-তে আছে, সেটা linker-কে দেওয়া হয়নি। সমাধানও তাই আলাদা: header না, link command-এ ঠিক <code>.o</code> বা library (<code>-lfoo</code>) যোগ করা। Native npm module build-এ এই error দেখলে প্রায় সবসময় একটা system library (যেমন <code>libssl-dev</code>) বসানো নেই।</p>
+  </div>
+
+  <p>এবার ফাঁক ভরাটের কাজটা byte ধরে দেখো। <code>objdump -dr</code> machine code আর তার পাশে linker-এর জন্য রাখা নোট (relocation) দেখায়:</p>
+  <div class="codewrap"><pre><code>objdump -dr main.o | grep -A1 -w bl    # link-এর আগে
+objdump -d app | grep -E "&lt;main&gt;:|&lt;add&gt;:|bl.*(add|printf)"   # link-এর পরে</code></pre></div>
+  <div class="codewrap"><pre><code>  10:	94000000 	bl	0 &lt;add&gt;
+			10: R_AARCH64_CALL26	add
+--
+  20:	94000000 	bl	0 &lt;printf&gt;
+			20: R_AARCH64_CALL26	printf
+0000000000000754 &lt;main&gt;:
+ 764:	94000008 	bl	784 &lt;add&gt;
+ 774:	97ffffaf 	bl	630 &lt;printf@plt&gt;
+0000000000000784 &lt;add&gt;:</code></pre></div>
+  <p>Link-এর আগে <code>add</code>-কে ডাকার instruction-এর byte <code>94000000</code>: <code>bl</code> ("লাফ দাও, ফেরার ঠিকানা রাখো", Chapter 4), আর দূরত্বের ঘরে শূন্য, মানে ফাঁক। নিচে linker-এর জন্য নোট: "0x10-এ <code>add</code>-এর ঠিকানা বসাও"। Link-এর পরে main বসেছে 0x754-এ, add 0x784-এ। 0x764-এর <code>bl</code> থেকে add 0x20 byte (৩২ byte) দূরে, মানে ৮টা instruction (প্রতিটা ৪ byte)। তাই linker byte বদলে <code>94000008</code> লিখেছে: শেষের ৮-ই সেই দূরত্ব।</p>
+  <p><code>printf</code>-এর বেলায় অন্য ব্যাপার। সে libc.so-তে, আর libc কোন ঠিকানায় বসবে সেটা program চলার আগে জানা যায় না। তাই linker <code>bl</code>-কে পাঠায় program-এর ভেতরেই একটা ছোট stub-এ (<code>printf@plt</code>)। চলার সময় dynamic linker (Chapter 4) সেই stub-এর পাশের একটা table-এ printf-এর আসল ঠিকানা বসিয়ে দেয়। ফাঁক ভরাট তখনো হয়, শুধু পরে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Relocation by the linker. Before linking, main.o has at offset 0x10 the bytes 94000000, bl with a zero distance, plus a relocation note saying put add's address here; math.o has add at offset 0. After linking, app's code has main at 0x754 and add at 0x784; the call at 0x764 now reads 94000008, because add is 0x20 bytes, eight instructions, ahead. The call to printf instead goes to a small printf@plt stub at 0x630 whose target the dynamic linker fills in at run time">
+      <defs>
+        <marker id="c33f2-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c33f2-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="24" class="t-h t-s">before linking</text>
+      <rect x="24" y="36" width="300" height="96" rx="8" class="b"/>
+      <text x="40" y="58" class="t-s">main.o</text>
+      <text x="40" y="84" class="mono">0x10: 94000000</text>
+      <rect x="164" y="68" width="52" height="22" rx="3" class="b-d"/>
+      <text x="190" y="84" text-anchor="middle" class="mono">bl 0</text>
+      <text x="40" y="112" class="t-d t-s">note: "put add's address here"</text>
+      <rect x="24" y="150" width="300" height="56" rx="8" class="b"/>
+      <text x="40" y="172" class="t-s">math.o</text>
+      <text x="40" y="194" class="mono">0x0: add</text>
+
+      <path d="M332 130 H420" class="ln" marker-end="url(#c33f2-m)"/>
+      <text x="376" y="120" text-anchor="middle" class="t-s">ld</text>
+
+      <text x="440" y="24" class="t-h t-s">after linking: app's code</text>
+      <rect x="440" y="36" width="336" height="206" rx="8" class="b-ok"/>
+      <text x="456" y="62" class="mono">0x630: printf@plt  (stub)</text>
+      <text x="456" y="96" class="mono">0x754: main</text>
+      <text x="456" y="122" class="mono">0x764: 94000008  bl add</text>
+      <text x="456" y="148" class="mono">0x774: 97ffffaf  bl printf@plt</text>
+      <text x="456" y="200" class="mono">0x784: add</text>
+      <path d="M680 118 C 740 118, 740 196, 628 196" class="ln-u" marker-end="url(#c33f2-ok)"/>
+      <text x="734" y="162" class="t-u t-s">+0x20</text>
+      <text x="456" y="228" class="t-m t-s">+0x20 = 8 instructions → the 8 in 94000008</text>
+      <text x="24" y="262" class="t-m t-s">add is in this program, so the linker writes the real distance.</text>
+      <text x="24" y="282" class="t-m t-s">printf is in libc.so, placed at run time: the call goes to a stub the dynamic linker fills in later.</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Relocation, byte ধরে। বাঁয়ে <code>main.o</code>-র <code>bl</code>-এ দূরত্ব শূন্য (লাল ঘর) আর linker-এর জন্য একটা নোট। ডানে link-এর পরে সেই ঘরে ৮ বসেছে, কারণ add ঠিক ৮ instruction দূরে। <code>printf</code>-এর ডাক যায় একটা stub-এ, যার গন্তব্য চলার সময় ভরা হয়।</p>
+
+  <h3>Static না dynamic: মেপে দেখা</h3>
+  <p>Chapter 4-এ বলেছিলাম সিদ্ধান্তটা এখানে নেব। দুই রকম binary বানাও। <code>-static</code> বলে "libc-র যা যা লাগে, সব executable-এর ভেতরে copy করো":</p>
+  <div class="codewrap"><pre><code># sd.sh
+gcc hello.c -o hello-dyn                 # default: dynamic
+gcc -static hello.c -o hello-static      # static: libc-র দরকারি অংশ ভেতরে copy
+ls -l hello-dyn hello-static | awk '{print $5, $9}'
+ldd hello-dyn; ldd hello-static
+nm hello-dyn | grep -c " T "; nm hello-static | grep -c " T "</code></pre></div>
+  <div class="codewrap"><pre><code>70448 hello-dyn
+703144 hello-static
+	linux-vdso.so.1 (0x0000ffffbac75000)
+	libc.so.6 =&gt; /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffbaa60000)
+	/lib/ld-linux-aarch64.so.1 (0x0000ffffbac38000)
+	not a dynamic executable
+4
+732</code></pre></div>
+  <p>Static binary দশ গুণ বড়। ভেতরে function (<code>T</code>) ৪টার জায়গায় ৭৩২টা: printf যা যা ডাকে, আর সেগুলো যা যা ডাকে, সব copy হয়ে গেছে। বিনিময়ে সে কারো উপর নির্ভর করে না: <code>ldd</code> বলছে "not a dynamic executable"। Dynamic-এর তালিকায় Chapter 32-এর <code>linux-vdso.so.1</code>-ও দেখতে পাচ্ছ; ওটা disk-এর কোনো file না, kernel নিজে map করে দেয়।</p>
+  <p>Dynamic linking-এর প্রথম লাভ memory-তে। Chapter 9-এ দেখেছি একই file-এর page অনেক process-এর page table একই frame-এ বসাতে পারে। libc.so-র code তিনটা আলাদা program-এ কীভাবে ভাগ হয়, <code>/proc/&lt;pid&gt;/smaps</code> থেকে দেখা যাক। smaps প্রতিটা mapping-এর memory-র হিসাব দেয়। <strong>Rss</strong> হলো এই mapping-এর কতটা এখন RAM-এ আছে। <strong>Shared_Clean</strong> হলো তার কতটা অন্য process-এর সাথে ভাগ করা, আর বদলানো হয়নি। <strong>Pss</strong> হলো ভাগ করা page-কে ভাগীদারের সংখ্যা দিয়ে ভাগ করে এই process-এর "ন্যায্য অংশ":</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — share.sh</div>
+    <div class="codewrap"><pre><code># share.sh — তিনটা আলাদা program, তিনজনই libc.so ব্যবহার করে
+sleep 300 &amp;
+tail -f /dev/null &amp;
+python3 -c 'import time; time.sleep(300)' &amp;
+sleep 0.5
+for pid in $(jobs -p); do
+  awk -v name="$(cat /proc/$pid/comm)" '
+    / r-xp .*libc\.so/ {on = 1; next}           # libc-র code অংশের mapping শুরু
+    /^[0-9a-f]+-/       {on = 0}                 # পরের mapping শুরু হলে থামো
+    on &amp;&amp; /^(Rss|Pss|Shared_Clean):/ {v[$1] = $2}
+    END {printf "%-8s libc code: Rss %4s kB  Pss %4s kB  Shared_Clean %4s kB\n",
+                name, v["Rss:"], v["Pss:"], v["Shared_Clean:"]}' /proc/$pid/smaps
+done
+kill $(jobs -p)</code></pre></div>
+    <div class="codewrap"><pre><code>sleep    libc code: Rss  832 kB  Pss  172 kB  Shared_Clean  832 kB
+tail     libc code: Rss  768 kB  Pss  162 kB  Shared_Clean  768 kB
+python3  libc code: Rss 1152 kB  Pss  311 kB  Shared_Clean 1152 kB</code></pre></div>
+  </div>
+  <p>(এই image-এ python3 নেই; apt-এর তালিকায় <code>python3</code> যোগ করে নাও।) তিন program-এর প্রত্যেকে libc-র ৮০০ KB–১.১ MB code "দেখছে", আর তার পুরোটাই Shared_Clean। RAM-এ copy একটাই, সবার page table সেখানে তাকিয়ে। Pss ছোট, কারণ প্রতিটা page চার-পাঁচজনে ভাগ করছে (script চালানো bash আর awk-ও libc ব্যবহার করে)। Static হলে প্রতিটা আলাদা program নিজের file থেকে নিজের কপি আনত। একটা machine-এ শত শত program libc ব্যবহার করে, তাই এই সাশ্রয় বিশাল।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Memory with dynamic versus static linking. On the left, three dynamically linked programs, sleep, tail and python3, each have page-table entries for libc's code that point to the same physical frames in RAM, holding one copy of libc.so.6. On the right, three statically linked programs each carry their own copy of the libc functions they use inside their own file, so RAM holds three separate copies">
+      <defs>
+        <marker id="c33f3-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="200" y="24" text-anchor="middle" class="t-h t-s">dynamic linking</text>
+      <text x="600" y="24" text-anchor="middle" class="t-h t-s">static linking</text>
+      <line x1="400" y1="12" x2="400" y2="290" class="ln dash"/>
+
+      <rect x="24" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="76" y="64" text-anchor="middle" class="mono">sleep</text>
+      <text x="76" y="84" text-anchor="middle" class="t-m t-s">libc: → shared</text>
+      <rect x="148" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="200" y="64" text-anchor="middle" class="mono">tail</text>
+      <text x="200" y="84" text-anchor="middle" class="t-m t-s">libc: → shared</text>
+      <rect x="272" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="324" y="64" text-anchor="middle" class="mono">python3</text>
+      <text x="324" y="84" text-anchor="middle" class="t-m t-s">libc: → shared</text>
+      <path d="M76 100 L180 184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <path d="M200 100 V184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <path d="M324 100 L220 184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <text x="24" y="210" class="t-m t-s">RAM</text>
+      <rect x="110" y="188" width="180" height="44" rx="6" class="b-k"/>
+      <text x="200" y="208" text-anchor="middle" class="t-s">libc.so.6 code</text>
+      <text x="200" y="224" text-anchor="middle" class="t-m t-s">one copy</text>
+      <text x="200" y="262" text-anchor="middle" class="t-ok t-s">~1 MB of RAM for everyone</text>
+
+      <rect x="424" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="476" y="64" text-anchor="middle" class="mono">app A</text>
+      <text x="476" y="84" text-anchor="middle" class="t-m t-s">+ its own libc</text>
+      <rect x="548" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="600" y="64" text-anchor="middle" class="mono">app B</text>
+      <text x="600" y="84" text-anchor="middle" class="t-m t-s">+ its own libc</text>
+      <rect x="672" y="40" width="104" height="60" rx="6" class="b-u"/>
+      <text x="724" y="64" text-anchor="middle" class="mono">app C</text>
+      <text x="724" y="84" text-anchor="middle" class="t-m t-s">+ its own libc</text>
+      <path d="M476 100 V184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <path d="M600 100 V184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <path d="M724 100 V184" class="ln-u" marker-end="url(#c33f3-u)"/>
+      <rect x="424" y="188" width="104" height="44" rx="6" class="b-k"/>
+      <text x="476" y="214" text-anchor="middle" class="t-s">libc copy A</text>
+      <rect x="548" y="188" width="104" height="44" rx="6" class="b-k"/>
+      <text x="600" y="214" text-anchor="middle" class="t-s">libc copy B</text>
+      <rect x="672" y="188" width="104" height="44" rx="6" class="b-k"/>
+      <text x="724" y="214" text-anchor="middle" class="t-s">libc copy C</text>
+      <text x="600" y="262" text-anchor="middle" class="t-d t-s">three copies in RAM</text>
+      <text x="600" y="282" text-anchor="middle" class="t-m t-s">a fix in libc = rebuild A, B and C</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে dynamic: তিনটা আলাদা program-এর page table একই libc frame-এ তাকায়, share.sh-এর Shared_Clean ঠিক এটাই। ডানে static: প্রতিটা program-এর ভেতরে নিজের কপি, RAM-এও আলাদা। (একই static program দুইবার চালালে তারা নিজেদের মধ্যে ভাগ করে; ভাগ হয় না আলাদা program-এর মধ্যে।)</p>
+
+  <p>দ্বিতীয় লাভ হলো security fix। ধরো libc-তে একটা bug ধরা পড়ল। Dynamic হলে library-র file বদলালেই (<code>apt upgrade</code>) পরের বার চালু হওয়া সব program ঠিক। Static হলে প্রতিটা program নতুন করে build করতে হবে। নিজের একটা ছোট library দিয়ে পুরো ঘটনাটা ঘটিয়ে দেখা যাক। <code>ar</code> দিয়ে বানানো <code>.a</code> file হলো static library (object file-এর বান্ডিল), আর <code>-shared</code> দিয়ে বানানো <code>.so</code> হলো shared library:</p>
+  <div class="codewrap"><pre><code>// app.c
+#include &lt;stdio.h&gt;
+const char *greet(void);                 // library থেকে আসবে
+
+int main(void) {
+    printf("greet(): %s\n", greet());
+    return 0;
+}</code></pre></div>
+  <div class="codewrap"><pre><code># fix.sh — library-তে "security fix" এলে static আর dynamic program-এর কী হয়
+echo 'const char *greet(void) { return "v1 (has the bug)"; }' &gt; greet.c
+gcc -c -fPIC greet.c -o greet.o
+ar rcs libgreet.a greet.o                                  # static library
+gcc -shared greet.o -o libgreet.so                         # shared library
+gcc app.c libgreet.a -o app-static
+gcc app.c -L. -lgreet -Wl,-rpath,'$ORIGIN' -o app-dyn      # চলার সময় পাশের folder-এ খোঁজো
+./app-static; ./app-dyn
+
+echo "--- শুধু library বদলাই, program দুটো আবার build করি না"
+echo 'const char *greet(void) { return "v2 (fixed)"; }' &gt; greet.c
+gcc -c -fPIC greet.c -o greet.o &amp;&amp; ar rcs libgreet.a greet.o &amp;&amp; gcc -shared greet.o -o libgreet.so
+./app-static; ./app-dyn
+
+echo "--- library-টাই যদি না থাকে"
+rm libgreet.so
+./app-static; ./app-dyn</code></pre></div>
+  <div class="codewrap"><pre><code>greet(): v1 (has the bug)
+greet(): v1 (has the bug)
+--- শুধু library বদলাই, program দুটো আবার build করি না
+greet(): v1 (has the bug)
+greet(): v2 (fixed)
+--- library-টাই যদি না থাকে
+greet(): v1 (has the bug)
+./app-dyn: error while loading shared libraries: libgreet.so: cannot open shared object file: No such file or directory</code></pre></div>
+  <p>Library বদলানোর পরে dynamic program নিজে থেকেই fix পেয়ে গেল, আর static program পুরনো bug নিয়েই চলছে। শেষ অংশে dynamic-এর উল্টো পিঠ: library না থাকলে program চালুই হয় না। এই error kernel-এর না, compiler-এর না; dynamic linker-এর (<code>ld.so</code>), program শুরু হওয়ার মুহূর্তে (Chapter 34)। (<code>-fPIC</code> মানে code এমনভাবে বানাও যাতে যেকোনো ঠিকানায় বসানো যায়; shared library-র জন্য এটা লাগে। <code>-rpath</code> binary-তে লিখে রাখে library কোথায় খুঁজতে হবে; <code>$ORIGIN</code> মানে "binary যে folder-এ আছে"।)</p>
   <div class="table-wrap"><table>
     <tr><th></th><th>Static</th><th>Dynamic</th></tr>
-    <tr><td>কী হয়</td><td>Library-র code executable-এর <em>ভিতরে</em> copy হয়ে যায়</td><td>Executable-এ শুধু নাম লেখা থাকে — "চলার সময় libc.so লাগবে"</td></tr>
-    <tr><td>ফল</td><td>একটাই বড় file, কোনো dependency নেই — যেখানে ফেলো চলে (Go-র binary-র জনপ্রিয়তার কারণ)</td><td>ছোট executable; আর সবচেয়ে বড় জয় — <strong>এক libc-র code memory-তে একবার</strong>, শত process page table দিয়ে share করে (Chapter 9-এর shared memory এখানেই!)</td></tr>
-    <tr><td>দাম</td><td>Library-র bug fix মানে সব executable আবার build</td><td>"Dependency hell" — ঠিক version-এর .so না পেলে চলে না</td></tr>
+    <tr><td>File</td><td>বড় (এখানে ৭০৩ KB)</td><td>ছোট (৭০ KB)</td></tr>
+    <tr><td>চালাতে যা লাগে</td><td>শুধু kernel</td><td>ঠিক version-এর <code>.so</code> আর <code>ld.so</code></td></tr>
+    <tr><td>RAM</td><td>প্রতিটা program-এর নিজের কপি</td><td>একটা কপি, সবাই ভাগ করে</td></tr>
+    <tr><td>Library-তে fix এলে</td><td>প্রতিটা program আবার build</td><td>file বদলাও, program restart</td></tr>
+    <tr><td>কোথায় দেখবে</td><td>Go-র binary, <code>FROM scratch</code> Docker image</td><td>প্রায় সব Linux distribution, node নিজে</td></tr>
   </table></div>
-  <p>Node-এর জগতে এর আত্মীয় চেনো: <code>node_modules</code> bundle করে এক file বানানো (esbuild) ≈ static; runtime-এ require ≈ dynamic-এর আবহ।</p>
-  <p>ELF file-এর গঠনটাও এখন অর্থবহ: header (কী এই file, entry point), <code>.text</code> (code), <code>.data</code>/<code>.bss</code> (Chapter 5-এর সেই segments-এর জন্মস্থান!), symbol tables, আর dynamic section-এ দরকারি .so-দের তালিকা।</p>
+  <p>পুরনো static binary নতুন Linux kernel-এও নিশ্চিন্তে চলে, কারণ Linux নতুন syscall যোগ করে, কিন্তু পুরনোগুলোর নম্বর বা নিয়ম কখনো বদলায় না। macOS-এ ব্যাপারটা আলাদা। Apple syscall-কে স্থায়ী interface বলে কথা দেয় না, কথা দেয় শুধু <code>libSystem</code>-কে। তাই macOS-এ পুরো static binary বানানোই যায় না; প্রতিটা program libSystem-এর সাথে dynamic-ভাবে জোড়া (Chapter 4-এর <code>otool -L</code>)।</p>
 
+  <h3>Node-এর native addon: আসলে একটা shared library</h3>
+  <p><code>bcrypt</code>, <code>sharp</code>, <code>better-sqlite3</code>-এর মতো কিছু npm package-এর ভেতরে <code>.node</code> extension-এর file থাকে। নাম দেখে মনে হয় Node-এর নিজস্ব কিছু, কিন্তু আসলে এটা এই chapter-এর <code>libgreet.so</code>-র মতোই একটা shared library। প্রমাণ দিতে নিজেই একটা বানাই। Node-এর stable C API (<strong>Node-API</strong>, আগের নাম N-API) দিয়ে লেখা একটা <code>add(a, b)</code>:</p>
+  <div class="codewrap"><pre><code>// addon.c — Node-এর জন্য ছোট্ট একটা native addon: add(a, b)
+#include &lt;node_api.h&gt;
+
+static napi_value Add(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2], result;
+    double a, b;
+    napi_get_cb_info(env, info, &amp;argc, argv, NULL, NULL);    // JS থেকে আসা argument
+    napi_get_value_double(env, argv[0], &amp;a);
+    napi_get_value_double(env, argv[1], &amp;b);
+    napi_create_double(env, a + b, &amp;result);                   // JS-এর number বানিয়ে ফেরত
+    return result;
+}
+
+NAPI_MODULE_INIT() {                                           // require()-এর সময় চলে
+    napi_value fn;
+    napi_create_function(env, "add", NAPI_AUTO_LENGTH, Add, NULL, &amp;fn);
+    napi_set_named_property(env, exports, "add", fn);
+    return exports;
+}</code></pre></div>
   <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p><code>ldd /bin/ls</code> — ls কোন কোন shared library চায় দেখো। <code>file /bin/ls</code> — "ELF 64-bit... dynamically linked" নিজের চোখে। আর <code>readelf -h /bin/ls</code> দিলে ELF header — entry point address সহ।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker) — addon.sh</div>
+    <div class="codewrap"><pre><code># addon.sh (apt-এর তালিকায় strace যোগ করো, আর docker run-এ --cap-add SYS_PTRACE)
+gcc -shared -fPIC -I/usr/local/include/node addon.c -o addon.node
+file addon.node | cut -c1-80
+nm -D --undefined-only addon.node | grep napi
+nm -D /usr/local/bin/node | grep -w napi_create_double
+node -e "
+  const { add } = require('./addon.node');
+  console.log('add(2, 3) =', add(2, 3));
+  const maps = require('fs').readFileSync('/proc/self/maps', 'utf8');
+  console.log(maps.split('\n').filter(l =&gt; l.includes('addon.node')).length, 'mappings of addon.node');
+"
+strace -f -e trace=openat node -e "require('./addon.node')" 2&gt;&amp;1 | grep addon</code></pre></div>
+    <div class="codewrap"><pre><code>addon.node: ELF 64-bit LSB shared object, ARM aarch64, version 1 (SYSV), dynamic
+                 U napi_create_double
+                 U napi_create_function
+                 U napi_get_cb_info
+                 U napi_get_value_double
+                 U napi_set_named_property
+0000000000efb304 T napi_create_double
+add(2, 3) = 5
+4 mappings of addon.node
+[pid    30] openat(AT_FDCWD, "/w/addon.node", O_RDONLY|O_CLOEXEC) = 17</code></pre></div>
+  </div>
+  <p>লাইন ধরে পড়ো:</p>
+  <ul>
+    <li><code>file</code> বলছে "ELF shared object", ঠিক <code>libgreet.so</code>-র মতো। নামের শেষে <code>.node</code> শুধু Node-কে বোঝানোর জন্য।</li>
+    <li>Addon-এর ভেতরে <code>napi_*</code> function-গুলো <code>U</code>, মানে ফাঁক। কে ভরবে? Node binary নিজেই এগুলো দেয় (<code>T napi_create_double</code>)।</li>
+    <li><code>require('./addon.node')</code> ভেতরে <code>dlopen()</code> ডাকে। এটা dynamic linker-এর সেই কাজটাই, যেটা program চালুর সময় হয়, শুধু চলার মাঝখানে: file খোলো (<code>openat</code>), তার অংশগুলো address space-এ map করো (৪টা mapping), ফাঁকগুলো node-এর ঠিকানা দিয়ে ভরো, তারপর init function চালাও।</li>
+  </ul>
+  <p>এর তিনটা ব্যবহারিক ফল আছে। এক: <code>.node</code> file একটা নির্দিষ্ট CPU আর OS-এর machine code। ARM Mac-এ build করা addon Intel Linux server-এ চলবে না। তাই এমন package প্রতিটা platform-এর জন্য আলাদা prebuilt binary রাখে; কোনোটা না মিললে অনেক package <code>npm install</code>-এর সময় নিজেই gcc চালিয়ে build করতে বসে (<code>node-gyp</code>)। দুই: addon-এর ভেতরের একটা bug (ভুল ঠিকানা ছোঁয়া) JS-এর exception না, পুরো process-এর SIGSEGV (Chapter 31)। তিন: glibc-ওয়ালা Debian-এ build করা addon musl-ওয়ালা Alpine-এ চালালে কী হয়, সেটা পরের chapter-এর শুরুতেই।</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p><code>gcc</code> চারটা program চালায়: preprocessor (text কাটা-জোড়া), compiler (C থেকে assembly, সব optimization এখানে), assembler (byte, সাথে ফাঁক আর নোট), linker (নাম মেলানো আর ফাঁক ভরাট)। "undefined reference" আর "multiple definition" linker-এর অভিযোগ: একটা নাম কেউ দেয়নি, বা দুজন দিয়েছে। Static linking library-র code binary-র ভেতরে ভরে দেয়: স্বয়ংসম্পূর্ণ, কিন্তু বড়, আর প্রতিটা fix-এ আবার build। Dynamic linking শুধু নাম লিখে রাখে, আর চলার সময় জোড়া দেয়: RAM-এ এক কপি, এক জায়গায় fix, কিন্তু ঠিক library না পেলে program চালুই হয় না। Node-এর <code>.node</code> addon ঠিক এমনই একটা shared library, <code>require()</code> যাকে চলার মাঝখানে জুড়ে নেয়।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Compiler-এর পরেও linker লাগে কেন?</li>
-      <li>Dynamic linking-এর memory-সুবিধাটা virtual memory-র কোন feature-এর উপর দাঁড়িয়ে?</li>
-      <li>"undefined reference" error-টা pipeline-এর কোন ধাপের, কীসের অভিযোগ?</li>
+      <li>stages.sh-এ ৭ লাইনের <code>hello.c</code> preprocess-এর পরে ৭৪৯ লাইন হলো কেন? <code>ANSWER</code> শব্দটা কোন ধাপে হারাল, আর কোন ধাপে loop-টা সূত্র হয়ে গেল (sum.c)?</li>
+      <li>link.sh-এর দুটো error-ই compiler-এর না, linker-এর — কীভাবে বুঝলে? প্রতিটার পেছনে <code>nm</code>-এর U আর T-র কোন অবস্থা দায়ী?</li>
+      <li><code>main.o</code>-র <code>94000000</code> link-এর পরে <code>94000008</code> হলো কেন? <code>printf</code>-এর বেলায় linker একই কাজ করতে পারল না কেন?</li>
+      <li>share.sh-এ তিন program-এর libc code-এর Rss ৮০০ KB-র বেশি, অথচ Pss ১৭০–৩১০ KB। এই পার্থক্য কী বলে, আর static linking-এ এটা কেমন হতো? fix.sh-এ library বদলানোর পরে দুই program আলাদা আচরণ করল কেন?</li>
+      <li><code>addon.node</code> আসলে কী, আর তার <code>napi_*</code> ফাঁকগুলো কে ভরে? ARM Mac-এ <code>npm install</code> করা <code>node_modules</code> একটা Intel Linux container-এ copy করলে native addon ভাঙবে কেন?</li>
     </ul>
   </div>

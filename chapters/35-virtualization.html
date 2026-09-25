@@ -1,22 +1,211 @@
   <p class="part-label">PART 10 · VIRTUALIZATION AND CONTAINERS</p>
   <h2>Chapter 35 — Virtualization</h2>
-  <p class="chap-sub">এক hardware-এ একাধিক "computer" — cloud-এর ভিত্তিপ্রস্তর।</p>
+  <p class="chap-sub">এক hardware-এ কয়েকটা আস্ত OS কীভাবে চলে: hypervisor, guest kernel-কে ফাঁকি দেওয়া (trap-and-emulate), দুই ধাপের memory অনুবাদ, virtio device — আর মেপে দেখা কোথায় VM প্রায় বিনামূল্যে, কোথায় দাম দিতে হয় (steal time)।</p>
 
-  <h3>Idea: illusion-এর আরেক ধাপ উপরে</h3>
-  <p>এই বইয়ে বারবার দেখেছি OS process-কে illusion দেয় — "CPU তোমার, memory তোমার।" Virtualization সেই একই খেলা এক level উপরে: <strong>একটা পুরো OS-কে illusion দেওয়া যে hardware-টা তার একার।</strong></p>
+  <p>এই বইয়ের প্রায় সব Linux experiment চলেছে Docker-এ, আমার Mac-এ। অথচ Mac-এর kernel Linux না, XNU (Chapter 1)। তাহলে <code>uname</code> "Linux" বলল কীভাবে? উত্তর এই chapter: Docker Desktop চুপচাপ একটা আস্ত Linux machine চালাচ্ছে, যেটা আসলে software দিয়ে বানানো। Cloud-এ তুমি যে "server" ভাড়া নাও, সেটাও প্রায় নিশ্চিতভাবে এমনই একটা machine।</p>
+
+  <h3>এক machine-এ অনেক OS: বাধাটা কোথায়</h3>
+  <p>একটা বড় server-এর CPU আর RAM একজন ছোট customer-এর কাজে বেশিরভাগ সময় অলস পড়ে থাকে। ভাগ করতে পারলে সস্তা হয়। কিন্তু প্রত্যেক customer চায় নিজের OS, নিজের kernel version, নিজের root। সমস্যা হলো, একটা kernel ধরেই নেয় machine-টা তার একার: সে kernel mode-এ চলে, page table নিজে লেখে, device-এর register সরাসরি ছোঁয়, interrupt বন্ধ করে (Chapter 31)। দুটো kernel একই disk controller-কে একসাথে নির্দেশ দিলে বা একই page table লিখলে দুজনেই ভেঙে পড়বে।</p>
+  <p>তাই Chapter 9-এর সেই কৌশল, এক ধাপ উপরে। OS যেমন প্রতিটা process-কে বলে "memory তোমার একার", তেমনি একটা নিচের স্তর প্রতিটা OS-কে বলে "machine তোমার একার"। শব্দগুলো:</p>
   <ul>
-    <li><strong>Virtual machine (VM):</strong> Software দিয়ে বানানো একটা "computer" — virtual CPU, virtual RAM, virtual disk, virtual NIC।</li>
-    <li><strong>Guest OS:</strong> সেই নকল computer-এ install হওয়া পূর্ণাঙ্গ OS — নিজের kernel সহ, যে জানেও না সে নকলের উপর চলছে।</li>
-    <li><strong>Hypervisor:</strong> যে software এই সার্কাস চালায় — আসল hardware-কে ভাগ করে VM-দের দেয়, guest-দের বিপজ্জনক কাজগুলো ধরে ধরে সামলায়। Host hardware-এ সরাসরি বসতে পারে (server/cloud-এর ধরন), বা host OS-এর উপরে (তোমার laptop-এর VirtualBox/UTM)। আধুনিক CPU-তে hardware virtualization support থাকায় guest-এর সাধারণ code প্রায় native গতিতে চলে।</li>
+    <li><strong>Virtual machine (VM)</strong> — software দিয়ে বানানো একটা computer: virtual CPU (vCPU), virtual RAM, virtual disk, virtual network card।</li>
+    <li><strong>Guest</strong> — VM-এর ভেতরে চলা OS, নিজের kernel সহ। <strong>Host</strong> — আসল machine, আর তার উপর চলা OS।</li>
+    <li><strong>Hypervisor</strong> — যে software আসল hardware ভাগ করে VM-দের দেয়, আর guest-এর বিপজ্জনক কাজগুলো সামলায়। দুই রকম আছে। <em>Type 1</em> সরাসরি hardware-এর উপর বসে (Xen, VMware ESXi; AWS-এর Nitro KVM-ভিত্তিক)। <em>Type 2</em> একটা সাধারণ OS-এর উপর app-এর মতো চলে (VirtualBox, Parallels, UTM)। Linux-এর KVM আর macOS-এর Hypervisor.framework মাঝামাঝি: hypervisor host kernel-এর ভেতরেই একটা অংশ।</li>
   </ul>
-  <p>Isolation-টা এখানে খুবই শক্ত — দুই VM-এর মাঝে আস্ত দুইটা kernel আর hypervisor-এর দেয়াল। এজন্যই cloud provider-রা অচেনা customer-দের এক machine-এ রাখতে VM-এই ভরসা করে। তুমি EC2/DigitalOcean-এ যে "server" ভাড়া নাও — সেটা প্রায় নিশ্চিতভাবেই একটা VM।</p>
-  <p>দামটাও পরিষ্কার: প্রতিটা VM-এ পুরো একটা OS — শত শত MB memory, নিজস্ব boot, নিজস্ব kernel-এর যাবতীয় খরচ। ১০টা ছোট service-এর জন্য ১০টা VM মানে ১০ কপি OS পোষা। এই অপচয়ের অস্বস্তি থেকেই পরের chapter-এর জন্ম।</p>
+  <p>Docker Desktop macOS-এর hypervisor ব্যবস্থার উপর একটা ছোট Linux VM (LinuxKit) চালায়, আর সব container চলে সেই VM-এর Linux kernel-এর উপর। দুই দিক থেকে দেখো:</p>
+  <div class="codewrap"><pre><code># Mac-এ
+uname -srm
+echo "CPUs: $(sysctl -n hw.ncpu), RAM: $(( $(sysctl -n hw.memsize) / 1048576 )) MB"
+sysctl kern.hv_support                                     # CPU-তে virtualization support আছে?</code></pre></div>
+  <div class="codewrap"><pre><code># whereami.sh — Docker-এর Linux নিজের "machine"-কে কেমন দেখে
+uname -srm
+echo "CPUs: $(nproc), RAM: $(free -m | awk '/Mem:/ {print $2}') MB"
+grep -m1 "CPU implementer" /proc/cpuinfo                  # 0x61 = Apple
+for v in /sys/bus/virtio/devices/*; do basename "$(readlink -f "$v/driver")"; done | sort | uniq -c
+echo "vda rotational: $(cat /sys/block/vda/queue/rotational)"</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w alpine sh whereami.sh</code></pre></div>
+  <div class="codewrap"><pre><code># Mac
+Darwin 25.6.0 arm64
+CPUs: 12, RAM: 24576 MB
+kern.hv_support: 1
+# Docker (whereami.sh)
+Linux 6.10.14-linuxkit aarch64
+CPUs: 12, RAM: 7837 MB
+CPU implementer	: 0x61
+      1 virtio_balloon
+      2 virtio_blk
+      1 virtio_console
+      1 virtio_net
+      1 virtio_rng
+      6 virtiofs
+      1 vmw_vsock_virtio_transport
+vda rotational: 1</code></pre></div>
+  <p>একই physical machine, দুই রকম সত্য। Mac দেখছে XNU আর ২৪ GB RAM। VM-এর Linux দেখছে নিজের kernel (<code>6.10.14-linuxkit</code>) আর ৭.৭ GB RAM, কারণ hypervisor তাকে এতটুকুই দিয়েছে (Docker Desktop-এর settings-এ বদলানো যায়)। CPU-র পরিচয় আসলটাই (<code>0x61</code> মানে Apple), কারণ guest-এর instruction আসল CPU-তেই চলে (পরের section)। আর device-এর তালিকায় একটাও "আসল" hardware নেই; সব <code>virtio_*</code>। সেগুলো সেকশন তিনে।</p>
+
+  <h3>Trap-and-emulate: guest kernel-কে বিশ্বাস করিয়ে রাখা</h3>
+  <p>সবচেয়ে সরল উপায় হতো guest-এর প্রতিটা instruction software দিয়ে নকল করা (emulation)। সেটা চলে, কিন্তু দশ-বিশ গুণ ধীর। আসল কৌশলটা উল্টো: guest-এর code যতটা সম্ভব সরাসরি আসল CPU-তে চালাও, আর শুধু বিপজ্জনক মুহূর্তগুলোতে থামাও।</p>
+  <p>এর জন্য CPU-তে user আর kernel mode-এর উপরে তৃতীয় আরেকটা স্তর আছে। ARM-এ <strong>EL2</strong> (Chapter 31-এর EL0/EL1-এর উপরে), Intel/AMD-এ VT-x/AMD-V-এর "root mode"। Hypervisor চলে সেখানে। Guest-এর process চলে guest-এর EL0-তে, guest kernel চলে guest-এর EL1-এ, আর দুটোই আসল CPU-তে পূর্ণ গতিতে চলে। কিন্তু hypervisor CPU-কে বলে রাখে কোন কাজগুলো guest নিজে করতে পারবে না: আসল device-এর register ছোঁয়া, কিছু বিশেষ system register লেখা, CPU-কে ঘুম পাড়ানো। Guest kernel এমন কিছু করতে গেলেই CPU থেমে hypervisor-এ লাফ দেয়। এর নাম <strong>VM exit</strong> বা <strong>trap</strong>, Chapter 31-এর exception দরজারই আরেক ধাপ। Hypervisor কাজটার ফল নিজে তৈরি করে (emulate), তারপর guest-কে পরের instruction থেকে চালিয়ে দেয়। Guest kernel ভাবে কাজটা সে নিজেই করেছে।</p>
+  <p>২০০৫-০৬-এর আগে x86-এ কিছু বিপজ্জনক instruction trap না করে চুপচাপ অন্যরকম আচরণ করত। তখন VMware চলার সময় guest-এর code নিজেই বদলে লিখত, আর Xen guest kernel-কে বদলে নিতে বলত। Intel VT-x আর AMD-V এসে CPU-তে সরাসরি এই ব্যবস্থা যোগ করল, আর তখন থেকে সাধারণ কাজে VM প্রায় বিনামূল্যে। প্রমাণ, Chapter 31-এর <code>spin.js</code> (শুধু গোনা):</p>
+  <div class="codewrap"><pre><code>node spin.js                                                              # Mac-এ সরাসরি
+docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim node spin.js  # Linux VM-এর ভেতরে</code></pre></div>
+  <div class="codewrap"><pre><code>pid 51776: user 1902 ms, sys 7 ms, involuntary switches 65
+pid 1: user 1925 ms, sys 8 ms, involuntary switches 25</code></pre></div>
+  <p>পার্থক্য ১%-এর মতো। Loop-এর একটা instruction-ও hypervisor-কে ডাকে না; ওগুলো একই M4 Pro core-এ একইভাবে চলে। VM-এর দাম আসে অন্য জায়গা থেকে: যখন ঘনঘন trap হয় (device, আর কিছু privileged কাজ), যখন memory অনুবাদ লম্বা হয় (পরের section), আর যখন অন্য কেউ তোমার CPU নিয়ে যায় (শেষ section)।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="Layers on this Mac. At the bottom the Apple M4 Pro hardware. Above it, at EL2, the macOS kernel XNU with the hypervisor. On the left, host apps in user mode such as Terminal and Chrome. On the right, the Docker VM: its guest kernel, Linux 6.10.14-linuxkit, runs at the guest's EL1, and guest processes such as node run at the guest's EL0. Ordinary guest instructions run straight on the CPU. When the guest kernel touches a device or a protected register, the CPU traps to the hypervisor, a VM exit, which emulates the effect and resumes the guest">
+      <defs>
+        <marker id="c35f1-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c35f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="270" width="752" height="44" rx="8" class="b"/>
+      <text x="400" y="297" text-anchor="middle" class="t-s">hardware: Apple M4 Pro — 12 cores, 24 GB RAM, SSD</text>
+
+      <rect x="24" y="200" width="752" height="52" rx="8" class="b-k"/>
+      <text x="40" y="222" class="t-k t-s">EL2</text>
+      <text x="400" y="222" text-anchor="middle" class="t-s">macOS kernel (XNU) + hypervisor</text>
+      <text x="400" y="240" text-anchor="middle" class="t-m t-s">gives each VM vCPUs, a slice of RAM, virtual devices</text>
+
+      <rect x="24" y="36" width="250" height="146" rx="8" class="b-u"/>
+      <text x="40" y="58" class="t-u t-s">host apps (EL0)</text>
+      <text x="149" y="104" text-anchor="middle" class="t-s">Terminal, Chrome, VS Code</text>
+      <text x="149" y="124" text-anchor="middle" class="t-m t-s">ordinary macOS processes</text>
+
+      <rect x="300" y="20" width="476" height="166" rx="10" class="b-m"/>
+      <text x="316" y="40" class="t-h t-s">Docker's Linux VM (guest)</text>
+      <rect x="316" y="52" width="220" height="50" rx="8" class="b-u"/>
+      <text x="426" y="74" text-anchor="middle" class="mono">node, postgres…</text>
+      <text x="426" y="92" text-anchor="middle" class="t-m t-s">guest EL0</text>
+      <rect x="316" y="118" width="220" height="54" rx="8" class="b-k"/>
+      <text x="426" y="140" text-anchor="middle" class="t-s">Linux 6.10.14-linuxkit</text>
+      <text x="426" y="158" text-anchor="middle" class="t-m t-s">guest kernel, guest EL1</text>
+
+      <text x="560" y="70" class="t-ok t-s">ordinary instructions:</text>
+      <text x="560" y="88" class="t-ok t-s">straight on the CPU</text>
+      <path d="M456 172 V196" class="ln-d" marker-end="url(#c35f1-d)"/>
+      <path d="M496 200 V176" class="ln-k dash" marker-end="url(#c35f1-k)"/>
+      <text x="552" y="126" class="t-d t-s">↓ trap: guest kernel touched a</text>
+      <text x="552" y="142" class="t-d t-s">device or protected register</text>
+      <text x="552" y="164" class="t-k t-s">↑ hypervisor emulates, resumes</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">এই Mac-এর স্তরগুলো। Guest-এর process আর guest kernel দুটোই আসল CPU-তে চলে, শুধু guest-এর নিজের EL0/EL1-এ। Guest kernel device বা সুরক্ষিত register ছুঁতে গেলে CPU EL2-তে hypervisor-এর কাছে trap করে (লাল); hypervisor ফল বানিয়ে guest-কে আবার চালায় (amber dashed)।</p>
+
+  <h3>Memory: দুই ধাপের অনুবাদ</h3>
+  <p>Guest kernel নিজের process-দের জন্য page table বানায়, ঠিক Chapter 9-এর মতো: virtual ঠিকানা থেকে "physical" frame। কিন্তু guest যেটাকে physical ভাবছে, সেটা আসলে hypervisor-এর দেওয়া একটা কল্পিত জায়গা: <strong>guest physical address</strong>। আসল RAM-এর কোন frame সেটা, তা জানে শুধু hypervisor। তাই hypervisor প্রতিটা VM-এর জন্য দ্বিতীয় একটা table রাখে: guest physical থেকে host physical। ARM-এ এর নাম <strong>stage-2 translation</strong>, Intel-এ EPT, AMD-এ NPT।</p>
+  <p>আধুনিক MMU দুই table একসাথে hardware-এই হাঁটে, hypervisor-কে ডাকতে হয় না। দাম পড়ে TLB miss-এ (Chapter 9)। সাধারণ অবস্থায় একটা miss মানে table-এর ৪টা স্তর পড়া। VM-এ guest-এর table-এর প্রতিটা স্তরের ঠিকানা নিজেই একটা guest physical ঠিকানা, যেটাকে আবার stage-2 table দিয়ে অনুবাদ করতে হয়। ফলে সবচেয়ে খারাপ অবস্থায় একটা miss-এ ৪টার জায়গায় ২৪টা memory পড়া। TLB hit হলে কোনো বাড়তি দাম নেই, আর বেশিরভাগ access hit। তাই এই দাম শুধু সেই কাজে চোখে পড়ে যেটা বিশাল memory জুড়ে এলোমেলো ছোটে। VM-এ huge page (Chapter 10) এজন্য আরও বেশি কাজে লাগে: কম entry, কম হাঁটা।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 220" width="100%" role="img" aria-label="Two-stage address translation in a VM. A guest process uses a guest virtual address. The guest kernel's page table translates it to a guest physical address, which is a fiction provided by the hypervisor. The hypervisor's stage-2 table, called EPT on Intel and NPT on AMD, translates that to a host physical address, the real RAM frame. The MMU walks both tables in hardware. On a TLB miss the worst case is 24 memory reads instead of 4">
+      <defs>
+        <marker id="c35f2-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="40" width="170" height="60" rx="8" class="b-u"/>
+      <text x="109" y="66" text-anchor="middle" class="t-s">guest virtual</text>
+      <text x="109" y="86" text-anchor="middle" class="t-m t-s">what node sees</text>
+      <path d="M194 70 H222" class="ln" marker-end="url(#c35f2-m)"/>
+      <rect x="226" y="40" width="150" height="60" rx="8" class="b-k"/>
+      <text x="301" y="66" text-anchor="middle" class="t-s">guest page table</text>
+      <text x="301" y="86" text-anchor="middle" class="t-m t-s">kept by guest kernel</text>
+      <path d="M376 70 H404" class="ln" marker-end="url(#c35f2-m)"/>
+      <rect x="408" y="40" width="150" height="60" rx="8" class="b-m"/>
+      <text x="483" y="66" text-anchor="middle" class="t-s">guest physical</text>
+      <text x="483" y="86" text-anchor="middle" class="t-m t-s">a fiction</text>
+      <path d="M558 70 H586" class="ln" marker-end="url(#c35f2-m)"/>
+      <rect x="590" y="40" width="186" height="60" rx="8" class="b-ok"/>
+      <text x="683" y="66" text-anchor="middle" class="t-s">host physical</text>
+      <text x="683" y="86" text-anchor="middle" class="t-m t-s">the real RAM frame</text>
+      <text x="572" y="128" text-anchor="middle" class="t-k t-s">stage-2 table (EPT / NPT)</text>
+      <text x="572" y="146" text-anchor="middle" class="t-m t-s">kept by the hypervisor</text>
+      <path d="M572 114 V104" class="ln-k"/>
+      <text x="24" y="182" class="t-s">the MMU walks both tables in hardware; a TLB hit skips all of it</text>
+      <text x="24" y="204" class="t-d t-s">TLB miss, worst case: 4 memory reads natively → 24 in a VM</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">VM-এ একটা ঠিকানার দুই ধাপের অনুবাদ। Guest kernel-এর table নিয়ে যায় একটা কল্পিত "physical" ঠিকানায়, hypervisor-এর stage-2 table সেখান থেকে আসল RAM-এ। TLB থাকায় বেশিরভাগ access-এ এই হাঁটাই লাগে না।</p>
+
+  <p>Guest-এর "৭.৭ GB RAM" তাই একটা প্রতিশ্রুতি, আগে থেকে আলাদা করে রাখা RAM না। Guest যে page এখনো ছোঁয়নি, সেটার জন্য host কোনো frame দেয়নি; Chapter 9-এর lazy allocation, এক স্তর উপরে। whereami.sh-এর তালিকার <code>virtio_balloon</code> এর উল্টো দিক সামলায়: guest-এর ভেতরে একটা driver, যেটা host চাইলে guest-এর কিছু অব্যবহৃত memory "ফুলিয়ে" দখল করে, যাতে host সেটা ফেরত পেয়ে অন্য কাউকে দিতে পারে।</p>
+
+  <h3>Device: virtio, মানে guest জানে সে VM-এ</h3>
+  <p>Guest-কে একটা নকল disk দিতে হবে। সবচেয়ে সরল উপায় হলো কোনো পরিচিত আসল disk controller হুবহু নকল করা, যাতে guest-এর পুরনো driver-ই কাজ করে। কিন্তু আসল controller-এর সাথে কথা মানে একটা একটা register-এ লেখা, আর VM-এ প্রতিটা register ছোঁয়া একটা trap। একটা read-এর জন্য কয়েক ডজন VM exit।</p>
+  <p>সমাধান হলো এমন device, যেটা VM-এর জন্যই বানানো, আর guest-এর driver জানে সে VM-এ আছে: <strong>virtio</strong>। কাজের অনুরোধ যায় guest আর host-এর মধ্যে ভাগ করা memory-র একটা ring-এ (Chapter 11-এর descriptor ring-এর মতো)। Guest ring-এ অনেকগুলো অনুরোধ জমা করে, আর একবার host-কে খবর দেয়, মানে একটা trap। Host কাজ সেরে ফলাফল ring-এ রাখে, আর একটা virtual interrupt দেয়। Chapter 32-এর batching, এবার VM-এর দরজায়।</p>
+  <p>whereami.sh-এর তালিকায় সবই virtio: network (<code>virtio_net</code>), disk (<code>virtio_blk</code>, VM-এর disk আসলে Mac-এর SSD-তে রাখা একটা বড় file), random number (<code>virtio_rng</code>), আর ছয়টা <code>virtiofs</code>। শেষেরটা Mac-এর folder সরাসরি guest-এ দেখায়। এই বইয়ে যতবার <code>-v "$PWD":/w</code> দিয়েছি, Mac-এর folder container-এ পৌঁছেছে এই পথে। আর <code>vda rotational: 1</code> লাইনটা দেখো: virtual disk নিজেকে ঘোরানো HDD বলে পরিচয় দিচ্ছে (Chapter 20), অথচ নিচে আছে SSD। Guest জানে শুধু ততটুকু, যতটুকু hypervisor তাকে বলে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"VM মানে emulation, তাই সবকিছু ধীর।" CPU-র কাজে VM প্রায় native: spin.js-এ ১%। দাম আসে তিনটা নির্দিষ্ট জায়গা থেকে। এক: trap, মানে device-এর সাথে কথা বা কিছু privileged কাজ, যেটা virtio অনেকটা কমিয়ে আনে। দুই: বিশাল memory জুড়ে এলোমেলো access-এ TLB miss, যেখানে দুই ধাপের অনুবাদ লাগে। তিন: steal, মানে তোমার vCPU চলতে চাইছে কিন্তু host অন্য কাউকে চালাচ্ছে। VM-এ কিছু ধীর লাগলে এই তিনটার কোনটা, সেটা আগে বের করো।</p>
+  </div>
+
+  <h3>Steal time: তোমার CPU আসলে অন্য কারো</h3>
+  <p>Hypervisor-এর কাছে প্রতিটা vCPU শুধু একটা thread, আর host-এর scheduler (Chapter 15) সেটা অন্য সব thread-এর সাথে চালায়। Cloud provider প্রায়ই যত core আছে তার চেয়ে বেশি vCPU বিক্রি করে (overcommit), কারণ সবাই একসাথে পুরো CPU চায় না। কিন্তু যখন চায়, তখন তোমার vCPU চলতে চাইলেও অপেক্ষা করে। Guest-এর দৃষ্টিতে সময় চলে যায়, অথচ তার কোনো instruction চলে না। এই হারানো সময়ের নাম <strong>steal time</strong>।</p>
+  <p>মেপে দেখা যাক। VM-এর ভেতরে ৮টা একই কাজ (spin.js) একসাথে চালাব: প্রথমে Mac চুপচাপ থাকা অবস্থায়, তারপর Mac-এর ১২টা core-কেই অন্য কাজে ব্যস্ত রেখে। <code>/proc/stat</code>-এর <code>cpu</code> লাইনের অষ্টম সংখ্যাটা হলো steal:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Mac + Docker) — work.sh</div>
+    <div class="codewrap"><pre><code># work.sh — VM-এর ভেতরে ৮টা একই কাজ (spin.js) একসাথে; প্রত্যেকের হিসাবে CPU time কত?
+st() { awk '/^cpu / {print $9}' /proc/stat; }               # steal-এর ঘর
+s0=$(st); t0=$(date +%s%N)
+for i in $(seq 8); do node spin.js &amp; done | awk '{gsub(",", ""); print $4}' | sort -n |
+  awk '{a[NR] = $1} END {print "CPU time charged per job: " a[1] "–" a[NR] " ms"}'
+echo "wall time: $(( ($(date +%s%N) - t0) / 1000000 )) ms, steal ticks: $(( $(st) - s0 ))"</code></pre></div>
+    <div class="codewrap"><pre><code># ১) Mac চুপচাপ
+docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash work.sh
+# ২) Mac-এর ১২টা core-এ ১২ সেকেন্ডের busy loop, তারপর একই কাজ
+for i in $(seq 12); do node -e "const e = Date.now() + 12000; while (Date.now() &lt; e);" &amp; done
+sleep 0.5; docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash work.sh; wait</code></pre></div>
+    <div class="codewrap"><pre><code># ১) Mac চুপচাপ
+CPU time charged per job: 2175–2220 ms
+wall time: 2234 ms, steal ticks: 0
+# ২) Mac ব্যস্ত
+CPU time charged per job: 2760–2958 ms
+wall time: 3016 ms, steal ticks: 0</code></pre></div>
+  </div>
+  <p>কাজ হুবহু এক, অথচ Mac ব্যস্ত থাকলে পুরো কাজ শেষ হতে ৩৫% বেশি সময় লেগেছে। আর guest kernel প্রতিটা process-এর নামে ২৫–৩৫% বেশি CPU time লিখেছে। অথচ steal শূন্য! কারণ এই hypervisor guest-কে জানায়ই না কখন তার vCPU থামিয়ে রাখা হয়েছিল। Guest-এর ঘড়ি চলতে থাকে, আর process যখন আবার চলে, মাঝের পুরো সময়টা kernel তার নামেই লিখে দেয়। ফলে VM-এর ভেতর থেকে মনে হয় program আরও বেশি CPU খাচ্ছে, অথচ আসলে সে অপেক্ষা করছিল।</p>
+  <p>Cloud-এর KVM-ভিত্তিক hypervisor সাধারণত guest-কে steal time জানায়। তখন <code>top</code>-এর <code>st</code> column বা <code>vmstat</code>-এর <code>st</code>-এ সেটা দেখা যায়। Production-এ হঠাৎ সবকিছু ধীর হলে আর CPU "ব্যস্ত" দেখালে, নিজের code-এর আগে <code>st</code> দেখো। বেশি হলে সমস্যা তোমার code-এ না, প্রতিবেশীতে বা instance-এর ধরনে (যেমন burstable instance-এর CPU credit ফুরিয়ে যাওয়া)।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 230" width="100%" role="img" aria-label="Steal time on one physical core. The core alternates between running your vCPU and running another host thread. The guest kernel's clock keeps moving the whole time, so from inside the guest the process appears to be running continuously and is charged for the whole interval. The gaps are steal time: reported as st on hypervisors that tell the guest, and silently added to the process's CPU time on this Mac, where steal ticks stayed 0">
+      <text x="24" y="44" class="t-s">physical core</text>
+      <rect x="170" y="28" width="110" height="28" rx="4" class="b-u"/>
+      <text x="225" y="47" text-anchor="middle" class="t-s">your vCPU</text>
+      <rect x="284" y="28" width="80" height="28" rx="4" class="b-d"/>
+      <text x="324" y="47" text-anchor="middle" class="t-s">other</text>
+      <rect x="368" y="28" width="130" height="28" rx="4" class="b-u"/>
+      <text x="433" y="47" text-anchor="middle" class="t-s">your vCPU</text>
+      <rect x="502" y="28" width="80" height="28" rx="4" class="b-d"/>
+      <text x="542" y="47" text-anchor="middle" class="t-s">other</text>
+      <rect x="586" y="28" width="190" height="28" rx="4" class="b-u"/>
+      <text x="681" y="47" text-anchor="middle" class="t-s">your vCPU</text>
+
+      <text x="24" y="104" class="t-s">guest's view</text>
+      <rect x="170" y="88" width="606" height="28" rx="4" class="b-u"/>
+      <text x="473" y="107" text-anchor="middle" class="t-s">spin.js "running" the whole time — charged for all of it</text>
+
+      <path d="M284 64 V80" class="ln-d dash"/>
+      <path d="M364 64 V80" class="ln-d dash"/>
+      <path d="M502 64 V80" class="ln-d dash"/>
+      <path d="M582 64 V80" class="ln-d dash"/>
+      <text x="324" y="146" text-anchor="middle" class="t-d t-s">steal</text>
+      <text x="542" y="146" text-anchor="middle" class="t-d t-s">steal</text>
+      <text x="24" y="186" class="t-m t-s">hypervisors that report it: the gaps appear as st in top / vmstat</text>
+      <text x="24" y="208" class="t-m t-s">this Mac (work.sh): steal ticks 0, the gaps were added to each job's CPU time (2.2 s → 2.8–3.0 s)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা আসল core-এর সময়রেখা। উপরে core আসলে কাকে চালাচ্ছে: তোমার vCPU আর host-এর অন্য কাজ পালা করে। নিচে guest-এর চোখে: তার ঘড়ি থামে না, তাই মাঝের লাল ফাঁকগুলোও process-এর "চলার" সময় বলে গোনা হয়।</p>
+
+  <p>এই chapter-এ মূল হিসাবটা হলো: VM-এর isolation শক্ত। প্রতিটা guest-এর নিজের kernel, মাঝে hypervisor-এর দেয়াল, তাই অচেনা customer-দের এক machine-এ রাখতে cloud VM-এর উপরেই ভরসা করে। কিন্তু দামও আছে: প্রতিটা VM-এ আস্ত একটা OS-এর boot, memory আর kernel। Docker Desktop-এর এই একটা Linux VM-এর উপরে আমরা বইজুড়ে ডজন ডজন container চালিয়েছি, আর প্রতিটা চালু হয়েছে এক সেকেন্ডের কম সময়ে। কীভাবে, সেটা পরের chapter। (AWS Lambda-র মতো জায়গায় দুটোর মাঝামাঝি পথ আছে: Firecracker-এর মতো খুব হালকা VM, যেটা নিজের হিসাবে ~১২৫ ms-এ boot করে।)</p>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Virtualization হলো Chapter 9-এর illusion, এক স্তর উপরে। Hypervisor প্রতিটা OS-কে বিশ্বাস করায় যে machine তার একার। Guest-এর code, এমনকি guest kernel-ও, আসল CPU-তে পূর্ণ গতিতে চলে। শুধু বিপজ্জনক মুহূর্তে CPU hypervisor-এ trap করে (VM exit), আর hypervisor ফল নকল করে ফেরায়। Memory-তে দুই ধাপের অনুবাদ হয়: guest-এর table, তারপর hypervisor-এর stage-2 table; দাম পড়ে শুধু TLB miss-এ। Device হলো virtio: guest জানে সে VM-এ, তাই ring-এ অনুরোধ জমিয়ে একবারে পাঠায়। আর vCPU host-এর একটা thread মাত্র, তাই host ব্যস্ত থাকলে তোমার সময় চুরি হয় (steal)। Hypervisor না জানালে সেই চুরি তোমার program-এর CPU time হিসেবেই দেখায়।</p>
+  </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Hypervisor-এর কাজ এক লাইনে?</li>
-      <li>VM-এর isolation এত শক্ত কেন?</li>
-      <li>VM-এর মূল অপচয়টা কোথায়?</li>
+      <li>whereami.sh-এ Mac আর Docker-এর Linux একই machine সম্পর্কে আলাদা kernel, আলাদা RAM বলল, কিন্তু একই CPU (<code>0x61</code>)। কোনটা hypervisor বানিয়ে দিয়েছে আর কোনটা আসল, কেন?</li>
+      <li>Guest kernel kernel mode-এ চলে, তবু আসল disk controller ছুঁতে পারে না কেন? VM exit কী, আর Chapter 31-এর exception দরজার সাথে এর মিল কোথায়? spin.js VM-এ মাত্র ১% ধীর কেন?</li>
+      <li>"Guest physical address" কী, আর কে সেটাকে আসল RAM-এ অনুবাদ করে? VM-এ TLB miss কেন বেশি দামি, আর huge page এখানে কেন বেশি কাজে লাগে?</li>
+      <li>আসল একটা disk controller হুবহু নকল করার চেয়ে virtio দ্রুত কেন? <code>-v "$PWD":/w</code> দিয়ে দেওয়া Mac-এর folder container-এ কোন পথে পৌঁছায়? VM-এর disk কেন নিজেকে rotational বলছে?</li>
+      <li>work.sh-এ Mac ব্যস্ত থাকলে একই কাজে CPU time ২.২ থেকে প্রায় ৩ সেকেন্ড হলো, অথচ steal ০। এর মানে কী? Cloud-এ একটা service হঠাৎ ধীর আর CPU ১০০% দেখালে প্রথমে কোন column দেখবে?</li>
     </ul>
   </div>
