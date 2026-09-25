@@ -137,7 +137,7 @@ time node -e "const fs = require('fs'); for (let i = 0; i &lt; 2e6; i++) fs.stat
 
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
-    <p><code>strace</code> হলো Linux-এর একটা tool, যেটা একটা program-এর প্রতিটা syscall ধরে ধরে print করে। macOS-এ এটা নেই, তাই Docker-এ একটা ছোট Linux container চালিয়ে দেখব। (Linux machine থাকলে Docker ছাড়াই সরাসরি চালাও; <code>SYS_PTRACE</code> অনুমতিটা container-এর ভেতরে <code>strace</code> চালাতে লাগে।)</p>
+    <p><code>strace</code> হলো Linux-এর একটা tool, যেটা একটা program-এর প্রতিটা syscall ধরে ধরে print করে। macOS-এ এটা নেই, তাই Docker-এ একটা ছোট Linux container চালিয়ে দেখব। (Linux machine থাকলে Docker ছাড়াই সরাসরি চালাও; <code>SYS_PTRACE</code> অনুমতিটা কিছু Docker setup-এ container-এর ভেতরে <code>strace</code> চালাতে লাগে, তাই সবসময় দিয়ে রাখছি — কেন, সেটা Chapter 31-এ।)</p>
     <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-alpine sh
 
 # এখন তুমি container-এর ভেতরে (Linux)

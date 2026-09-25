@@ -1,38 +1,284 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
-  <h2>Chapter 27 — Data পাঠানো আর পাওয়া</h2>
-  <p class="chap-sub">write() থেকে তার/বাতাস পর্যন্ত — এবং উল্টো পথে।</p>
+  <h2>Chapter 27 — Sending and Receiving Data</h2>
+  <p class="chap-sub"><code>socket.write()</code> থেকে তার পর্যন্ত, আর উল্টো পথে NIC থেকে তোমার <code>'data'</code> event পর্যন্ত। কেন তিনটা write একটা event হয়ে আসে, reader ধীর হলে data কোথায় জমে, আর দুইটা ছোট write কীভাবে প্রতি request-এ ৪০ ms খেয়ে ফেলে।</p>
 
-  <h3>Send path</h3>
-  <pre class="diagram"><span class="u">Application — write(fd, "GET / ...", n)</span>
-   ↓ <span class="dim">system call — data send buffer-এ copy, return!</span>
-<span class="k">TCP  — buffer-এর data segment-এ কাটে, seq number দেয়,</span>
-<span class="k">       retransmission timer বসায় (হারালে আবার পাঠাবে)</span>
-<span class="k">IP   — segment-কে packet-এ মোড়ে: source/dest IP, routing</span>
-<span class="k">Driver — packet-কে NIC-এর queue-তে দেয়</span>
-   ↓ <span class="dim">DMA</span>
-NIC (network card) — bits হিসেবে তারে/বাতাসে</pre>
-  <p>লক্ষ করো: <code>write()</code> return মানে data <em>পৌঁছে গেছে</em> না — মানে <em>kernel-এর send buffer-এ ঢুকেছে</em> (file write-এর গল্পটার যমজ ভাই, Chapter 21)। পৌঁছানো নিশ্চিত করা, হারালে আবার পাঠানো, order ঠিক রাখা — সব TCP-র চাকরি, background-এ।</p>
+  <p>Chapter 25-এ দেখেছি socket-এর ভেতরে পাঠানো আর আসা data জমানোর জায়গা আছে, আর Chapter 26-এ দেখেছি TCP sequence number, ACK আর window দিয়ে নির্ভরযোগ্যতা বানায়। এই chapter-এ দুই দিকের পুরো যাত্রা, আর সেই যাত্রা থেকে জন্মানো তিনটা বাস্তব সমস্যা।</p>
 
-  <h3>Receive path — উল্টো ছবি</h3>
-  <pre class="diagram">NIC — packet এলো → DMA-তে memory-তে → <span class="k">interrupt: "data এসেছে!"</span>
-<span class="k">IP  — packet খুলে দেখে: আমার জন্যই তো?</span>
-<span class="k">TCP — চার-টুপল দেখে কোন connection-এর, seq number মিলিয়ে</span>
-<span class="k">      সঠিক জায়গায় বসায়, ACK পাঠায়, receive buffer-এ রাখে</span>
-<span class="k">      → এই socket-এ অপেক্ষারত process থাকলে জাগাও!</span>
-<span class="u">Application — read() → buffer থেকে data → তোমার হাতে</span></pre>
-  <p>সেই "জাগাও" শব্দটা মন দিয়ে দেখো — <strong>data আসা মানে waiting process-এর Ready হয়ে যাওয়া</strong> (Chapter 15-এর state machine)। তোমার server-এর প্রতিটা request-handling শুরু হয় আসলে একটা NIC interrupt থেকে।</p>
-  <p>আর buffering কেন অনিবার্য, এখন পুরো ছবিটা বলা যায়: network-এর data আসে <em>যখন খুশি</em> (packet-এ, এলোমেলো সময়ে), app পড়ে <em>যখন সুবিধা</em>। দুই অসমান ছন্দের মাঝে kernel-এর buffer-ই একমাত্র শান্তিচুক্তি।</p>
+  <h3>পাঠানোর পথ আর আসার পথ</h3>
+  <p>প্রতিটা TCP socket-এর জন্য kernel দুইটা buffer রাখে: <strong>send buffer</strong> (তুমি লিখেছ, এখনো পাঠানো বা ACK পাওয়া হয়নি) আর <strong>receive buffer</strong> (এসেছে, তুমি এখনো পড়োনি)। পাঠানোর পথ:</p>
+  <ol>
+    <li><code>write()</code> system call: kernel তোমার byte send buffer-এ copy করে আর ফিরে আসে। ফেরা মানে data kernel-এর হাতে — ওপাশে পৌঁছেছে, এমন না (Chapter 21-এর file write-এর যমজ ভাই)।</li>
+    <li>TCP: buffer-এর byte কেটে segment বানায় — একেকটার সর্বোচ্চ মাপ <strong>MSS</strong> (maximum segment size, সাধারণ Ethernet-এ ~১৪৬০ byte) — sequence number বসায়, retransmission timer চালায়।</li>
+    <li>IP: segment-এর মাথায় source আর destination IP বসিয়ে packet বানায়, কোন network interface দিয়ে যাবে ঠিক করে।</li>
+    <li>Driver আর NIC: packet NIC-এর descriptor ring-এ, তারপর NIC DMA দিয়ে RAM থেকে তুলে তারে পাঠায় (Chapter 11)।</li>
+  </ol>
+  <p>আসার পথ ঠিক উল্টো: NIC packet পেয়ে DMA দিয়ে RAM-এ রাখে আর interrupt দেয় → IP দেখে packet এই machine-এর কি না → TCP four-tuple দেখে socket খোঁজে (Chapter 25), sequence number মিলিয়ে ঠিক জায়গায় বসায়, ACK পাঠায়, receive buffer-এ রাখে → ওই socket-এর জন্য কেউ অপেক্ষায় থাকলে তাকে জাগায় (ঘুমন্ত <code>read()</code>, বা epoll-এর ready তালিকায় fd — Chapter 29) → তুমি <code>read()</code> করলে receive buffer থেকে তোমার memory-তে copy।</p>
 
+  <figure class="fig">
+    <svg viewBox="0 0 800 380" width="100%" role="img" aria-label="Send path on the left: write copies bytes into the socket send buffer and returns; TCP cuts segments, IP adds addresses, the driver and NIC send packets by DMA. Receive path on the right: the NIC writes packets into RAM by DMA and interrupts, IP and TCP match the four-tuple and put bytes in the receive buffer, then wake the waiting reader, whose read copies the bytes out">
+      <defs>
+        <marker id="c27f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c27f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c27f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="200" y="24" text-anchor="middle" class="t-h t-s">sender</text>
+      <text x="600" y="24" text-anchor="middle" class="t-h t-s">receiver</text>
+      <rect x="80" y="36" width="240" height="40" rx="8" class="b-u"/>
+      <text x="200" y="61" text-anchor="middle" class="mono">socket.write(bytes)</text>
+      <rect x="480" y="36" width="240" height="40" rx="8" class="b-u"/>
+      <text x="600" y="61" text-anchor="middle" class="mono">'data' ← read()</text>
+
+      <line x1="20" y1="96" x2="780" y2="96" class="ln-k dash"/>
+      <text x="400" y="90" text-anchor="middle" class="t-k t-s">user ↑ / kernel ↓</text>
+      <line x1="200" y1="76" x2="200" y2="110" class="ln-u" marker-end="url(#c27f1-u)"/>
+      <line x1="600" y1="112" x2="600" y2="80" class="ln-u" marker-end="url(#c27f1-u)"/>
+
+      <rect x="80" y="114" width="240" height="44" rx="8" class="b-k"/>
+      <text x="200" y="134" text-anchor="middle" class="t-k t-s">send buffer</text>
+      <text x="200" y="150" text-anchor="middle" class="t-m t-s">kept until the peer ACKs</text>
+      <rect x="480" y="114" width="240" height="44" rx="8" class="b-k"/>
+      <text x="600" y="134" text-anchor="middle" class="t-k t-s">receive buffer</text>
+      <text x="600" y="150" text-anchor="middle" class="t-m t-s">wake the reader / mark epoll ready</text>
+
+      <rect x="80" y="176" width="240" height="44" rx="8" class="b-k"/>
+      <text x="200" y="196" text-anchor="middle" class="t-k t-s">TCP</text>
+      <text x="200" y="212" text-anchor="middle" class="t-m t-s">segments (≤ MSS), seq, timers</text>
+      <rect x="480" y="176" width="240" height="44" rx="8" class="b-k"/>
+      <text x="600" y="196" text-anchor="middle" class="t-k t-s">TCP</text>
+      <text x="600" y="212" text-anchor="middle" class="t-m t-s">find socket by 4-tuple, order, ACK</text>
+
+      <rect x="80" y="238" width="240" height="44" rx="8" class="b-k"/>
+      <text x="200" y="258" text-anchor="middle" class="t-k t-s">IP</text>
+      <text x="200" y="274" text-anchor="middle" class="t-m t-s">addresses, route</text>
+      <rect x="480" y="238" width="240" height="44" rx="8" class="b-k"/>
+      <text x="600" y="258" text-anchor="middle" class="t-k t-s">IP</text>
+      <text x="600" y="274" text-anchor="middle" class="t-m t-s">is this packet for me?</text>
+
+      <rect x="80" y="300" width="240" height="44" rx="8" class="b"/>
+      <text x="200" y="320" text-anchor="middle" class="t-s">driver + NIC</text>
+      <text x="200" y="336" text-anchor="middle" class="t-m t-s">DMA from RAM → wire</text>
+      <rect x="480" y="300" width="240" height="44" rx="8" class="b"/>
+      <text x="600" y="320" text-anchor="middle" class="t-s">NIC + driver</text>
+      <text x="600" y="336" text-anchor="middle" class="t-m t-s">DMA into RAM, interrupt</text>
+
+      <line x1="200" y1="158" x2="200" y2="172" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <line x1="200" y1="220" x2="200" y2="234" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <line x1="200" y1="282" x2="200" y2="296" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <line x1="600" y1="296" x2="600" y2="286" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <line x1="600" y1="234" x2="600" y2="224" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <line x1="600" y1="172" x2="600" y2="162" class="ln-k" marker-end="url(#c27f1-k)"/>
+      <path d="M320 322 C 380 372, 420 372, 476 322" class="ln dash" marker-end="url(#c27f1-a)"/>
+      <text x="400" y="372" text-anchor="middle" class="t-m t-s">packets</text>
+      <path d="M476 200 C 430 176, 370 176, 324 136" class="ln dash" marker-end="url(#c27f1-a)"/>
+      <text x="400" y="200" text-anchor="middle" class="t-m t-s">ACKs back</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে পাঠানো: <code>write()</code> শুধু send buffer-এ copy করে ফেরে; তারপর TCP, IP, NIC নিজেদের গতিতে। ডানে আসা: NIC থেকে ওপরে উঠে receive buffer-এ জমে, অপেক্ষায় থাকা reader জাগে। Send buffer-এর data মোছা হয় কেবল ওপাশের ACK এলে — হারালে সেখান থেকেই আবার পাঠানো হয়।</p>
+
+  <h3>Byte-এর স্রোত, message না</h3>
+  <p>TCP তোমার <code>write()</code>-গুলোর সীমানা মনে রাখে না। সে দেখে শুধু byte-এর একটা লম্বা সারি, আর তার সুবিধামতো segment-এ কাটে; ওপাশের kernel receive buffer-এ যা জমেছে, <code>read()</code> তার যতটা পারে একবারে দেয়। তাই ওপাশের <code>'data'</code> event আর তোমার <code>write()</code>-এর মধ্যে কোনো এক-এক মিল নেই:</p>
   <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p><code>ss -t</code> চালাও (macOS: <code>netstat -an | grep ESTABLISHED | head</code>)। <code>Recv-Q</code> আর <code>Send-Q</code> column দুটো এই chapter-এর সেই দুই buffer-এর জমে থাকা data-র লাইভ পরিমাপ। Recv-Q বড় হয়ে থাকা মানে — app data পড়ছে না; Send-Q বড় মানে — অপর পাশ নিতে পারছে না।</p>
+    <div class="box-title">EXPERIMENT — framing.js</div>
+    <div class="codewrap"><pre><code>// framing.js — TCP byte-এর স্রোত: write-এর সীমানা ওপাশে পৌঁছায় না
+const net = require('net');
+let events = [];
+const server = net.createServer(c =&gt; {
+  c.on('data', d =&gt; events.push(d.length));
+  c.on('end', () =&gt; {
+    console.log(`${events.length} 'data' events, sizes:`, events.slice(0, 6).join(', '), events.length &gt; 6 ? '...' : '');
+    events = [];
+  });
+});
+server.listen(8080, '127.0.0.1', async () =&gt; {
+  // ১) তিনটা ছোট write, পরপর
+  await new Promise(r =&gt; {
+    const c = net.connect(8080, '127.0.0.1', () =&gt; {
+      c.write('msg1\n'); c.write('msg2\n'); c.write('msg3\n'); c.end();
+    });
+    c.on('close', r);
+  });
+  // ২) একটা বড় write: 1 MB
+  const c = net.connect(8080, '127.0.0.1', () =&gt; c.end(Buffer.alloc(1024 * 1024)));
+  c.on('close', () =&gt; setTimeout(() =&gt; server.close(), 50));
+});</code></pre></div>
+    <div class="codewrap"><pre><code>node framing.js                                                             # macOS
+docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim node /w/framing.js    # Linux</code></pre></div>
+    <div class="codewrap"><pre><code>1 'data' events, sizes: 15
+17 'data' events, sizes: 65536, 65536, 65536, 65536, 65536, 65536 ...     (macOS)
+1 'data' events, sizes: 15
+17 'data' events, sizes: 65536, 65536, 63589, 65536, 29312, 65536 ...     (Linux)</code></pre></div>
+  </div>
+  <p>তিনটা আলাদা write (৫ byte করে) ওপাশে এসেছে একটা ১৫ byte-এর event হয়ে। আর একটা 1 MB-এর write এসেছে ১৭ টুকরোয়, Linux-এ এলোমেলো মাপে। কোনটা হবে, নির্ভর করে সময়, buffer, OS-এর উপর — তাই কখনোই ধরে নেওয়া যায় না। যে code ধরে নেয় "একটা <code>'data'</code> = একটা message", সে local-এ ঠিক চলে (ছোট data, দ্রুত loopback) আর production-এ মাঝে মাঝে ভাঙে।</p>
+  <p>সমাধান: message কোথায় শেষ, সেটা data-র ভেতরেই চিহ্নিত করো — একে বলে <strong>framing</strong>। দুইটা চেনা উপায়: প্রতিটা message-এর শেষে একটা বিশেষ চিহ্ন (যেমন <code>\n</code>), বা শুরুতে message-এর দৈর্ঘ্য। আর গ্রাহক আসা byte জমিয়ে রেখে পুরো message হলে তবে কাজে লাগায়:</p>
+  <div class="codewrap"><pre><code>let pending = '';
+socket.on('data', chunk =&gt; {
+  pending += chunk;
+  let i;
+  while ((i = pending.indexOf('\n')) !== -1) {   // যতগুলো পুরো লাইন জমেছে
+    handleMessage(pending.slice(0, i));
+    pending = pending.slice(i + 1);                // বাকি আধা-লাইন পরের জন্য
+  }
+});</code></pre></div>
+  <p>HTTP নিজেও framing করে: header শেষ হয় একটা খালি লাইনে, আর body-র দৈর্ঘ্য বলা থাকে <code>Content-Length</code>-এ (বা টুকরো টুকরো পাঠালে প্রতিটার আগে তার দৈর্ঘ্য)। Express-এ তুমি এটা টের পাও না কারণ Node-এর <code>http</code> module কাজটা আগেই সেরে রাখে।</p>
+
+  <h3>Buffer ভরলে: flow control আর backpressure</h3>
+  <p>Buffer গুলো অসীম না। Linux-এ মাপ kernel নিজে চাহিদা বুঝে বাড়ায়-কমায়, তিনটা সীমার মধ্যে:</p>
+  <div class="codewrap"><pre><code>cat /proc/sys/net/ipv4/tcp_rmem /proc/sys/net/ipv4/tcp_wmem    # Linux: min, শুরু, max (byte)</code></pre></div>
+  <p>Docker VM-এ: receive buffer <code>4096 131072 6291456</code>, send buffer <code>4096 16384 4194304</code> — শুরু ১২৮ KB আর ১৬ KB, বাড়তে পারে ৬ MB আর ৪ MB পর্যন্ত। এবার ওপাশের reader যদি পড়া বন্ধ রাখে? তার receive buffer ভরে যায়, আর তার kernel প্রতিটা ACK-এ জানায় "আমার জায়গা আছে ০ byte" (Chapter 26-এর window)। প্রেরকের kernel তখন পাঠানো থামায় — এর নাম <strong>flow control</strong>। তারপর প্রেরকের send buffer ভরে, আর তারপর তোমার <code>write()</code>-ও আর জায়গা পায় না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — backpressure.js</div>
+    <div class="codewrap"><pre><code>// backpressure.js — reader পড়ছে না; writer কতদূর লিখতে পারে?
+const net = require('net');
+const { execSync } = require('child_process');
+
+const server = net.createServer(c =&gt; {
+  c.pause();                                   // server কিছুই পড়ছে না
+  setTimeout(() =&gt; { console.log('server starts reading'); c.resume(); }, 1000);
+  c.on('end', () =&gt; server.close());
+});
+server.listen(8080, '127.0.0.1', () =&gt; {
+  const c = net.connect(8080, '127.0.0.1');
+  const chunk = Buffer.alloc(64 * 1024);
+  let sent = 0;
+  c.on('connect', function pump() {
+    while (sent &lt; 50 * 1024 * 1024) {
+      sent += chunk.length;
+      if (!c.write(chunk)) {                   // false = "আর দিয়ো না, আগে এগুলো যাক"
+        console.log(`write() returned false after ${sent / 1024} KB; Node is holding ${c.writableLength / 1024} KB`);
+        setTimeout(() =&gt; console.log(execSync("ss -tn '( sport = :8080 or dport = :8080 )'").toString()), 200);
+        c.once('drain', () =&gt; { console.log('drain: kernel buffers have room again'); c.end(); });
+        return;
+      }
+    }
+  });
+});</code></pre></div>
+    <p>Docker-এ iproute2 বসিয়ে চালালে:</p>
+    <div class="codewrap"><pre><code>write() returned false after 2624 KB; Node is holding 64 KB
+State Recv-Q Send-Q  Local Address:Port  Peer Address:Port Process
+ESTAB 128704 0           127.0.0.1:8080     127.0.0.1:44044
+ESTAB 0      2452874     127.0.0.1:44044    127.0.0.1:8080
+
+server starts reading
+drain: kernel buffers have room again</code></pre></div>
+  </div>
+  <p>প্রায় ২.৬ MB লেখার পর <code>write()</code> <code>false</code> দিয়েছে। তখন data তিন জায়গায়: server-এর receive buffer-এ ১,২৮,৭০৪ byte (<code>Recv-Q</code>, ভরা), client-এর send buffer-এ ২৪,৫২,৮৭৪ byte (<code>Send-Q</code>, kernel বাড়াতে বাড়াতে ~২.৩ MB), আর বাকি ৬৪ KB Node-এর নিজের memory-তে (<code>writableLength</code>) — kernel-এ আর জায়গা নেই বলে। Reader পড়া শুরু করতেই জায়গা খুলল, আর <code>'drain'</code> event জানাল "এখন আবার লিখতে পারো"। ধীর reader থেকে উল্টো দিকে চাপ এসে দ্রুত writer-কে থামানো — এটাই <strong>backpressure</strong>।</p>
+  <p><code>false</code> উপেক্ষা করলে কী হয়? Node লেখা ফেলে দেয় না, নিজের memory-তে জমিয়ে রাখে — সীমা ছাড়াই:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — ignore.js</div>
+    <div class="codewrap"><pre><code>// ignore.js — write()-এর false উপেক্ষা করলে data যায় কোথায়?
+const net = require('net');
+const server = net.createServer(c =&gt; c.pause());          // reader কিছুই পড়ছে না
+server.listen(8080, '127.0.0.1', () =&gt; {
+  const c = net.connect(8080, '127.0.0.1', () =&gt; {
+    const before = process.memoryUsage().rss;
+    for (let i = 0; i &lt; 800; i++) c.write(Buffer.alloc(64 * 1024, 1));   // 50 MB, false-এর তোয়াক্কা না করে
+    setTimeout(() =&gt; {
+      console.log(`Node is holding ${(c.writableLength / 2 ** 20).toFixed(1)} MB in its own memory`);
+      console.log(`RSS grew by ${((process.memoryUsage().rss - before) / 2 ** 20).toFixed(0)} MB`);
+      process.exit(0);
+    }, 500);
+  });
+});</code></pre></div>
+    <div class="codewrap"><pre><code>Node is holding 49.5 MB in its own memory
+RSS grew by 51 MB</code></pre></div>
+  </div>
+  <p>Kernel-এর buffer ভরে যাওয়ার পরের পুরো ~৫০ MB Node-এর heap-এর বাইরের memory-তে (Chapter 6) বসে আছে। একটা ধীর client-এর জন্য একটা বড় file stream করা server যদি <code>false</code> না মানে, হাজারটা ধীর client মানে হাজার গুণ memory — শেষে OOM। নিজে <code>'drain'</code> সামলাও, বা <code>stream.pipeline(source, socket)</code> ব্যবহার করো, যেটা এই হিসাব নিজে রাখে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 240" width="100%" role="img" aria-label="Backpressure chain measured in backpressure.js: the paused reader's receive buffer is full at 128,704 bytes, so its kernel advertises a zero window; the sender's kernel stops sending and its send buffer fills to 2,452,874 bytes; then write returns false and Node holds the remaining 64 KB in its own memory until drain">
+      <defs>
+        <marker id="c27f2-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c27f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="20" y="50" width="150" height="70" rx="8" class="b-u"/>
+      <text x="95" y="74" text-anchor="middle" class="t-s">writer (Node)</text>
+      <text x="95" y="94" text-anchor="middle" class="mono">writableLength</text>
+      <text x="95" y="112" text-anchor="middle" class="mono">64 KB</text>
+      <rect x="210" y="50" width="170" height="70" rx="8" class="b-k"/>
+      <text x="295" y="74" text-anchor="middle" class="t-s">send buffer</text>
+      <text x="295" y="94" text-anchor="middle" class="mono">Send-Q</text>
+      <text x="295" y="112" text-anchor="middle" class="mono">2,452,874 B</text>
+      <rect x="420" y="50" width="170" height="70" rx="8" class="b-d"/>
+      <text x="505" y="74" text-anchor="middle" class="t-s">receive buffer</text>
+      <text x="505" y="94" text-anchor="middle" class="mono">Recv-Q</text>
+      <text x="505" y="112" text-anchor="middle" class="mono">128,704 B (full)</text>
+      <rect x="630" y="50" width="150" height="70" rx="8" class="b-u"/>
+      <text x="705" y="74" text-anchor="middle" class="t-s">reader</text>
+      <text x="705" y="98" text-anchor="middle" class="mono">c.pause()</text>
+      <line x1="170" y1="70" x2="206" y2="70" class="ln" marker-end="url(#c27f2-a)"/>
+      <line x1="380" y1="70" x2="416" y2="70" class="ln" marker-end="url(#c27f2-a)"/>
+      <line x1="590" y1="70" x2="626" y2="70" class="ln dash" marker-end="url(#c27f2-a)"/>
+      <text x="400" y="40" text-anchor="middle" class="t-m t-s">data →</text>
+
+      <path d="M705 120 V170 H95 V124" class="ln-d" marker-end="url(#c27f2-d)"/>
+      <text x="610" y="160" class="t-d t-s">not reading</text>
+      <text x="398" y="162" text-anchor="middle" class="t-d t-s">"window 0" in every ACK</text>
+      <text x="190" y="162" class="t-d t-s">write() → false</text>
+      <text x="400" y="200" text-anchor="middle" class="t-s">pressure flows backwards, from the slowest part to the source</text>
+      <text x="400" y="222" text-anchor="middle" class="t-m t-s">numbers from backpressure.js (Linux)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">ধীর reader থেকে চাপ উল্টো দিকে ছড়ায়: তার receive buffer ভরে → ACK-এ window ০ → প্রেরকের kernel পাঠানো থামায় → send buffer ভরে → <code>write()</code> <code>false</code> দেয়। শেষ ধাপটা মানা তোমার দায়িত্ব; না মানলে ignore.js-এর মতো Node-এর memory-তে জমে।</p>
+
+  <h3>ছোট write-এর ফাঁদ: Nagle আর delayed ACK</h3>
+  <p>TCP-র দুইটা পুরনো ভালো উদ্দেশ্যের নিয়ম একসাথে পড়লে একটা বিশ্রী দেরি বানায়:</p>
+  <ul>
+    <li><strong>Nagle's algorithm</strong> (প্রেরকের দিকে): আগের পাঠানো data-র ACK আসেনি এমন অবস্থায় আরেকটা ছোট টুকরো লিখলে, সেটা সাথে সাথে পাঠিয়ো না — জমাও, ACK এলে বা একটা পুরো segment ভরলে তবে পাঠাও। উদ্দেশ্য: এক-দুই byte-এর অসংখ্য packet দিয়ে network ভরে না ফেলা।</li>
+    <li><strong>Delayed ACK</strong> (গ্রাহকের দিকে): data পেয়ে সাথে সাথে ACK পাঠিয়ো না, কিছুক্ষণ (Linux-এ কমপক্ষে ~৪০ ms) অপেক্ষা করো — হয়তো app উত্তর লিখবে, তখন ACK সেই উত্তরের সাথেই চলে যাবে।</li>
+  </ul>
+  <p>এখন ভাবো client একটা request দুই টুকরোয় লেখে, আর server পুরোটা না পেলে উত্তর দেয় না। প্রথম টুকরো যায়। দ্বিতীয়টা Nagle আটকে রাখে (প্রথমটার ACK আসেনি)। Server-এর kernel ACK দেরি করে (app তো এখনো উত্তর লেখেনি — পুরো request-ই পায়নি)। দুজনেই অপেক্ষায়, যতক্ষণ না delayed ACK-এর timer ফুরায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — nagle.js</div>
+    <div class="codewrap"><pre><code>// nagle.js — দুই টুকরোয় request লিখে উত্তরের অপেক্ষা (write-write-read), Nagle চালু বনাম বন্ধ
+const net = require('net');
+const server = net.createServer(c =&gt; {
+  let buf = '';
+  c.on('data', d =&gt; {                       // পুরো লাইন ("...\n") এলে তবেই উত্তর
+    buf += d;
+    if (buf.endsWith('\n')) { c.write('ok\n'); buf = ''; }
+  });
+});
+server.listen(8080, '127.0.0.1', async () =&gt; {
+  for (const noDelay of [false, true]) {
+    const c = net.connect({ port: 8080, host: '127.0.0.1', noDelay });
+    await new Promise(r =&gt; c.on('connect', r));
+    const times = [];
+    for (let i = 0; i &lt; 20; i++) {
+      const t = performance.now();
+      c.write('GET /item/' + i);            // প্রথম টুকরো
+      c.write(' HTTP\n');                   // দ্বিতীয় টুকরো, আলাদা write
+      await new Promise(r =&gt; c.once('data', r));
+      times.push(performance.now() - t);
+    }
+    times.sort((a, b) =&gt; a - b);
+    console.log(`noDelay=${noDelay}: median ${times[10].toFixed(2)} ms per request`);
+    c.destroy();
+  }
+  server.close();
+});</code></pre></div>
+    <div class="codewrap"><pre><code>linux:                                           mac:
+noDelay=false: median 41.91 ms per request       noDelay=false: median 0.10 ms per request
+noDelay=true: median 0.06 ms per request         noDelay=true: median 0.08 ms per request</code></pre></div>
+  </div>
+  <p>Linux-এ Nagle চালু থাকলে প্রতিটা request ~৪২ ms — delayed ACK-এর timer — আর <code>noDelay: true</code> দিলে ০.০৬ ms, প্রায় সাতশো গুণ। Mac-এর loopback-এ এই দেরি দেখা যায়নি (macOS-এর delayed ACK-এর নিয়ম আলাদা) — তাই এই bug প্রায়ই developer-এর Mac-এ লুকিয়ে থাকে আর Linux server-এ বেরোয়। <code>noDelay</code> (system call-এর ভাষায় <code>TCP_NODELAY</code>) Nagle বন্ধ করে। Node-এর default কী? Docker-এ strace করে দেখলাম: সাধারণ <code>net</code> server-এর socket-এ কিছু বসায় না (Nagle চালু), কিন্তু <code>http</code> server প্রতিটা নতুন connection-এ <code>setsockopt(20, SOL_TCP, TCP_NODELAY, [1], 4)</code> ডাকে। নিজের protocol <code>net</code>-এর উপর বানালে এটা মনে রেখো — বা আরও ভালো, একটা message একটা <code>write()</code>-এ পাঠাও।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"আমি একবার <code>write()</code> করলে ওপাশে একবার <code>'data'</code> আসবে।" TCP message চেনে না, byte-এর স্রোত চেনে: framing.js-এ তিনটা write একটা event হয়ে এসেছে, আর একটা 1 MB-এর write ১৭ টুকরোয়। আর <code>write()</code> ফিরে আসা মানে data ওপাশে পৌঁছেছে, তাও না — শুধু kernel-এর send buffer-এ ঢুকেছে (বা, buffer ভরা থাকলে, Node-এর নিজের memory-তে)।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>প্রতিটা TCP socket দুইটা kernel buffer-এর মাঝখানে একটা পাইপ। <code>write()</code> শুধু নিজের send buffer-এ ঢালে; kernel সেখান থেকে segment বানিয়ে পাঠায় আর ACK পেলে মোছে। ওপাশে packet উঠে receive buffer-এ জমে, reader জাগে। Byte-এর সীমানা পথে হারায় — message-এর সীমানা নিজে চিহ্নিত করতে হয়। পাইপের কোথাও জট হলে চাপ উল্টো দিকে ছড়ায় (window ০ → send buffer ভরা → <code>write()</code> false), আর সেই চাপ মানা app-এর কাজ। ছোট ছোট write-এর ক্ষেত্রে Nagle আর delayed ACK মিলে ৪০ ms বসিয়ে দিতে পারে।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Send path-এ TCP আর IP-র ভাগের কাজ কী কী?</li>
-      <li>write() return করা আর data পৌঁছানো আলাদা কেন?</li>
-      <li>Receive path-এ process কখন, কীভাবে জাগে?</li>
+      <li><code>socket.write()</code> ফিরে আসার মুহূর্তে data কোথায়? Send buffer থেকে data কখন মোছা হয়, আর কেন তখনই?</li>
+      <li>আসার পথে NIC থেকে তোমার <code>'data'</code> event পর্যন্ত কোন কোন ধাপ? Kernel কীভাবে জানে packet কোন socket-এর?</li>
+      <li>framing.js-এ তিনটা write একটা ১৫ byte-এর event হয়ে এল কেন? Newline দিয়ে framing-এর code-এ <code>pending</code> variable কী কাজে লাগে?</li>
+      <li>backpressure.js-এ <code>write()</code> <code>false</code> দেওয়ার মুহূর্তে data কোন তিন জায়গায় ছিল? ignore.js-এ false উপেক্ষা করায় কী হলো, আর সমাধান কী?</li>
+      <li>Nagle আর delayed ACK একসাথে কীভাবে প্রতি request-এ ~৪২ ms দেরি বানায়? এই bug Mac-এ ধরা না পড়ে Linux-এ ধরা পড়তে পারে কেন, আর <code>noDelay</code> কী বদলায়?</li>
     </ul>
   </div>

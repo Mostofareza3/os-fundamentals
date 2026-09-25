@@ -1,38 +1,309 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
-  <h2>Chapter 26 — TCP Connection-এর ভিতরে</h2>
-  <p class="chap-sub">Connection "establish" হওয়া মানে আসলে কী তৈরি হয় — এবং কোথায়।</p>
+  <h2>Chapter 26 — TCP Connection Internals</h2>
+  <p class="chap-sub">Network কোনো কথা দেয় না — packet হারায়, উল্টো ক্রমে আসে। TCP তার উপর একটা নির্ভরযোগ্য "connection" বানায়, যেটা আসলে দুই kernel-এর memory-তে রাখা কিছু সংখ্যা। Handshake, বিদায়ের অবস্থাগুলো, আর server-এর সেই queue যেটা ভরলে client ঝুলে থাকে।</p>
 
-  <h3>Three-way handshake</h3>
-  <pre class="diagram">Client                          Server
-  │── SYN ──────────────────────→│   <span class="dim">"connection চাই" (+ আমার শুরুর sequence number)</span>
-  │←───────────────── SYN-ACK ───│   <span class="dim">"রাজি, এই নাও আমারটাও"</span>
-  │── ACK ──────────────────────→│   <span class="dim">"পাকা কথা"</span>
-  │                              │
-  │═══════ connection ready ═════│</pre>
-  <p>তিন ধাপ কেন? কারণ দুই পক্ষকেই নিশ্চিত হতে হবে — "আমার পাঠানো ওর কাছে পৌঁছায়, ওর পাঠানো আমার কাছে পৌঁছায়", আর দুজনের সেই শুরুর sequence number বিনিময় হতে হবে (এই নাম্বার দিয়েই TCP পরে হিসাব রাখে কোন byte পৌঁছেছে, কোনটা হারিয়েছে)।</p>
-  <p>সবচেয়ে জরুরি উপলব্ধি: <strong>"connection" জিনিসটা তারে-তারে কোথাও নেই।</strong> এটা দুই পাশের kernel-এর memory-তে রাখা state মাত্র — sequence number, window size, timers। মাঝের network শুধু স্বাধীন packet চেনে। TCP হলো দুই kernel-এর সম্মিলিত অভিনয়ে তৈরি "reliable stream"-এর illusion।</p>
+  <p>Chapter 25-এ socket-কে দেখেছি "লিখলে ওপাশে পৌঁছায়" এমন একটা জিনিস হিসেবে। কিন্তু নিচের network — <strong>IP</strong> — শুধু একটা কথা দেয়: চেষ্টা করব। একটা packet পথে হারাতে পারে (কোনো router-এর queue ভরা), দুইবার পৌঁছাতে পারে, আর দুইটা packet আলাদা পথ ধরে উল্টো ক্রমে আসতে পারে। IP-র কাছে প্রতিটা packet স্বাধীন; "connection" বলে তার কোনো ধারণাই নেই। তাহলে তোমার <code>write('hello')</code> ঠিক ক্রমে, একবারই, নিশ্চিতভাবে পৌঁছায় কীভাবে? এই কাজটা করে <strong>TCP</strong>, দুই পাশের kernel-এ।</p>
 
-  <h3>Buffers: প্রতিটা socket-এর দুই গুদাম</h3>
-  <p>প্রতিটা established connection-এর জন্য kernel দুটো buffer রাখে:</p>
+  <h3>ক্রম, প্রাপ্তিস্বীকার আর আবার পাঠানো</h3>
+  <p>TCP-র কৌশল তিনটা সরল ধারণায়:</p>
   <ul>
-    <li><strong>Send buffer:</strong> তোমার <code>write()</code> data আগে এখানে জমা হয় → kernel নিজের গতিতে packet বানিয়ে পাঠায়। Buffer ভরা থাকলে (receiver ধীর!) write block করে — এটাই <strong>backpressure</strong>-এর জন্মস্থান।</li>
-    <li><strong>Receive buffer:</strong> Network থেকে আসা data এখানে জমে → তুমি <code>read()</code> করলে এখান থেকেই পাও। তুমি না পড়লে জমতে থাকে; ভরে গেলে TCP অপর পক্ষকে বলে দেয় "আস্তে!" (flow control)।</li>
+    <li><strong>Sequence number:</strong> পাঠানো প্রতিটা byte-এর একটা ক্রমিক নম্বর। প্রতিটা packet (TCP-র ভাষায় <strong>segment</strong>) বলে "আমার ভেতরে byte অমুক থেকে তমুক"। উল্টো ক্রমে এলে গ্রাহক নম্বর দেখে সাজিয়ে নেয়; দুইবার এলে দ্বিতীয়টা ফেলে দেয়।</li>
+    <li><strong>ACK</strong> (acknowledgement): গ্রাহক জানায় "অমুক নম্বরের আগ পর্যন্ত সব পেয়েছি, এরপরেরটা পাঠাও"।</li>
+    <li><strong>Retransmission:</strong> প্রেরক প্রতিটা পাঠানো segment-এর জন্য একটা timer চালায়। নির্দিষ্ট সময়ের মধ্যে ACK না এলে ধরে নেয় হারিয়েছে, আবার পাঠায়। এই সময়ের নাম <strong>RTO</strong> (retransmission timeout)।</li>
   </ul>
-  <p>দেখেছ pattern-টা? আবার সেই গল্প — দুই ভিন্ন গতির জগতের (তোমার app আর network) মাঝে buffer।</p>
+  <p>ACK না পেয়ে প্রেরক কতটা data একসাথে পাঠাতে পারে, তারও দুইটা সীমা আছে: গ্রাহকের buffer-এ কতটা জায়গা (<strong>window</strong>, Chapter 27), আর network কতটা সইতে পারবে বলে TCP-র অনুমান (<strong>congestion window</strong>, cwnd — packet হারানো দেখলে কমায়, সব ঠিক থাকলে বাড়ায়)।</p>
 
-  <h3>Server-এর দুই queue</h3>
-  <p>Server-এর listening socket-এর পিছনে kernel দুটো লাইন রাখে:</p>
-  <pre class="diagram">SYN এলো → <span class="k">[SYN queue]</span>          <span class="dim">— handshake চলছে, আধা-পাকা connection</span>
-handshake শেষ → <span class="k">[accept queue]</span>  <span class="dim">— পুরো ready, app-এর accept()-এর অপেক্ষায়</span>
-app accept() করলো → connection app-এর হাতে</pre>
-  <p>এই ভাগাভাগির মানে গভীর: <strong>handshake পুরোটাই kernel সামলায় — তোমার Node process ঘুমিয়ে থাকলেও connection establish হয়ে accept queue-তে জমা হতে থাকে।</strong> আর app যদি accept করতে ধীর হয় (event loop আটকে আছে?), accept queue ভরে যায় — নতুন connection তখন আর ঢুকতে পারে না। <code>listen()</code>-এর backlog parameter এই queue-র সাইজ চায় — কিন্তু kernel সেটাকে <code>net.core.somaxconn</code> দিয়ে ছেঁটে দেয়, তাই আসল মাপ <code>min(backlog, somaxconn)</code>। Production-এর classic ফাঁদ এটাই: code ১০২৪ চেয়েছে, kernel ১২৮ দিয়েছে, কেউ টের পায়নি। আর overflow হলে Linux default-এ RST পাঠায় না — handshake-এর শেষ ACK <em>নীরবে ফেলে দেয়</em>, client retransmit করে, ফলে উপসর্গ হয় ঝুলে থাকা বা ধীর connect, দ্রুত "connection refused" না। (সাথে সাথে refuse চাইলে <code>tcp_abort_on_overflow</code>।)</p>
+  <h3>Handshake: তিন ধাপে পরিচয়</h3>
+  <p>Data পাঠানোর আগে দুই পক্ষকে দুইটা জিনিসে একমত হতে হয়: আমার byte-এর নম্বর কোথা থেকে শুরু, আর তোমারটা কোথা থেকে। শুরুর নম্বর (initial sequence number) প্রতিবার এলোমেলো বাছা হয়, যাতে পুরনো connection-এর ভুলে পড়ে থাকা packet বা বাইরের কেউ অনুমান করে নতুন connection-এ ঢুকে পড়তে না পারে। তিন ধাপ লাগে কারণ দুই দিকেরই "পাঠালাম — পেয়েছি" নিশ্চিত হতে হয়: client নিজের নম্বর পাঠায় (<strong>SYN</strong>), server সেটা স্বীকার করে আর নিজেরটা পাঠায় (<strong>SYN-ACK</strong>), client server-এর নম্বর স্বীকার করে (<strong>ACK</strong>)। দুই ধাপে থামলে server জানতেই পারত না তার নম্বর client-এর কাছে পৌঁছেছে কি না।</p>
+  <p>পুরো একটা কথোপকথন ধরে দেখি। <code>tcpdump</code> network-এর packet ধরে দেখানোর tool; Docker-এর ভেতরে loopback (<code>lo</code>)-এ চালাব:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — hello-tcp.js আর tcpdump</div>
+    <div class="codewrap"><pre><code>// hello-tcp.js — client "hello" পাঠায়, server "HELLO" ফেরত দেয়, তারপর বিদায়
+const net = require('net');
+const server = net.createServer(c =&gt; c.on('data', d =&gt; c.end(d.toString().toUpperCase())));
+server.listen(8080, '127.0.0.1', () =&gt; {
+  const c = net.connect(8080, '127.0.0.1', () =&gt; c.write('hello'));
+  c.on('data', d =&gt; console.log('client got:', d.toString()));
+  c.on('close', () =&gt; server.close());
+});</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null
+  tcpdump -i lo -n -l "tcp port 8080" 2&gt;/dev/null &gt; /tmp/cap.txt &amp; sleep 1
+  node /w/hello-tcp.js; sleep 1; cat /tmp/cap.txt'</code></pre></div>
+    <p>আমার output (প্রতিটা লাইনের শেষের <code>options [...]</code> অংশ ছেঁটে দিয়েছি; আর port 8080 দেখে tcpdump data-কে ভুল করে <code>HTTP</code> বলে):</p>
+    <div class="codewrap"><pre><code>.608782 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [S],  seq 1401336468, win 65495, length 0
+.608793 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [S.], seq 2557690574, ack 1401336469, win 65483, length 0
+.608802 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [.],  ack 1, win 512, length 0
+.609508 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [P.], seq 1:6, ack 1, win 512, length 5: HTTP
+.609511 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [.],  ack 6, win 512, length 0
+.609824 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [P.], seq 1:6, ack 6, win 512, length 5: HTTP
+.609826 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [.],  ack 6, win 512, length 0
+.610035 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [F.], seq 6, ack 6, win 512, length 0
+.610772 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [F.], seq 6, ack 7, win 512, length 0
+.610776 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [.],  ack 7, win 512, length 0</code></pre></div>
+  </div>
+  <p>লাইন ধরে ধরে পড়ো। <code>[S]</code> = SYN, <code>[S.]</code> = SYN-ACK (বিন্দু মানে ACK), <code>[P.]</code> = data সহ, <code>[F.]</code> = FIN (বিদায়)। প্রথম তিন লাইন handshake: client-এর শুরুর নম্বর ১৪০১৩৩৬৪৬৮, server-এর ২৫৫৭৬৯০৫৭৪, আর server-এর <code>ack 1401336469</code> মানে "তোমার ওই নম্বর পর্যন্ত পেয়েছি, পরেরটা চাই"। এরপর থেকে tcpdump বড় সংখ্যাগুলোর বদলে শুরু থেকে গোনা ছোট নম্বর দেখায়: "hello" হলো byte ১ থেকে ৫ (<code>seq 1:6</code>, length 5), server জবাবে <code>ack 6</code>। তারপর উল্টো দিকে "HELLO", আর শেষে দুই দিক থেকে FIN — প্রতিটা FIN-ও একটা নম্বর খায়, তাই শেষ ACK ৭। মোট দশটা packet, ২ ms-এর মধ্যে, আর এর একটাও তোমার Node code সরাসরি বানায়নি।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 450" width="100%" role="img" aria-label="Sequence diagram of the captured TCP conversation between client port 48560 and server port 8080: three handshake packets, the client's hello and its ACK, the server's HELLO and its ACK, then FIN from the server, FIN from the client and a final ACK">
+      <defs>
+        <marker id="c26f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c26f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="200" y="26" text-anchor="middle" class="t-h t-s">client :48560</text>
+      <text x="600" y="26" text-anchor="middle" class="t-h t-s">server :8080</text>
+      <line x1="200" y1="36" x2="200" y2="436" class="ln"/>
+      <line x1="600" y1="36" x2="600" y2="436" class="ln"/>
+
+      <text x="24" y="92" class="t-m t-s">handshake</text>
+      <line x1="200" y1="56" x2="596" y2="70" class="ln-u" marker-end="url(#c26f1-u)"/>
+      <text x="400" y="56" text-anchor="middle" class="mono">SYN seq=1401336468</text>
+      <line x1="600" y1="92" x2="204" y2="106" class="ln-k" marker-end="url(#c26f1-k)"/>
+      <text x="400" y="92" text-anchor="middle" class="mono">SYN-ACK seq=2557690574 ack=…469</text>
+      <line x1="200" y1="128" x2="596" y2="142" class="ln-u" marker-end="url(#c26f1-u)"/>
+      <text x="400" y="128" text-anchor="middle" class="mono">ACK</text>
+      <line x1="30" y1="158" x2="770" y2="158" class="grid"/>
+
+      <text x="24" y="226" class="t-m t-s">data</text>
+      <line x1="200" y1="180" x2="596" y2="194" class="ln-u" marker-end="url(#c26f1-u)"/>
+      <text x="400" y="180" text-anchor="middle" class="mono">"hello"  seq 1:6</text>
+      <line x1="600" y1="212" x2="204" y2="226" class="ln-k" marker-end="url(#c26f1-k)"/>
+      <text x="400" y="212" text-anchor="middle" class="mono">ACK 6</text>
+      <line x1="600" y1="248" x2="204" y2="262" class="ln-k" marker-end="url(#c26f1-k)"/>
+      <text x="400" y="248" text-anchor="middle" class="mono">"HELLO"  seq 1:6</text>
+      <line x1="200" y1="280" x2="596" y2="294" class="ln-u" marker-end="url(#c26f1-u)"/>
+      <text x="400" y="280" text-anchor="middle" class="mono">ACK 6</text>
+      <line x1="30" y1="310" x2="770" y2="310" class="grid"/>
+
+      <text x="24" y="380" class="t-m t-s">goodbye</text>
+      <line x1="600" y1="334" x2="204" y2="348" class="ln-k" marker-end="url(#c26f1-k)"/>
+      <text x="400" y="334" text-anchor="middle" class="mono">FIN</text>
+      <line x1="200" y1="370" x2="596" y2="384" class="ln-u" marker-end="url(#c26f1-u)"/>
+      <text x="400" y="370" text-anchor="middle" class="mono">FIN  ack 7</text>
+      <line x1="600" y1="406" x2="204" y2="420" class="ln-k" marker-end="url(#c26f1-k)"/>
+      <text x="400" y="406" text-anchor="middle" class="mono">ACK 7</text>
+      <text x="612" y="354" class="t-s">server closed first</text>
+      <text x="612" y="372" class="t-s">→ server ends in</text>
+      <text x="612" y="390" class="t-k t-s">TIME-WAIT</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">ওপরের tcpdump-এর দশটা packet, সময় ওপর থেকে নিচে। তিন ধাপের handshake, তারপর দুই দিকে ৫ byte করে data আর তার ACK, শেষে দুই দিক থেকে FIN। যে পক্ষ আগে FIN পাঠায় (এখানে server), শেষে সে TIME-WAIT অবস্থায় যায় — একটু পরে।</p>
+
+  <h3>Connection আসলে দুই kernel-এর memory-তে</h3>
+  <p>তারে "connection" বলে কিছু নেই — তারে শুধু ওপরের মতো আলাদা আলাদা packet। Connection হলো দুই পাশের kernel-এ রাখা একগাদা সংখ্যা: কার কোন sequence number পর্যন্ত পাঠানো, কোন পর্যন্ত ACK পাওয়া, timer, window। <code>ss -i</code> দিয়ে সেই সংখ্যাগুলো সরাসরি দেখা যায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — tcpinfo.js</div>
+    <div class="codewrap"><pre><code>// tcpinfo.js — একটা চালু connection-এর জন্য kernel কী কী মনে রাখে
+const net = require('net');
+const { execSync } = require('child_process');
+net.createServer(c =&gt; c.pipe(c)).listen(8080, '127.0.0.1', () =&gt; {   // echo server
+  const c = net.connect(8080, '127.0.0.1', () =&gt; {
+    c.write(Buffer.alloc(100000));                                  // কিছু data আসা-যাওয়া করুক
+    setTimeout(() =&gt; {
+      console.log(execSync(`ss -tni '( sport = :${c.localPort} )'`).toString());
+      process.exit(0);
+    }, 300);
+  });
+  c.resume();
+});</code></pre></div>
+    <p>Docker-এ iproute2 বসিয়ে (Chapter 25-এর মতো) চালালে, আমার output-এর দরকারি অংশ:</p>
+    <div class="codewrap"><pre><code>ESTAB 0      0          127.0.0.1:56596    127.0.0.1:8080
+	 cubic wscale:7,7 rto:201 rtt:0.033/0.036 ... mss:47424 ... cwnd:10
+	 bytes_sent:100000 bytes_acked:100001 bytes_received:100000 ... snd_wnd:94848</code></pre></div>
+  </div>
+  <p>এটাই connection: <code>rtt:0.033</code> — kernel মেপে রেখেছে একটা segment যেতে আর ACK ফিরতে গড়ে ০.০৩৩ ms (loopback, তাই এত কম); <code>rto:201</code> — ACK না এলে ২০১ ms পরে আবার পাঠাবে; <code>cwnd:10</code> — ACK-এর অপেক্ষা না করে একসাথে ১০টা segment পাঠানো যায়; <code>cubic</code> — congestion window বাড়ানো-কমানোর নিয়মটার নাম; <code>bytes_acked</code> — ১,০০,০০০ byte-এর সব স্বীকৃত (১ বেশি কারণ SYN-ও একটা নম্বর খায়)। দুই পাশের kernel এই সংখ্যাগুলো আলাদা আলাদা রাখে আর packet দিয়ে মিলিয়ে নেয়। এজন্যই একটা পাশের machine হঠাৎ বন্ধ হয়ে গেলে অন্য পাশ সাথে সাথে টের পায় না — তার memory-তে connection দিব্যি "চালু"; পরের বার কিছু পাঠিয়ে ACK না পেলে, বা ওপাশ থেকে "এই connection আমি চিনি না" (<strong>RST</strong>, reset) এলে তবে জানে।</p>
+
+  <h3>বিদায়ের পালা: FIN, TIME-WAIT, CLOSE-WAIT</h3>
+  <p>TCP connection-এর দুই দিক আলাদাভাবে বন্ধ হয়: প্রতিটা পক্ষ "আমার আর পাঠানোর কিছু নেই" জানাতে FIN পাঠায়। ফলে একটা connection বন্ধ হওয়ার পথে কয়েকটা মাঝামাঝি অবস্থা (<strong>state</strong>) পেরোয়, আর দুইটা production-এ খুব চেনা:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — states.js</div>
+    <div class="codewrap"><pre><code>// states.js — connection বন্ধের পরের দুই অবস্থা: TIME-WAIT আর CLOSE-WAIT
+const net = require('net');
+const { execSync } = require('child_process');
+
+// server A (8081): client বিদায় (FIN) বললেও নিজে কখনো বন্ধ করে না — একটা bug
+net.createServer({ allowHalfOpen: true }, () =&gt; {}).listen(8081, '127.0.0.1');
+// server B (8082): নিজেই আগে বন্ধ করে
+net.createServer(c =&gt; c.end()).listen(8082, '127.0.0.1');
+
+setTimeout(() =&gt; {
+  net.connect(8081, '127.0.0.1', function () { this.end(); });   // A-তে client আগে বিদায় বলে
+  net.connect(8082, '127.0.0.1').resume();                        // B-তে server আগে বিদায় বলে
+  setTimeout(() =&gt; {
+    console.log(execSync("ss -tan state all '( sport = :8081 or sport = :8082 or dport = :8081 or dport = :8082 )' | grep -v LISTEN").toString());
+    process.exit(0);
+  }, 300);
+}, 100);</code></pre></div>
+    <div class="codewrap"><pre><code>State      Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+CLOSE-WAIT 0      0          127.0.0.1:8081     127.0.0.1:49548
+FIN-WAIT-2 0      0          127.0.0.1:49548    127.0.0.1:8081
+TIME-WAIT  0      0          127.0.0.1:8082     127.0.0.1:39102</code></pre></div>
+    <p>তারপর একই container-এ <code>ss -tano state time-wait</code>-এর <code>timer:</code> column: <code>timewait,59sec</code>, ৩০ সেকেন্ড পরে <code>timewait,29sec</code>, আর ৬১ সেকেন্ড পরে তালিকা খালি।</p>
+  </div>
+  <ul>
+    <li><strong>CLOSE-WAIT</strong> (server A): ওপাশ FIN পাঠিয়েছে, kernel ACK দিয়েছে, এখন অপেক্ষা <em>তোমার code</em>-এর <code>close()</code>-এর জন্য। Kernel নিজে থেকে এটা কখনো শেষ করবে না। Production-এ <code>ss</code>-এ হাজার হাজার CLOSE-WAIT মানে প্রায় নিশ্চিতভাবে তোমার code-এ connection বন্ধ করা ভুলে যাওয়ার bug — প্রতিটা একটা fd ধরে রাখে, আর শেষে fd ফুরিয়ে যায় (Chapter 30)। ওপাশের client তখন <strong>FIN-WAIT-2</strong>-এ: "আমি বিদায় বলেছি, তোমারটার অপেক্ষায়"।</li>
+    <li><strong>TIME-WAIT</strong> (server B): যে পক্ষ আগে বন্ধ করে, সব শেষ হওয়ার পরেও সে connection-এর চিহ্ন কিছুক্ষণ রেখে দেয় — Linux-এ ঠিক ৬০ সেকেন্ড (উপরের timer)। দুইটা কারণে: শেষ ACK-টা হারালে ওপাশ FIN আবার পাঠাবে, তখন জবাব দেওয়ার কেউ থাকা চাই; আর network-এ দেরিতে ঘুরতে থাকা এই connection-এর কোনো পুরনো packet যেন একই four-tuple-এর নতুন connection-এ ঢুকে না পড়ে।</li>
+  </ul>
+  <p>TIME-WAIT নিরীহ, কিন্তু দুই জায়গায় কামড়ায়। এক, server restart: পুরনো process-এর connection গুলো port 8080-এ TIME-WAIT-এ থাকলে নতুন process-এর <code>bind()</code> ব্যর্থ হতে পারে — Chapter 25-এর strace-এ Node যে <code>SO_REUSEADDR</code> দিয়েছিল, সেটা ঠিক এটা ঠেকায়। দুই, যে client প্রতিটা request-এর জন্য নতুন connection খোলে আর নিজে বন্ধ করে, তার প্রতিটা বন্ধ connection ৬০ সেকেন্ড একটা ephemeral port আটকে রাখে; Linux-এর range-এ ~২৮,০০০ port (Chapter 25), তাই একই server-এ সেকেন্ডে কয়েকশো নতুন connection খুললেই port ফুরিয়ে যেতে পারে। সমাধান: connection আবার ব্যবহার করো — HTTP keep-alive, database connection pool।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 470" width="100%" role="img" aria-label="Simplified TCP state machine. Opening: a client goes CLOSED to SYN-SENT to ESTABLISHED; a server goes LISTEN to SYN-RCVD to ESTABLISHED. Closing: the side that closes first goes FIN-WAIT-1, FIN-WAIT-2, TIME-WAIT for 60 seconds, then CLOSED; the other side goes CLOSE-WAIT until its code calls close, then LAST-ACK, then CLOSED">
+      <defs>
+        <marker id="c26f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="24" y="30" width="120" height="36" rx="6" class="b"/>
+      <text x="84" y="53" text-anchor="middle" class="mono">CLOSED</text>
+      <rect x="250" y="30" width="120" height="36" rx="6" class="b"/>
+      <text x="310" y="53" text-anchor="middle" class="mono">SYN-SENT</text>
+      <rect x="24" y="110" width="120" height="36" rx="6" class="b"/>
+      <text x="84" y="133" text-anchor="middle" class="mono">LISTEN</text>
+      <rect x="250" y="110" width="120" height="36" rx="6" class="b"/>
+      <text x="310" y="133" text-anchor="middle" class="mono">SYN-RCVD</text>
+      <rect x="500" y="66" width="170" height="44" rx="8" class="b-ok"/>
+      <text x="585" y="93" text-anchor="middle" class="mono">ESTABLISHED</text>
+      <line x1="144" y1="48" x2="246" y2="48" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="196" y="40" text-anchor="middle" class="t-s">connect: SYN</text>
+      <line x1="144" y1="128" x2="246" y2="128" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="196" y="120" text-anchor="middle" class="t-s">got SYN</text>
+      <line x1="370" y1="48" x2="496" y2="80" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="410" y="40" class="t-s">got SYN-ACK</text>
+      <line x1="370" y1="128" x2="496" y2="98" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="410" y="140" class="t-s">got ACK</text>
+      <text x="24" y="20" class="t-m t-s">client</text>
+      <text x="24" y="100" class="t-m t-s">server</text>
+
+      <text x="24" y="229" class="t-h t-s">you close first</text>
+      <text x="420" y="252" class="t-h t-s">peer closes first</text>
+      <rect x="200" y="206" width="150" height="36" rx="6" class="b"/>
+      <text x="275" y="229" text-anchor="middle" class="mono">FIN-WAIT-1</text>
+      <rect x="200" y="280" width="150" height="36" rx="6" class="b"/>
+      <text x="275" y="303" text-anchor="middle" class="mono">FIN-WAIT-2</text>
+      <rect x="200" y="354" width="150" height="36" rx="6" class="b-k"/>
+      <text x="275" y="377" text-anchor="middle" class="mono">TIME-WAIT</text>
+      <rect x="200" y="424" width="150" height="36" rx="6" class="b"/>
+      <text x="275" y="447" text-anchor="middle" class="mono">CLOSED</text>
+      <line x1="540" y1="110" x2="300" y2="202" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="410" y="188" class="t-s">close(): FIN</text>
+      <line x1="275" y1="242" x2="275" y2="276" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="286" y="264" class="t-s">got ACK</text>
+      <line x1="275" y1="316" x2="275" y2="350" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="286" y="338" class="t-s">got FIN, send ACK</text>
+      <line x1="275" y1="390" x2="275" y2="420" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="286" y="410" class="t-k t-s">after 60 s</text>
+
+      <rect x="560" y="226" width="170" height="44" rx="6" class="b-d"/>
+      <text x="645" y="245" text-anchor="middle" class="mono">CLOSE-WAIT</text>
+      <text x="645" y="262" text-anchor="middle" class="t-d t-s">waits for YOUR close()</text>
+      <rect x="560" y="316" width="170" height="36" rx="6" class="b"/>
+      <text x="645" y="339" text-anchor="middle" class="mono">LAST-ACK</text>
+      <rect x="560" y="400" width="170" height="36" rx="6" class="b"/>
+      <text x="645" y="423" text-anchor="middle" class="mono">CLOSED</text>
+      <line x1="620" y1="110" x2="640" y2="222" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="652" y="180" class="t-s">got FIN, send ACK</text>
+      <line x1="645" y1="270" x2="645" y2="312" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="656" y="296" class="t-s">close(): FIN</text>
+      <line x1="645" y1="352" x2="645" y2="396" class="ln" marker-end="url(#c26f2-a)"/>
+      <text x="656" y="380" class="t-s">got ACK</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">TCP-র অবস্থার ছোট করা মানচিত্র। ওপরে খোলার পথ — client আর server দুই রাস্তায় ESTABLISHED-এ পৌঁছায়। নিচে বন্ধের দুই রাস্তা: যে আগে <code>close()</code> ডাকে সে বাঁয়ে নামে আর ৬০ সেকেন্ড TIME-WAIT-এ থাকে; যে পক্ষ আগে FIN পায় সে ডানে CLOSE-WAIT-এ আটকে থাকে যতক্ষণ না তার code নিজে <code>close()</code> ডাকে।</p>
+
+  <h3>Server-এর দুই লাইন: SYN queue আর accept queue</h3>
+  <p>ওপরের handshake-এ তোমার Node code কোথায় ছিল? কোথাও না — পুরোটা kernel করেছে। Listening socket-এর পেছনে kernel দুইটা লাইন রাখে: আধা-শেষ handshake-এর জন্য <strong>SYN queue</strong>, আর পুরো শেষ হওয়া connection-এর জন্য <strong>accept queue</strong> — যেখানে তারা app-এর <code>accept()</code>-এর অপেক্ষায় থাকে। Accept queue-এর মাপ হলো <code>listen()</code>-এ দেওয়া backlog আর kernel-এর সীমা <code>net.core.somaxconn</code>-এর মধ্যে যেটা ছোট (Docker VM-এ <code>cat /proc/sys/net/core/somaxconn</code> = ৪০৯৬, Node-এর default backlog ৫১১)। App ব্যস্ত থাকলে কী হয়, দেখি — backlog ইচ্ছা করে ৪:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — backlog.js</div>
+    <div class="codewrap"><pre><code>// backlog.js — server-এর event loop আটকে থাকলে নতুন connection-এর কী হয়
+const net = require('net');
+const { execSync } = require('child_process');
+
+if (process.argv[2] === 'server') {
+  net.createServer(() =&gt; {}).listen(8080, '127.0.0.1', 4, () =&gt; {   // backlog = 4
+    process.send('ready');
+    const end = Date.now() + 5000;
+    while (Date.now() &lt; end) {}          // ৫ সেকেন্ড event loop বন্ধ: accept() কেউ ডাকছে না
+  });
+} else {
+  const server = require('child_process').fork(__filename, ['server']);
+  server.on('message', () =&gt; {
+    for (let i = 1; i &lt;= 10; i++) {
+      const t = Date.now();
+      net.connect(8080, '127.0.0.1', () =&gt; console.log(`client ${i} connected after ${Date.now() - t} ms`))
+         .on('error', e =&gt; console.log(`client ${i}: ${e.code}`));
+    }
+    setTimeout(() =&gt; console.log(execSync("ss -tan '( sport = :8080 or dport = :8080 )'").toString()), 1000);
+    setTimeout(() =&gt; process.exit(0), 9000);
+  });
+}</code></pre></div>
+    <p>আমার output (ss-এর তালিকা থেকে একই রকম লাইনগুলো বাদ দিয়ে):</p>
+    <div class="codewrap"><pre><code>client 1 connected after 2 ms
+client 2 connected after 2 ms
+client 3 connected after 2 ms
+client 4 connected after 2 ms
+client 5 connected after 2 ms
+State    Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+LISTEN   5      4          127.0.0.1:8080       0.0.0.0:*
+ESTAB    0      0          127.0.0.1:56444    127.0.0.1:8080
+SYN-SENT 0      1          127.0.0.1:56474    127.0.0.1:8080
+...      (মোট ৫টা ESTAB client, ৫টা SYN-SENT)
+client 10 connected after 5158 ms
+client 9 connected after 5158 ms
+client 8 connected after 5159 ms
+client 7 connected after 5159 ms
+client 6 connected after 5160 ms</code></pre></div>
+  </div>
+  <p>Server process তখন পুরোপুরি জমে আছে, একটা JS লাইনও চলছে না — তবু প্রথম ৫টা client ২ ms-এ "connected"। Handshake kernel করেছে, connection গুলো accept queue-তে বসে আছে; <code>LISTEN</code> লাইনের <code>Recv-Q 5</code> মানে queue-তে ৫টা অপেক্ষায় (Linux backlog-এর চেয়ে একটা বেশি রাখে), <code>Send-Q 4</code> হলো backlog। Queue ভরা, তাই বাকি ৫টার SYN kernel নীরবে ফেলে দিয়েছে — কোনো "refused" না পাঠিয়ে। তারা <code>SYN-SENT</code>-এ ঝুলে থেকে SYN আবার আবার পাঠিয়েছে, আর server-এর loop ছাড়া পাওয়ার পরে ঢুকেছে ৫ সেকেন্ডেরও বেশি দেরিতে।</p>
+  <p>Production-এ এর উপসর্গ ধাঁধার মতো: server "up", health check হয়তো পাস করছে, অথচ কিছু client connect করতেই কয়েক সেকেন্ড নিচ্ছে বা timeout খাচ্ছে। কারণ event loop কোনো ভারী synchronous কাজে আটকে (Chapter 19), <code>accept()</code> হচ্ছে না, queue ভরে গেছে। <code>ss -ltn</code>-এ listening socket-এর <code>Recv-Q</code> backlog ছুঁয়ে থাকলে এটাই রোগ। আর backlog বাড়াতে চাইলে মনে রেখো, <code>somaxconn</code>-এর বেশি চাইলে kernel নীরবে ছেঁটে দেয়।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 220" width="100%" role="img" aria-label="Server side queues: an incoming SYN enters the SYN queue while the handshake is half done; completed connections move to the accept queue, whose size is the smaller of backlog and somaxconn; the application's accept call takes them out. When the accept queue is full, new SYNs are dropped and the client retries">
+      <defs>
+        <marker id="c26f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c26f3-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="68" class="t-s">SYN in</text>
+      <line x1="80" y1="64" x2="126" y2="64" class="ln" marker-end="url(#c26f3-a)"/>
+      <rect x="130" y="40" width="170" height="50" rx="8" class="b-k"/>
+      <text x="215" y="62" text-anchor="middle" class="t-k t-s">SYN queue</text>
+      <text x="215" y="80" text-anchor="middle" class="t-m t-s">handshake half done</text>
+      <line x1="300" y1="64" x2="346" y2="64" class="ln" marker-end="url(#c26f3-a)"/>
+      <text x="323" y="32" text-anchor="middle" class="t-s">ACK</text>
+      <rect x="350" y="40" width="240" height="50" rx="8" class="b-k"/>
+      <rect x="362" y="52" width="30" height="26" rx="3" class="b-u"/>
+      <rect x="398" y="52" width="30" height="26" rx="3" class="b-u"/>
+      <rect x="434" y="52" width="30" height="26" rx="3" class="b-u"/>
+      <rect x="470" y="52" width="30" height="26" rx="3" class="b-u"/>
+      <rect x="506" y="52" width="30" height="26" rx="3" class="b-u"/>
+      <text x="470" y="112" text-anchor="middle" class="t-k t-s">accept queue: min(backlog, somaxconn)</text>
+      <line x1="590" y1="64" x2="636" y2="64" class="ln" marker-end="url(#c26f3-a)"/>
+      <rect x="640" y="40" width="136" height="50" rx="8" class="b-u"/>
+      <text x="708" y="62" text-anchor="middle" class="t-u t-s">your app</text>
+      <text x="708" y="80" text-anchor="middle" class="mono">accept()</text>
+      <text x="215" y="150" text-anchor="middle" class="t-s">all of this is the kernel —</text>
+      <text x="215" y="168" text-anchor="middle" class="t-s">works while your JS is frozen</text>
+      <path d="M470 124 V190 H90" class="ln-d dash" marker-end="url(#c26f3-d)"/>
+      <text x="490" y="170" class="t-d t-s">queue full → new SYN dropped silently,</text>
+      <text x="490" y="188" class="t-d t-s">client stays SYN-SENT and retries</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Listening socket-এর পেছনের দুই লাইন। Handshake পুরোটা kernel-এর, তাই তোমার JS জমে থাকলেও connection accept queue-তে জমতে থাকে (backlog.js-এর প্রথম ৫টা)। Queue ভরলে নতুন SYN নীরবে পড়ে যায়, client আবার চেষ্টা করে — ফলে "refused" না, দীর্ঘ অপেক্ষা।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Client-এর <code>connect</code> সফল মানে server app connection-টা দেখেছে।" না — backlog.js-এ server-এর JS পুরো ৫ সেকেন্ড জমে ছিল, তবু ৫টা client ২ ms-এ connected। Handshake kernel-এর কাজ; app connection প্রথম দেখে <code>accept()</code>-এ, যেটা পরে। উল্টো দিকে, queue ভরা থাকলে client "connection refused" পায় না — সে ঝুলে থাকে।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>TCP connection কোনো তার না — দুই kernel-এর memory-তে রাখা কয়েকটা সংখ্যা (sequence, ACK, timer, window), যেগুলো তারা packet দিয়ে মিলিয়ে নেয়। Sequence number ক্রম আর ডুপ্লিকেট সামলায়, ACK আর retransmission হারানো সামলায়। খোলা হয় তিন ধাপে, বন্ধ হয় দুই দিক থেকে আলাদা FIN-এ — আগে যে বন্ধ করে সে ৬০ সেকেন্ড TIME-WAIT-এ, আর যে FIN পেয়েও বন্ধ করে না সে CLOSE-WAIT-এ আটকে থাকে। আর পুরো handshake kernel নিজেই করে, app-এর অপেক্ষায় accept queue-তে জমিয়ে রাখে।</p>
+  </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Handshake-এ তিনটা ধাপই লাগে কেন — দুইটায় হয় না কেন?</li>
-      <li>"Connection দুই kernel-এর memory-র state" — এর মানে কী?</li>
-      <li>Send/receive buffer কী কী সমস্যা solve করে?</li>
-      <li>SYN queue আর accept queue-র পার্থক্য, আর accept queue ভরলে কী হয়?</li>
+      <li>IP কোন কোন নিশ্চয়তা দেয় না? Sequence number, ACK আর retransmission মিলে TCP এগুলো কীভাবে সামলায়?</li>
+      <li>Handshake-এ তিন ধাপ লাগে কেন, দুইটায় হয় না কেন? tcpdump-এর <code>seq 1:6</code> আর <code>ack 6</code>-এর মানে কী?</li>
+      <li>"Connection দুই kernel-এর memory-তে" — <code>ss -ti</code>-এর <code>rtt</code>, <code>rto</code>, <code>cwnd</code> কী মনে রাখে? এক পাশের machine হঠাৎ মরে গেলে অন্য পাশ সাথে সাথে জানে না কেন?</li>
+      <li>TIME-WAIT কে পায়, কতক্ষণ, আর কেন দরকার? CLOSE-WAIT-এ হাজারো connection জমলে সেটা কীসের লক্ষণ?</li>
+      <li>backlog.js-এ server জমে থাকা সত্ত্বেও ৫টা client ২ ms-এ connected হলো কীভাবে? বাকি ৫টা "refused" না পেয়ে ৫ সেকেন্ড ঝুলল কেন?</li>
     </ul>
   </div>

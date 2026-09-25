@@ -1,36 +1,251 @@
   <p class="part-label">PART 6 · STORAGE</p>
-  <h2>Chapter 24 — File I/O-র Mode গুলো</h2>
-  <p class="chap-sub">Blocking, sync, async, O_SYNC, O_DIRECT — শব্দগুলোর পিছনের আসল প্রশ্ন দুটো মাত্র।</p>
+  <h2>Chapter 24 — File I/O Modes</h2>
+  <p class="chap-sub">Blocking, async, <code>O_SYNC</code>, <code>O_DSYNC</code>, <code>fdatasync</code>, <code>O_DIRECT</code> — নামের ভিড়ের পেছনে আসলে দুইটা আলাদা প্রশ্ন। কোনটার কী দাম, কোনটা আসলে কী নিশ্চয়তা দেয় না, আর Node-এ কখন কোনটা।</p>
 
-  <p>File I/O-র যাবতীয় mode আসলে দুইটা স্বাধীন প্রশ্নের উত্তর:</p>
+  <p>আগের তিন chapter-এ file I/O-র ভেতরটা দেখেছি: read-এর স্তর আর <code>write()</code>-এর মিথ্যা "হয়ে গেছে" (Chapter 21), page cache আর dirty page (Chapter 23)। File খোলার সময় বা লেখার পরে এই আচরণ বদলানোর অনেকগুলো উপায় আছে, আর নামগুলো গুলিয়ে যায়। সবগুলো আসলে দুইটা স্বাধীন প্রশ্নের কোনো একটার উত্তর:</p>
   <ol>
-    <li><strong>আমার thread কি অপেক্ষা করবে?</strong> (blocking vs non-blocking/async)</li>
-    <li><strong>Page cache-এর সাথে সম্পর্ক কী হবে?</strong> (durability/caching)</li>
+    <li><strong>কে অপেক্ষা করবে?</strong> Disk-এর কাজ চলার সময় তোমার thread আটকে থাকবে, অন্য কেউ আটকাবে, নাকি কেউই না?</li>
+    <li><strong>Page cache-এর সাথে সম্পর্ক কী?</strong> Data RAM-এ রেখেই ফিরে আসবে, disk পর্যন্ত পৌঁছানোর অপেক্ষা করবে, নাকি page cache-কে পুরো এড়িয়ে যাবে?</li>
   </ol>
 
-  <h3>প্রশ্ন ১: অপেক্ষা</h3>
+  <h3>প্রশ্ন ১: কে অপেক্ষা করবে</h3>
+  <p>সাধারণ <code>read()</code> <strong>blocking</strong>: data না আসা পর্যন্ত call ফেরে না, thread ঘুমিয়ে থাকে (Chapter 15-এর Waiting অবস্থা)। Node-এর <code>readFileSync</code> ঠিক এটাই — আর যেহেতু সে main thread-এ চলে, অপেক্ষার পুরো সময়টা event loop বন্ধ।</p>
+  <p>Network socket-এর বেলায় এর একটা পরিচিত সমাধান আছে (Chapter 28–29-এ বিস্তারিত): fd-কে <strong>non-blocking</strong> করে দাও — data না থাকলে <code>read()</code> না ঘুমিয়ে সাথে সাথে <code>EAGAIN</code> ("এখন নেই, পরে এসো") error দিয়ে ফেরে। তারপর kernel-কে বলো "এই fd-তে data এলে আমাকে জাগিও" — Linux-এ এই ব্যবস্থার নাম <strong>epoll</strong>। Regular file-এ কি একই কৌশল চলে?</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — nonblock.py</div>
+    <div class="codewrap"><pre><code># nonblock.py (Linux) — pipe বনাম regular file, দুইটাই non-blocking
+import os, select
+
+r, w = os.pipe()                       # pipe: এক পাশে লেখা, অন্য পাশে পড়া
+os.set_blocking(r, False)
+try:
+    os.read(r, 100)
+except BlockingIOError as e:
+    print('pipe read :', e)
+
+fd = os.open('/etc/hostname', os.O_RDONLY | os.O_NONBLOCK)
+print('file read :', os.read(fd, 100))
+
+ep = select.epoll()
+ep.register(r, select.EPOLLIN)
+print('epoll + pipe: registered')
+try:
+    ep.register(fd, select.EPOLLIN)
+except PermissionError as e:
+    print('epoll + file:', e)</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/nonblock.py</code></pre></div>
+    <div class="codewrap"><pre><code>pipe read : [Errno 11] Resource temporarily unavailable
+file read : b'43c8a9a3675b\n'
+epoll + pipe: registered
+epoll + file: [Errno 1] Operation not permitted</code></pre></div>
+  </div>
+  <p>Pipe (দুই process-এর মধ্যে একমুখী নল, kernel-এর বানানো) খালি থাকায় non-blocking read সাথে সাথে <code>EAGAIN</code> (Errno 11) দিয়ে ফিরেছে — ঠিক যেমন হওয়ার কথা। কিন্তু regular file-এ <code>O_NONBLOCK</code>-এর কোনো প্রভাবই নেই, আর epoll file নিতেই অস্বীকার করেছে (<code>EPERM</code>)। কারণটা ধারণাগত: socket বা pipe-এ "data এখনো আসেনি" একটা আসল অবস্থা — অন্য পাশে কেউ লিখলে তবে আসবে। File-এর data সবসময়ই "আছে", শুধু disk থেকে আনতে সময় লাগে, আর সেই আনা ঘটে <code>read()</code>-এর ভেতরেই। "Ready কি না" জিজ্ঞেস করার কিছু নেই, তাই epoll-এর মডেল এখানে খাটে না।</p>
+  <p>তাহলে file I/O-তে event loop না আটকানোর উপায় দুইটা। প্রথমটা Node-এর বহু পুরনো পথ: blocking কাজটা <em>অন্য একটা thread-কে</em> দাও। Chapter 21-এর strace-এ দেখেছ — <code>readFile</code>-এর <code>openat</code>, <code>read</code>, <code>close</code> চলেছিল libuv thread pool-এর আলাদা আলাদা thread-এ, আর main thread শুধু কাজ শেষের খবর পেয়েছিল। Socket-এর বেলায় কোনো pool লাগে না, main thread নিজেই epoll-এ অপেক্ষা করে — নিচের ছবিতে দুটো পাশাপাশি।</p>
+  <p>দ্বিতীয় পথ Linux-এর নতুন <strong>io_uring</strong>: process আর kernel-এর মধ্যে ভাগাভাগি করা memory-তে দুইটা ring (Chapter 11-এর descriptor ring-এর মতো) — একটায় process কাজের অনুরোধ লিখে রাখে ("এই fd-র এই জায়গা থেকে এত byte পড়ো"), kernel নিজে সেগুলো করে অন্যটায় ফলাফল রাখে। কেউ আটকায় না, আর অনেকগুলো অনুরোধের জন্য একটা system call-ই যথেষ্ট। এটা "ready হলে জানাও" না, "কাজ শেষ হলে জানাও" — তাই file-এও চলে। Node কি এটা ব্যবহার করে? আমার Node 22-এ (<code>process.versions.uv</code> = <code>1.51.0</code>) Docker-এ strace করে দেখলাম (io_uring-এর system call Docker-এর default নিরাপত্তা নিয়মে বন্ধ, তাই <code>--security-opt seccomp=unconfined</code> লেগেছে): libuv একটা ring খোলে ঠিকই (<code>io_uring_setup</code> দেখা যায়), কিন্তু file-এর read তখনো pool thread-এর <code>pread64</code> দিয়ে — <code>UV_USE_IO_URING=1</code> দিলেও একই।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="How Node waits: for a socket, the main thread registers the fd with epoll and sleeps in epoll_wait until data is ready; for a file, epoll cannot be used, so a libuv pool thread blocks inside read in the kernel while the main thread keeps running, and is told when it finishes">
+      <defs>
+        <marker id="c24f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c24f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="28" class="t-h t-s">socket: "tell me when it's ready"</text>
+      <text x="424" y="28" class="t-h t-s">file: "someone has to wait inside read()"</text>
+      <line x1="400" y1="16" x2="400" y2="316" class="grid"/>
+
+      <text x="24" y="58" class="t-u t-s">USER</text>
+      <rect x="72" y="44" width="288" height="48" rx="8" class="b-u"/>
+      <text x="216" y="66" text-anchor="middle" class="t-s">main thread (event loop)</text>
+      <text x="216" y="84" text-anchor="middle" class="mono">epoll_wait(...)</text>
+
+      <rect x="424" y="44" width="160" height="48" rx="8" class="b-u"/>
+      <text x="504" y="66" text-anchor="middle" class="t-s">main thread</text>
+      <text x="504" y="84" text-anchor="middle" class="t-ok t-s">keeps running JS</text>
+      <rect x="600" y="44" width="176" height="48" rx="8" class="b-u"/>
+      <text x="688" y="66" text-anchor="middle" class="t-s">libuv pool thread</text>
+      <text x="688" y="84" text-anchor="middle" class="mono">pread64(fd, ...)</text>
+      <path d="M600 60 H588" class="ln-u" marker-end="url(#c24f1-u)"/>
+      <text x="594" y="112" text-anchor="middle" class="t-m t-s">"done" (eventfd)</text>
+
+      <line x1="20" y1="136" x2="780" y2="136" class="ln-k dash"/>
+      <text x="24" y="130" class="t-k t-s">system call</text>
+
+      <text x="24" y="166" class="t-k t-s">KERNEL</text>
+      <rect x="72" y="176" width="288" height="100" rx="8" class="b-k"/>
+      <text x="88" y="200" class="t-s">epoll interest list: fd 21, 22, 23 …</text>
+      <text x="88" y="224" class="t-s">thread sleeps here, costs nothing</text>
+      <text x="88" y="248" class="t-m t-s">packet arrives → fd 22 ready →</text>
+      <text x="88" y="266" class="t-m t-s">wake the main thread with a list</text>
+      <line x1="216" y1="92" x2="216" y2="172" class="ln-k" marker-end="url(#c24f1-k)"/>
+
+      <rect x="600" y="176" width="176" height="100" rx="8" class="b-k"/>
+      <text x="616" y="200" class="t-s">page cache → miss →</text>
+      <text x="616" y="222" class="t-s">block layer → SSD</text>
+      <text x="616" y="248" class="t-d t-s">this thread sleeps</text>
+      <text x="616" y="266" class="t-d t-s">until the data is in</text>
+      <line x1="688" y1="92" x2="688" y2="172" class="ln-k" marker-end="url(#c24f1-k)"/>
+      <text x="424" y="200" class="t-m t-s">epoll on a regular</text>
+      <text x="424" y="218" class="t-m t-s">file → EPERM</text>
+      <text x="24" y="304" class="t-m t-s">default pool = 4 threads → at most 4 file operations waiting at once (Chapter 19, 20)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে socket: main thread একবার epoll-এ ঘুমায়, হাজারটা fd-র যেকোনোটা ready হলে জাগে — কোনো বাড়তি thread লাগে না। ডানে file: epoll চলে না, তাই একটা pool thread <code>pread64</code>-এর ভেতরে kernel-এ ঘুমিয়ে disk-এর জন্য অপেক্ষা করে, আর main thread ততক্ষণ JS চালায়। Pool-এ ৪টা thread মানে একসাথে বড়জোর ৪টা file অপেক্ষা।</p>
+
+  <h3>প্রশ্ন ২: page cache-এর সাথে সম্পর্ক</h3>
+  <p>এবার দ্বিতীয় অক্ষ। লেখার সময় data কোথায় পৌঁছালে call ফিরবে, সেটা বদলানোর পাঁচটা হাতিয়ার:</p>
   <ul>
-    <li><strong>Blocking (default):</strong> <code>read()</code> ডাকলে data না আসা পর্যন্ত thread টা Waiting-এ। সরল, বোঝা সহজ — আর এক thread-এ এক সময়ে একটাই I/O।</li>
-    <li><strong>Asynchronous:</strong> "কাজটা শুরু করো, আমি অন্য কাজে যাচ্ছি — শেষ হলে জানিও।" Thread আটকায় না। Linux-এ আধুনিক উত্তর <strong>io_uring</strong>; Node.js তোমাকে যে async <code>fs</code> API দেয়, তার পিছনে (ঐতিহাসিকভাবে) থাকে thread pool — blocking read-গুলো অন্য thread-এ চালিয়ে <em>তোমার</em> thread-কে মুক্ত রাখা।</li>
+    <li><strong>Default (buffered):</strong> page cache-এ copy করেই ফেরে (Chapter 21)। দ্রুততম, কিন্তু crash-এ হারাতে পারে।</li>
+    <li><strong><code>fsync(fd)</code>:</strong> এই file-এর সব dirty data আর metadata (size, সময় ইত্যাদি) disk-এ নামাও, তারপর ফেরো।</li>
+    <li><strong><code>fdatasync(fd)</code>:</strong> একই, কিন্তু metadata-র শুধু সেটুকু যেটা ছাড়া data আবার পড়া যাবে না (যেমন file বড় হলে নতুন size); "শেষ কবে বদলেছে"-র মতো জিনিস বাদ। একটা disk write কম হতে পারে।</li>
+    <li><strong><code>O_SYNC</code> / <code>O_DSYNC</code>:</strong> file খোলার সময়ের flag। তারপর প্রতিটা <code>write()</code> নিজেই যেন শেষে একটা <code>fsync</code> / <code>fdatasync</code> করে ফেরে।</li>
+    <li><strong><code>O_DIRECT</code>:</strong> page cache-কে পুরো এড়িয়ে যাও — পরের অংশে।</li>
+  </ul>
+  <p>প্রতিটার দাম মাপি। একই কাজ — ৫০০টা ১০০-byte-এর লাইন লেখা — ছয় রকমভাবে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — durability.js (macOS আর Linux)</div>
+    <div class="codewrap"><pre><code>// durability.js — 500টা 100-byte লেখা, durability-র আলাদা আলাদা দামে
+const fs = require('fs');
+const { O_WRONLY, O_CREAT, O_TRUNC, O_SYNC, O_DSYNC } = fs.constants;
+const line = 'x'.repeat(99) + '\n';
+const N = 500;
+
+function bench(label, flags, after) {
+  const fd = fs.openSync('d.log', O_WRONLY | O_CREAT | O_TRUNC | flags);
+  const t = performance.now();
+  for (let i = 0; i &lt; N; i++) { fs.writeSync(fd, line); after(fd, i); }
+  const ms = performance.now() - t;
+  fs.closeSync(fd);
+  console.log(`${label.padEnd(26)} ${(ms * 1000 / N).toFixed(1).padStart(8)} µs per write`);
+}
+bench('plain write', 0, () =&gt; {});
+bench('O_DSYNC', O_DSYNC, () =&gt; {});
+bench('O_SYNC', O_SYNC, () =&gt; {});
+bench('fdatasync every write', 0, fd =&gt; fs.fdatasyncSync(fd));
+bench('fsync every write', 0, fd =&gt; fs.fsyncSync(fd));
+bench('fsync every 100 writes', 0, (fd, i) =&gt; { if (i % 100 === 99) fs.fsyncSync(fd); });
+fs.unlinkSync('d.log');</code></pre></div>
+    <div class="codewrap"><pre><code>node durability.js                                                               # macOS
+docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim node /w/durability.js   # Linux</code></pre></div>
+    <div class="table-wrap"><table>
+      <tr><th>প্রতিটা write-এর দাম</th><th>macOS (Mac-এর SSD)</th><th>Linux (Docker VM-এর virtual disk)</th></tr>
+      <tr><td>plain write</td><td>১.৯ µs</td><td>০.৯ µs</td></tr>
+      <tr><td><code>O_DSYNC</code></td><td>১৯.৬ µs</td><td>৩০২.৪ µs</td></tr>
+      <tr><td><code>O_SYNC</code></td><td>১৭.৪ µs</td><td>২৭৫.২ µs</td></tr>
+      <tr><td><code>fdatasync</code> প্রতিবার</td><td>৩,৮৫২.৬ µs</td><td>২৬৮.০ µs</td></tr>
+      <tr><td><code>fsync</code> প্রতিবার</td><td>৩,৭৫৩.৯ µs</td><td>২৬৩.২ µs</td></tr>
+      <tr><td><code>fsync</code> প্রতি ১০০টায় একবার</td><td>৫৬.০ µs</td><td>৪.৮ µs</td></tr>
+    </table></div>
+  </div>
+  <p>তিনটা শিক্ষা, প্রতিটা আলাদা করে মনে রাখার মতো:</p>
+  <ul>
+    <li><strong>Linux-এ চারটা sync পদ্ধতির দাম প্রায় এক</strong> (~২৭০ µs): <code>O_SYNC</code>, <code>O_DSYNC</code>, <code>fsync</code>, <code>fdatasync</code> সবাই device পর্যন্ত গিয়ে flush করে তবে ফেরে। এখানে শুধু file-এর শেষে জোড়া হচ্ছে বলে <code>fdatasync</code>-কেও size বদলানোর metadata লিখতে হচ্ছে, তাই সুবিধা চোখে পড়ে না; আগে থেকে বড় করে রাখা file-এর মাঝখানে লিখলে পার্থক্য দেখা যায়।</li>
+    <li><strong>macOS-এ <code>O_SYNC</code> আসলে flash পর্যন্ত যায় না।</strong> ১৭–২০ µs মানে Chapter 21-এর সাধারণ macOS <code>fsync</code>-এর দাম — data SSD-র নিজের cache পর্যন্ত। Node-এর <code>fsyncSync</code>/<code>fdatasyncSync</code> macOS-এ <code>F_FULLFSYNC</code> ব্যবহার করে বলে সেগুলো ~৩.৮ ms। একই flag দুই OS-এ দুই রকম নিশ্চয়তা দেয় — "Linux-এ চলেছে" মানে "Mac-এও নিরাপদ" না।</li>
+    <li><strong>Batching সব বদলে দেয়।</strong> প্রতি ১০০টা লেখায় একবার fsync করলে Mac-এ প্রতি লেখার দাম ৩,৭৫৪ µs থেকে ৫৬ µs — ৬৭ গুণ কম, কারণ একটা fsync-এর স্থির দাম ১০০টা লেখায় ভাগ হয়ে যায়। Database-রা এই কৌশলের নাম দিয়েছে <strong>group commit</strong>: একই মুহূর্তে commit হতে চাওয়া অনেকগুলো transaction-কে এক fsync-এ নামানো। দাম: শেষ fsync-এর পরের লেখাগুলো crash-এ হারাতে পারে।</li>
   </ul>
 
-  <h3>প্রশ্ন ২: cache-এর সাথে বোঝাপড়া</h3>
-  <ul>
-    <li><strong>Default:</strong> সব page cache-এর মধ্য দিয়ে — write মানে cache-এ লেখা (fast, কিন্তু durable না যতক্ষণ না flush)।</li>
-    <li><strong><code>O_SYNC</code>:</strong> প্রতিটা write disk-এ পৌঁছানোর পরেই return করবে — যেন প্রতি write-এর সাথে ফাউ fsync। Durability সর্বোচ্চ, speed-এর দাম দিয়ে। (ছোট ভাই <code>O_DSYNC</code> — data আর শুধু ফেরত পড়ার জন্য দরকারি metadata sync করে, পুরো metadata না। WAL-ধরনের append path-এ সাধারণত এটাই যথেষ্ট আর সস্তা।)</li>
-    <li><strong><code>O_DIRECT</code>:</strong> Page cache-কে পুরোপুরি bypass — data সরাসরি disk ↔ তোমার buffer। কে চায় এটা? যে নিজে আরও ভালো cache চালায় — যেমন কিছু database engine: "kernel, তোমার generic cache লাগবে না, আমি আমার data আমি-ই ভালো বুঝি।" সাধারণ application-এর জন্য এটা প্রায় সবসময় ভুল choice — kernel-এর cache-টা আসলে চমৎকার।<br><strong>একটা ফাঁদ:</strong> O_DIRECT durability-র কথা বলে <em>না</em>। সে শুধু page cache এড়ায়; device-এর নিজের cache তো রয়েই গেল (Chapter 21)। তাই O_DIRECT দিয়ে লিখেও durability চাইলে fsync/O_DSYNC লাগবেই — database গুলো ঠিক তাই করে। O_DIRECT-এর প্রশ্নটা "cache-এর মালিক কে", "data কি নিরাপদ" না।</li>
-  </ul>
+  <h3>O_DIRECT: page cache-কে পাশ কাটানো</h3>
+  <p><code>O_DIRECT</code> দিয়ে খোলা file-এ read আর write page cache-এ থামেই না: device DMA দিয়ে (Chapter 11) data সরাসরি তোমার buffer থেকে নেয় বা buffer-এ রাখে। কে চায় এটা? যে নিজের cache নিজে চালায় — যেমন একটা database engine, যার নিজের memory-তে data-র একটা সাজানো cache আছে। Kernel-এর page cache তখন শুধু একই data-র দ্বিতীয় কপি (RAM-এর অপচয়), আর kernel-এর সাধারণ নিয়মে কোনটা রাখা হবে তা database-এর নিজের জ্ঞানের চেয়ে খারাপ। MySQL-এর InnoDB-তে setting দিয়ে ঠিক এটাই বেছে নেওয়া যায়।</p>
+  <p>বিনিময়ে কড়া শর্ত: device block ধরে কাজ করে, আর মাঝে page cache নেই যে টুকরো জুড়ে দেবে। তাই লেখার মাপ, file-এর মধ্যে অবস্থান, এমনকি তোমার buffer RAM-এর যে ঠিকানায় শুরু হয় — সবকিছু block-এর মাপের গুণিতক হতে হয় (এই disk-এ ৫১২ byte)। Node-এ buffer কোন ঠিকানায় বসবে সেটা ঠিক করার উপায় নেই, তাই একটা বড় buffer-এর ভেতরে শুরুর জায়গা ১৬ byte করে সরিয়ে সরিয়ে চেষ্টা করি:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — direct.js</div>
+    <div class="codewrap"><pre><code>// direct.js (Linux) — O_DIRECT-এর শর্ত: size আর memory-র ঠিকানা, দুটোই সাজানো
+const fs = require('fs');
+const { O_WRONLY, O_CREAT, O_TRUNC, O_DIRECT } = fs.constants;
+const fd = fs.openSync('direct.bin', O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT);
+const big = Buffer.alloc(1 &lt;&lt; 20);          // বড় একটা buffer; এর ভেতরে শুরুর জায়গা বদলে বদলে চেষ্টা
+const tryWrite = buf =&gt; {
+  try { fs.writeSync(fd, buf, 0, buf.length, 0); return 'ok'; } catch (e) { return e.code; }
+};
+console.log('100 bytes           :', tryWrite(big.subarray(0, 100)));
+const ok = [];
+for (let off = 0; off &lt; 4096; off += 16)
+  if (tryWrite(big.subarray(off, off + 4096)) === 'ok') ok.push(off);
+console.log('4096 bytes, ok at   :', ok.join(', '));
+fs.closeSync(fd);</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim sh -c 'node /w/direct.js; fincore direct.bin'</code></pre></div>
+    <div class="codewrap"><pre><code>100 bytes           : EINVAL
+4096 bytes, ok at   : 496, 1008, 1520, 2032, 2544, 3056, 3568, 4080
+RES PAGES SIZE FILE
+ 0B     0   4K direct.bin</code></pre></div>
+  </div>
+  <p>১০০ byte সরাসরি <code>EINVAL</code> (অবৈধ argument)। 4096 byte-ও বেশিরভাগ জায়গা থেকে ব্যর্থ, সফল শুধু ঠিক ৫১২ byte পরপর — ৪৯৬, ১০০৮, ১৫২০…। মানে buffer-টা RAM-এর যে ঠিকানায় শুরু হয়েছে, তার থেকে ৪৯৬ byte সরলে ঠিকানাটা ৫১২-র গুণিতক হয়; ঠিক সেই জায়গাগুলো থেকেই লেখা গেছে। আর <code>fincore</code> দেখাচ্ছে file-এর 4 KB লেখা হলেও page cache-এ তার একটা page-ও নেই। <code>dd ... oflag=direct</code> নিজে থেকেই সাজানো buffer বানায় বলে সহজে চলে (Chapter 11); C, C++, Rust-এ লেখা database-ও তাই করে। Node-এ O_DIRECT কার্যত অবাস্তব।</p>
+  <p>আর একটা জরুরি কথা: O_DIRECT durability-র কোনো কথা দেয় না। Page cache এড়ায় ঠিকই, কিন্তু Chapter 21-এর device-এর নিজের volatile cache এখনো আছে। O_DIRECT দিয়ে লিখেও টেকসই চাইলে fsync বা <code>O_DSYNC</code> লাগবেই। O_DIRECT-এর প্রশ্নটা "cache-এর মালিক কে", "data কি নিরাপদ" না। macOS-এ O_DIRECT নেই; কাছাকাছি কাজ করে Chapter 20-এর <code>F_NOCACHE</code>।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Three write paths. Buffered: the CPU copies your buffer into the page cache and write returns; writeback happens later. O_DSYNC or fsync: same copy, but the call waits until the device confirms the data is stored. O_DIRECT: the device reads your aligned buffer by DMA, skipping the page cache, but the device's own cache still needs a flush for durability">
+      <defs>
+        <marker id="c24f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c24f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c24f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="214" y="26" text-anchor="middle" class="t-u t-s">your buffer</text>
+      <text x="414" y="26" text-anchor="middle" class="t-k t-s">page cache</text>
+      <text x="614" y="26" text-anchor="middle" class="t-s">device (+ its cache)</text>
+
+      <text x="24" y="70" class="t-h t-s">buffered</text>
+      <rect x="160" y="50" width="108" height="34" rx="6" class="b-u"/>
+      <rect x="360" y="50" width="108" height="34" rx="6" class="b-k"/>
+      <rect x="560" y="50" width="108" height="34" rx="6" class="b"/>
+      <line x1="268" y1="67" x2="356" y2="67" class="ln-u" marker-end="url(#c24f2-u)"/>
+      <line x1="468" y1="67" x2="556" y2="67" class="ln dash" marker-end="url(#c24f2-a)"/>
+      <text x="312" y="104" text-anchor="middle" class="t-s">CPU copy</text>
+      <text x="512" y="104" text-anchor="middle" class="t-m t-s">later</text>
+      <text x="690" y="72" class="t-ok t-s">returns at</text>
+      <text x="690" y="90" class="t-ok t-s">page cache</text>
+
+      <text x="24" y="150" class="t-h t-s">O_DSYNC /</text>
+      <text x="24" y="168" class="t-h t-s">fsync</text>
+      <rect x="160" y="140" width="108" height="34" rx="6" class="b-u"/>
+      <rect x="360" y="140" width="108" height="34" rx="6" class="b-k"/>
+      <rect x="560" y="140" width="108" height="34" rx="6" class="b"/>
+      <line x1="268" y1="157" x2="356" y2="157" class="ln-u" marker-end="url(#c24f2-u)"/>
+      <line x1="468" y1="157" x2="556" y2="157" class="ln-k" marker-end="url(#c24f2-k)"/>
+      <text x="512" y="194" text-anchor="middle" class="t-k t-s">now + flush</text>
+      <text x="690" y="162" class="t-k t-s">waits for</text>
+      <text x="690" y="180" class="t-k t-s">the device</text>
+
+      <text x="24" y="240" class="t-h t-s">O_DIRECT</text>
+      <rect x="160" y="222" width="108" height="34" rx="6" class="b-u"/>
+      <rect x="360" y="222" width="108" height="34" rx="6" class="b-m"/>
+      <text x="414" y="244" text-anchor="middle" class="t-m t-s">skipped</text>
+      <rect x="560" y="222" width="108" height="34" rx="6" class="b"/>
+      <path d="M268 239 C 330 206, 500 206, 556 234" class="ln-u" marker-end="url(#c24f2-u)"/>
+      <text x="414" y="276" text-anchor="middle" class="t-s">DMA from an aligned buffer</text>
+      <text x="690" y="236" class="t-d t-s">device cache:</text>
+      <text x="690" y="254" class="t-d t-s">still needs fsync</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">তিনটা লেখার পথ। Buffered: CPU তোমার data page cache-এ copy করে আর ফিরে আসে, disk-এ যায় পরে। <code>O_DSYNC</code>/fsync: একই copy, কিন্তু device নিশ্চিত না করা পর্যন্ত অপেক্ষা। <code>O_DIRECT</code>: page cache বাদ, device সাজানো buffer থেকে সরাসরি নেয় — তবু device-এর নিজের cache-এর জন্য flush লাগে।</p>
+
+  <h3>Node-এ কোনটা কখন</h3>
+  <p>দুই প্রশ্নের উত্তর মিলিয়ে বাস্তব সিদ্ধান্তগুলো:</p>
+  <div class="table-wrap"><table>
+    <tr><th>কাজ</th><th>কী ব্যবহার করবে</th><th>কেন</th></tr>
+    <tr><td>Config বা state file save</td><td>temp file + <code>fsync</code> + <code>rename</code> + folder fsync</td><td>পুরনো-বা-নতুন, কখনো ভাঙা না (Chapter 21)</td></tr>
+    <tr><td>Log লেখা</td><td><code>'a'</code> flag, fsync ছাড়া বা মাঝে মাঝে</td><td>একাধিক লেখক থাকলেও লাইন হারায় না; প্রতি লাইনে fsync-এর দাম ms</td></tr>
+    <tr><td>"হারানো চলবে না" এমন record</td><td>কয়েকটা জমিয়ে একবার <code>fsync</code> (group commit)</td><td>durability রেখে দাম ভাগ করা — ৬৭ গুণ সস্তা</td></tr>
+    <tr><td>বড় file পড়া বা প্রক্রিয়া করা</td><td><code>fs.createReadStream</code> (buffered)</td><td>page cache আর read-ahead নিজেই কাজ করে; memory-তে একবারে পুরো file না</td></tr>
+    <tr><td>Memory-সীমার container-এ বড় file লেখা</td><td>মাঝে মাঝে <code>fdatasync</code></td><td>dirty page জমে OOMKilled হওয়া ঠেকাতে (Chapter 23)</td></tr>
+    <tr><td>অনেক file একসাথে পড়া</td><td>async API, দরকারে বড় <code>UV_THREADPOOL_SIZE</code></td><td>file-এ epoll চলে না; অপেক্ষা করে pool-এর thread (Chapter 20)</td></tr>
+  </table></div>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>O_SYNC</code> দিয়ে খুললে বা <code>O_DIRECT</code> দিলে data নিরাপদ।" আমার Mac-এ <code>O_SYNC</code>-এর প্রতিটা লেখা ১৭ µs — data SSD-র volatile cache-এ পৌঁছেছে, flash-এ না; আসল flush (<code>F_FULLFSYNC</code>) লাগে ~৩.৮ ms। আর O_DIRECT durability-র কথাই বলে না, শুধু page cache এড়ায়। নিশ্চিত হতে হলে জানতে হয় তোমার OS-এ ঠিক কোন call device-কে flush করতে বলে — Node-এর <code>fsyncSync</code> দুই OS-এই সেটা করে।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">TRADE-OFF TRIANGLE</div>
-    <p>Speed, durability, simplicity — তিনটা একসাথে পুরোপুরি পাওয়া যায় না। Default mode: speed + simplicity। O_SYNC/fsync: durability কিনলে speed বেচতে হয়। O_DIRECT: control কিনলে simplicity বেচতে হয়। Database design-এর অর্ধেক আলোচনা এই ত্রিভুজের ভিতরে।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>প্রতিটা file I/O mode দুইটা নব-এর একটা অবস্থান। প্রথম নব: কে অপেক্ষা করে — তোমার thread (sync), অন্য thread (Node-এর pool), নাকি কেউ না (io_uring)। File-এ epoll-এর "ready হলে জানাও" চলে না, কারণ file-এর অপেক্ষা <code>read()</code>-এর ভেতরে। দ্বিতীয় নব: data কোথায় পৌঁছালে ফেরো — page cache (দ্রুত, ঝুঁকিপূর্ণ), device-এর flush পর্যন্ত (ধীর, নিরাপদ), নাকি page cache বাদ দিয়ে (O_DIRECT, নিজের cache যার আছে তার জন্য)। Durability-র দাম কমানোর একমাত্র আসল উপায় batching।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>File I/O mode-এর পিছনের দুইটা স্বাধীন প্রশ্ন কী কী?</li>
-      <li>O_SYNC আর O_DIRECT-এর পার্থক্য — কে কী bypass করে, কে কী guarantee করে (আর কে কিছুই guarantee করে না)?</li>
-      <li>সাধারণ app-এ O_DIRECT bad idea কেন?</li>
+      <li>File I/O mode-এর পেছনের দুইটা স্বাধীন প্রশ্ন কী? <code>readFileSync</code>, async <code>readFile</code> আর <code>O_DSYNC</code> — প্রতিটা কোন প্রশ্নের কী উত্তর?</li>
+      <li>nonblock.py-তে pipe-এ <code>EAGAIN</code> এল কিন্তু file-এ এল না, আর epoll file নিতে অস্বীকার করল কেন? এর ফলে Node file-এর কাজে event loop বাঁচায় কীভাবে?</li>
+      <li><code>fsync</code> আর <code>fdatasync</code>-এর পার্থক্য কী? durability.js-এ Linux-এ দুটোর দাম প্রায় সমান এল কেন?</li>
+      <li>macOS-এ <code>O_SYNC</code>-এর লেখা ১৭ µs কিন্তু Node-এর <code>fsyncSync</code> ~৩.৮ ms কেন? প্রতি ১০০টায় একবার fsync করলে দাম ৬৭ গুণ কমল কেন, আর কী হারানোর ঝুঁকি নিলাম?</li>
+      <li>O_DIRECT কে চায় আর কেন? direct.js-এ ১০০ byte আর বেশিরভাগ জায়গা থেকে 4096 byte <code>EINVAL</code> দিল কেন — আর O_DIRECT দিয়েও durability-র জন্য কী লাগে?</li>
     </ul>
   </div>

@@ -1,25 +1,212 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
   <h2>Chapter 28 — Blocking vs Non-blocking I/O</h2>
-  <p class="chap-sub">C10K সমস্যার শিকড় — এবং event-driven জগতের জন্মকথা।</p>
+  <p class="chap-sub">হাজারটা connection, যাদের বেশিরভাগ চুপচাপ বসে — তাদের জন্য কে অপেক্ষা করবে? প্রতি connection-এ একটা thread দিলে কী খরচ, non-blocking কী বদলায়, আর কেন non-blocking একা যথেষ্ট না।</p>
 
-  <h3>Blocking model আর তার দেয়াল</h3>
-  <p>Default socket blocking: <code>read()</code> ডাকলে data না আসা পর্যন্ত thread ঘুমায়। সরল model-এ তাই দাঁড়ায়: <strong>এক connection = এক thread</strong> — যে-যার connection-এর read-এ ঝুলে থাকে।</p>
-  <p>১০০ connection-এ চলে। ১০,০০০-এ? ১০,০০০ thread: প্রত্যেকের stack-এ memory, scheduler-এর ঘাড়ে ১০,০০০ জনের হিসাব, অগুনতি context switch (Chapter 17, 19-এর সেই bill)। অথচ মজার ব্যাপার — <strong>এই thread-গুলোর ৯৯% কোনো কাজই করছে না, শুধু অপেক্ষা করছে।</strong> অপেক্ষার জন্য এত দামি জিনিস (thread) পোষা — এটাই মূল অপচয়। এই সমস্যার ঐতিহাসিক নাম "C10K problem"।</p>
+  <p>একটা server-এর বাস্তব ছবি: হাজারো client connected, কিন্তু যেকোনো মুহূর্তে তাদের বেশিরভাগই কিছু পাঠাচ্ছে না — browser-এর keep-alive connection, websocket, মোবাইল app-এর খোলা লাইন। Server-এর আসল কাজ তাই মূলত <em>অপেক্ষা</em>: কে কখন কিছু পাঠাবে। প্রশ্ন হলো এই অপেক্ষাটা কে করবে, কীভাবে। Chapter 25-এ দেখেছি Node নিজের সব socket <code>SOCK_NONBLOCK</code> দিয়ে বানায়; এই chapter-এ দেখব কেন।</p>
 
-  <h3>Non-blocking: অপেক্ষা করতে অস্বীকার</h3>
-  <p>Socket-কে non-blocking mode-এ দিলে চুক্তি বদলে যায়: <code>read()</code>-এ data থাকলে দাও, না থাকলে <em>ঘুমিয়ো না</em> — সাথে সাথে বলো "এখন নেই" (<code>EWOULDBLOCK</code>)। Thread মুক্ত।</p>
-  <p>কিন্তু একা non-blocking যথেষ্ট না — data আছে কি না বারবার জিজ্ঞেস করতে থাকলে (busy polling) CPU পোড়ে অকারণে। দরকার একটা তৃতীয় জিনিস: <strong>kernel-কে বলা — "এই ১০,০০০ socket-এর <em>যেকোনোটায়</em> কিছু ঘটলে আমাকে ডেকো।"</strong> এক thread, ঘুমাবে একবারে, জাগবে ঠিক তখনই যখন সত্যি কাজ আছে। এই mechanism-টাই I/O multiplexing — পরের chapter পুরোটা এটা নিয়ে।</p>
+  <h3>Blocking: প্রতি connection-এ একজন পাহারাদার</h3>
+  <p>Default socket <strong>blocking</strong>: <code>recv()</code>/<code>read()</code> ডাকলে data না আসা পর্যন্ত thread ঘুমায় (Chapter 15-এর Waiting)। এক thread একসাথে একটা connection-এর জন্যই ঘুমাতে পারে, তাই সবচেয়ে সরল নকশা হলো <strong>thread-per-connection</strong>: প্রতিটা নতুন connection-এর জন্য একটা নতুন thread, যে সেই connection-এর <code>recv()</code>-এ বসে থাকে। Code পড়তে খুব সহজ — সবকিছু উপর থেকে নিচে, কোনো callback নেই। Node-এ এভাবে লেখা যায় না, তাই Python-এ:</p>
+  <div class="codewrap"><pre><code># threaded_server.py — প্রতিটা connection-এর জন্য একটা thread, blocking recv
+import socket, threading
+
+def handle(conn):
+    while True:
+        data = conn.recv(4096)          # data না আসা পর্যন্ত এই thread ঘুমায়
+        if not data:
+            break
+        conn.sendall(data)
+    conn.close()
+
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(('127.0.0.1', 9000))
+srv.listen(4096)
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=handle, args=(conn,), daemon=True).start()</code></pre></div>
+  <p>পাশে একই কাজের Node version: <code>require('net').createServer(c =&gt; c.pipe(c)).listen(9001, '127.0.0.1', 4096);</code> (<code>event_server.js</code>)। দুইটাতেই ১০০০টা করে connection খুলে চুপচাপ বসিয়ে রাখব, তারপর <code>/proc/&lt;pid&gt;/status</code> থেকে thread-এর সংখ্যা আর memory পড়ব:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — ১০০০টা চুপচাপ connection</div>
+    <div class="codewrap"><pre><code>// idle_clients.js — N টা connection খুলে চুপচাপ বসে থাকো
+const net = require('net');
+const [port, n] = process.argv.slice(2).map(Number);
+let open = 0;
+for (let i = 0; i &lt; n; i++)
+  net.connect(port, '127.0.0.1', () =&gt; { if (++open === n) console.log(`${n} idle connections to :${port}`); });
+setTimeout(() =&gt; process.exit(0), 3000);</code></pre></div>
+    <div class="codewrap"><pre><code># compare.sh — দুই server-এ ১০০০টা idle connection, তারপর thread আর memory গুনে দেখো
+show() { printf "%-22s threads=%-5s VmRSS=%-9s VmSize=%s\n" "$1" \
+  "$(grep Threads /proc/$2/status | awk '{print $2}')" \
+  "$(grep VmRSS /proc/$2/status | awk '{printf "%.1f MB", $2/1024}')" \
+  "$(grep VmSize /proc/$2/status | awk '{printf "%.1f MB", $2/1024}')"; }
+python3 threaded_server.py &amp; PY=$!
+node event_server.js &amp; NJ=$!
+sleep 1
+show "python, 0 clients" $PY; show "node, 0 clients" $NJ
+node idle_clients.js 9000 1000 &amp; node idle_clients.js 9001 1000 &amp;
+sleep 2
+show "python, 1000 clients" $PY; show "node, 1000 clients" $NJ
+kill $PY $NJ</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq python3 &gt;/dev/null
+  bash compare.sh'</code></pre></div>
+    <div class="codewrap"><pre><code>python, 0 clients      threads=1     VmRSS=8.3 MB    VmSize=13.3 MB
+node, 0 clients        threads=7     VmRSS=43.6 MB   VmSize=472.6 MB
+python, 1000 clients   threads=1001  VmRSS=31.8 MB   VmSize=14174.7 MB
+node, 1000 clients     threads=7     VmRSS=55.1 MB   VmSize=734.1 MB</code></pre></div>
+  </div>
+  <p>Python server-এ ১০০১টা thread — প্রতিটা connection-এর একজন পাহারাদার, প্রত্যেকে <code>recv()</code>-এ ঘুমিয়ে। Virtual memory (<code>VmSize</code>) ১৩ MB থেকে ১৪ GB: প্রতিটা thread-এর stack-এর জন্য ৮ MB জায়গা বরাদ্দ (Chapter 16, 19)। আসলে ব্যবহৃত RAM (<code>VmRSS</code>) বেড়েছে ~২৩.৫ MB, মানে thread-প্রতি ~২৪ KB। Node server-এ thread সংখ্যা ৭ থেকে নড়েইনি; তার RAM বেড়েছে ~১১.৫ MB — প্রতি connection-এ ~১২ KB, JS-এর socket object আর তার buffer-এর জন্য।</p>
+
+  <h3>আসল খরচ আসে জাগার সময়</h3>
+  <p>চুপচাপ বসে থাকা thread-এর দাম তুলনামূলক কম। দাম ওঠে যখন তারা জাগে: প্রতিটা আসা message মানে একটা thread-কে ঘুম থেকে তোলা আর CPU-তে বসানো — একটা context switch (Chapter 17)। একই ১০০০টা connection-এ এবার ১০ দফা করে সবাই একসাথে ১ byte পাঠাবে আর echo-র অপেক্ষা করবে; burst চলাকালীন server-এর সব thread-এর স্বেচ্ছায় context switch (<code>voluntary_ctxt_switches</code>, Chapter 17) যোগ করব:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — burst আর context switch</div>
+    <div class="codewrap"><pre><code>// burst_clients.js — N টা connection; ১০ দফায় সবাই একসাথে 1 byte পাঠায় আর echo-র অপেক্ষা করে
+const net = require('net');
+const [port, n] = process.argv.slice(2).map(Number);
+const socks = [];
+let open = 0;
+for (let i = 0; i &lt; n; i++) {
+  const s = net.connect(port, '127.0.0.1', async () =&gt; {
+    if (++open &lt; n) return;
+    const t = performance.now();
+    for (let round = 0; round &lt; 10; round++)
+      await Promise.all(socks.map(s =&gt; new Promise(r =&gt; { s.once('data', r); s.write('x'); })));
+    console.log(`:${port} 10 rounds x ${n} echoes in ${(performance.now() - t).toFixed(0)} ms`);
+    setTimeout(() =&gt; process.exit(0), 3000);   // connection গুলো আরও ৩ সেকেন্ড খোলা থাকুক
+  });
+  socks.push(s);
+}</code></pre></div>
+    <div class="codewrap"><pre><code># switches.sh — burst-এর সময় server-এর সব thread-এর স্বেচ্ছায় context switch যোগ করো
+cs() { cat /proc/$1/task/*/status | awk '/^voluntary_ctxt_switches/ {s += $2} END {print s}'; }
+python3 threaded_server.py &amp; PY=$!
+node event_server.js &amp; NJ=$!
+sleep 1
+for pair in "$PY 9000 python" "$NJ 9001 node"; do
+  set -- $pair
+  node burst_clients.js $2 1000 &amp; C=$!
+  sleep 2.5                                   # burst শেষ, connection গুলো তখনো খোলা
+  echo "$3: $(cat /proc/$1/status | awk '/^Threads/ {print $2}') threads, $(cs $1) voluntary context switches"
+  wait $C
+done
+kill $PY $NJ</code></pre></div>
+    <div class="codewrap"><pre><code>:9000 10 rounds x 1000 echoes in 382 ms
+python: 1001 threads, 62884 voluntary context switches
+:9001 10 rounds x 1000 echoes in 48 ms
+node: 7 threads, 123 voluntary context switches</code></pre></div>
+  </div>
+  <p>একই ১০,০০০টা echo: thread-per-connection-এ ৬২ হাজারের বেশি context switch আর ৩৮২ ms; Node-এ ১২৩টা switch আর ৪৮ ms। ১০,০০০টা message-এ অন্তত ১০,০০০ বার কাউকে জাগাতেই হয়; বাকিটা Python-এর নিজস্ব একটা সীমা বাড়িয়েছে — <strong>GIL</strong> (global interpreter lock): এক process-এ একসাথে একটাই thread Python code চালাতে পারে, তাই জেগে ওঠা thread গুলো আবার GIL-এর লাইনে দাঁড়িয়ে ঘুমায়। Java বা C-তে এই অংশটা থাকত না, কিন্তু প্রথম ১০,০০০ switch, ১০০১টা stack আর scheduler-এর ঘাড়ে ১০০১টা thread-এর হিসাব থেকেই যেত। Node-এর একটা thread একবার জেগে একসাথে অনেকগুলো ready connection-এর কাজ সেরে আবার ঘুমায় — কীভাবে, পরের chapter-এ।</p>
+  <p>১৯৯৯ সালে এই সমস্যার একটা নাম দেওয়া হয়েছিল — <strong>C10K problem</strong>: একটা machine-এ দশ হাজার connection একসাথে কীভাবে সামলাবে। Thread-per-connection এখানে ভেঙে পড়ে মূলত তিনটা খরচে: প্রতিটা thread-এর stack আর kernel-এর হিসাব, প্রতিটা message-এ context switch আর তার cache দূষণ (Chapter 17), আর অনেক thread-এর মধ্যে CPU ভাগ করার scheduler-এর কাজ।</p>
+
+  <h3>Non-blocking: "এখন নেই" বলে ফিরে আসা</h3>
+  <p>বিকল্প: socket-কে <strong>non-blocking</strong> করে দাও (<code>O_NONBLOCK</code>)। তখন <code>recv()</code>-এর চুক্তি বদলে যায় — data থাকলে দাও, না থাকলে ঘুমিয়ো না, সাথে সাথে error দিয়ে ফেরো: <code>EAGAIN</code> ("আবার চেষ্টা করো", কিছু সিস্টেমে নাম <code>EWOULDBLOCK</code>)। Thread আর কোনো একটা connection-এ আটকে থাকে না — সে ঘুরে ঘুরে অনেকগুলোকে জিজ্ঞেস করতে পারে। কিন্তু "কখন জিজ্ঞেস করবে"? বারবার, loop-এ — একে বলে <strong>busy polling</strong>। দেখি তাতে কী দাম:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — busypoll.py</div>
+    <div class="codewrap"><pre><code># busypoll.py — data আসবে ২ সেকেন্ড পরে। অপেক্ষার দুই উপায়ের CPU খরচ
+import socket, time, threading
+
+def serve_once(port):
+    srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(('127.0.0.1', port)); srv.listen(1)
+    conn, _ = srv.accept()
+    time.sleep(2)                           # ধীর server: ২ সেকেন্ড পরে উত্তর
+    conn.sendall(b'hello')
+
+def measure(label, port, nonblocking):
+    threading.Thread(target=serve_once, args=(port,), daemon=True).start()
+    time.sleep(0.2)
+    s = socket.create_connection(('127.0.0.1', port))
+    s.setblocking(not nonblocking)
+    tries, cpu0, wall0 = 0, time.process_time(), time.perf_counter()
+    while True:
+        tries += 1
+        try:
+            data = s.recv(100)              # blocking: এখানে ঘুমায়। non-blocking: সাথে সাথে ফেরে
+            break
+        except BlockingIOError as e:        # EAGAIN: "এখন কিছু নেই"
+            if tries == 1: print(f'  first non-blocking recv: {e}')
+    print(f'{label:12s} wall {time.perf_counter() - wall0:.2f} s, CPU {time.process_time() - cpu0:.2f} s, recv calls {tries:,}')
+
+measure('blocking', 9100, False)
+measure('busy-poll', 9101, True)</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/busypoll.py</code></pre></div>
+    <div class="codewrap"><pre><code>blocking     wall 2.00 s, CPU 0.00 s, recv calls 1
+  first non-blocking recv: [Errno 11] Resource temporarily unavailable
+busy-poll    wall 2.01 s, CPU 2.01 s, recv calls 4,398,095</code></pre></div>
+  </div>
+  <p>দুইভাবেই ঠিক ২ সেকেন্ড অপেক্ষা। Blocking-এ একটাই <code>recv</code>, CPU খরচ শূন্য — thread kernel-এ ঘুমিয়ে ছিল, data আসতেই kernel তাকে জাগিয়েছে। Busy-poll-এ ৪৪ লাখ বার <code>recv</code> (Errno 11 = <code>EAGAIN</code>), আর পুরো ২ সেকেন্ড একটা core ১০০% ব্যস্ত — কোনো কাজ ছাড়াই, শুধু "এসেছে? এসেছে?" জিজ্ঞেস করে। প্রতিটা জিজ্ঞাসা একটা system call (Chapter 32-এ তার দাম)। হাজারটা socket-এ এটা করলে পুরো machine শুধু জিজ্ঞেস করেই শেষ।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="Timeline of three ways to wait for three connections. Blocking with a thread per connection: three threads each sleep in the kernel until their data arrives, then wake with a context switch. Busy polling: one thread spins on the CPU the whole time asking every socket. Event notification: one thread sleeps once on all sockets and is woken when any of them has data">
+      <defs>
+        <marker id="c28f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <line x1="160" y1="300" x2="770" y2="300" class="ln" marker-end="url(#c28f1-a)"/>
+      <text x="770" y="320" text-anchor="end" class="t-m t-s">time</text>
+      <line x1="330" y1="30" x2="330" y2="296" class="grid"/>
+      <line x1="520" y1="30" x2="520" y2="296" class="grid"/>
+      <line x1="690" y1="30" x2="690" y2="296" class="grid"/>
+      <text x="330" y="24" text-anchor="middle" class="t-m t-s">data on A</text>
+      <text x="520" y="24" text-anchor="middle" class="t-m t-s">data on B</text>
+      <text x="690" y="24" text-anchor="middle" class="t-m t-s">data on C</text>
+
+      <text x="24" y="50" class="t-h t-s">thread per</text>
+      <text x="24" y="66" class="t-h t-s">connection</text>
+      <text x="150" y="50" text-anchor="end" class="t-m t-s">thread A</text>
+      <rect x="160" y="38" width="170" height="18" rx="3" class="b-m"/>
+      <rect x="330" y="38" width="34" height="18" rx="3" class="b-ok"/>
+      <text x="150" y="80" text-anchor="end" class="t-m t-s">thread B</text>
+      <rect x="160" y="68" width="360" height="18" rx="3" class="b-m"/>
+      <rect x="520" y="68" width="34" height="18" rx="3" class="b-ok"/>
+      <text x="150" y="110" text-anchor="end" class="t-m t-s">thread C</text>
+      <rect x="160" y="98" width="530" height="18" rx="3" class="b-m"/>
+      <rect x="690" y="98" width="34" height="18" rx="3" class="b-ok"/>
+      <text x="170" y="134" class="t-m t-s">each asleep in recv() — one stack and one wake-up (context switch) per connection</text>
+
+      <text x="24" y="170" class="t-h t-s">busy poll</text>
+      <text x="150" y="170" text-anchor="end" class="t-m t-s">1 thread</text>
+      <rect x="160" y="158" width="600" height="18" rx="3" class="b-d"/>
+      <text x="460" y="171" text-anchor="middle" class="t-d t-s">recv A? EAGAIN · recv B? EAGAIN · recv C? EAGAIN · … (100% CPU)</text>
+      <text x="170" y="196" class="t-m t-s">never sleeps — millions of useless system calls</text>
+
+      <text x="24" y="236" class="t-h t-s">event</text>
+      <text x="24" y="252" class="t-h t-s">notification</text>
+      <text x="150" y="240" text-anchor="end" class="t-m t-s">1 thread</text>
+      <rect x="160" y="228" width="170" height="18" rx="3" class="b-m"/>
+      <rect x="330" y="228" width="34" height="18" rx="3" class="b-ok"/>
+      <rect x="364" y="228" width="156" height="18" rx="3" class="b-m"/>
+      <rect x="520" y="228" width="34" height="18" rx="3" class="b-ok"/>
+      <rect x="554" y="228" width="136" height="18" rx="3" class="b-m"/>
+      <rect x="690" y="228" width="34" height="18" rx="3" class="b-ok"/>
+      <text x="170" y="272" class="t-m t-s">sleeps once on all sockets; the kernel wakes it only when one has data (Chapter 29)</text>
+      <rect x="560" y="284" width="12" height="10" class="b-m"/>
+      <text x="578" y="293" class="t-m t-s">asleep</text>
+      <rect x="630" y="284" width="12" height="10" class="b-ok"/>
+      <text x="648" y="293" class="t-m t-s">working</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">তিনটা connection-এ data আসে তিনটা আলাদা মুহূর্তে। ওপরে: প্রতি connection-এ একটা thread, প্রত্যেকে আলাদা করে ঘুমায় আর জাগে। মাঝে: একটা non-blocking thread যে কখনো ঘুমায় না, শুধু জিজ্ঞেস করে। নিচে: একটা thread সবার জন্য একবার ঘুমায়, আর kernel তাকে ঠিক কাজের মুহূর্তে জাগায় — পরের chapter-এর বিষয়।</p>
+
+  <h3>তৃতীয় জিনিসটা: kernel-কে বলা "কেউ ready হলে জাগিও"</h3>
+  <p>তাহলে দুইটা পথই অসম্পূর্ণ। Blocking-এ অপেক্ষা সস্তা (ঘুমন্ত thread CPU খায় না), কিন্তু এক thread শুধু এক connection-এর জন্য অপেক্ষা করতে পারে। Non-blocking-এ এক thread অনেক connection সামলাতে পারে, কিন্তু কখন দেখবে জানে না, তাই CPU পোড়ায়। দরকার দুটোর ভালো অংশ: একটা thread ঘুমাবে (CPU শূন্য), কিন্তু ঘুমাবে <em>সবগুলো</em> socket-এর জন্য একসাথে, আর kernel তাকে জাগাবে ঠিক তখনই যখন কোনো একটায় data এসেছে — সাথে বলে দেবে কোনটায়। Kernel তো data আসার খবর এমনিই পায় (Chapter 27-এর আসার পথ, "অপেক্ষায় থাকা reader-কে জাগাও")। এই ব্যবস্থার নাম <strong>I/O multiplexing</strong> — Linux-এ epoll, Mac-এ kqueue — আর Node-এর event loop, nginx, Redis সবার ভিত এটাই। পরের chapter পুরোটা এটা নিয়ে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Non-blocking মানেই দ্রুত।" Non-blocking শুধু বলে thread আটকাবে না — কিন্তু তারপর thread কী করবে, সেটা বলে না। busypoll.py-তে non-blocking socket একটা পুরো core ২ সেকেন্ড পুড়িয়েছে ৪৪ লাখ অপ্রয়োজনীয় system call-এ, যেখানে blocking-এ খরচ ছিল শূন্য। Non-blocking কাজে লাগে কেবল একটা notification ব্যবস্থার সাথে জোড়া দিলে।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Blocking model: প্রতি কাস্টমারের জন্য একজন dedicated কর্মচারী, যে কাস্টমার মেনু দেখার পুরোটা সময় পাশে দাঁড়িয়ে থাকে। Event-driven model: একজনই কর্মচারী, কিন্তু কাউন্টারে বেল আছে — যার দরকার সে বাজায়। কর্মচারীর সময় যায় শুধু <em>কাজে</em>, অপেক্ষায় না। শর্ত একটাই: প্রতিটা কাজ ছোট হতে হবে — কেউ কাউন্টার ২০ মিনিট আটকে রাখলে (event loop block!) বাকি সবাই আটকে যায়।</p>
+    <p>অপেক্ষার দুই মাত্রা: কে অপেক্ষা করে, আর অপেক্ষার সময় CPU কী করে। Thread-per-connection-এ প্রতিটা connection-এর জন্য একটা ঘুমন্ত thread — সরল, কিন্তু হাজারো stack আর প্রতি message-এ context switch। Busy polling-এ একটা জাগ্রত thread — কোনো stack-এর বোঝা নেই, কিন্তু CPU পোড়ে। Event notification-এ একটা ঘুমন্ত thread সবার জন্য, আর kernel ঠিক সময়ে জাগায় — এটাই C10K-এর উত্তর।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Thread-per-connection কোথায় গিয়ে ভেঙে পড়ে — ঠিক কী কী খরচে?</li>
-      <li>Non-blocking mode-এ read()-এর আচরণ কী বদলায়?</li>
-      <li>Non-blocking একা কেন যথেষ্ট না?</li>
+      <li>Blocking <code>recv()</code>-এ thread কী অবস্থায় থাকে, CPU খায় কি? Thread-per-connection নকশায় ১০০০টা connection-এ ১০০১টা thread কেন, আর <code>VmSize</code> ১৪ GB হলো কেন?</li>
+      <li>switches.sh-এ একই ১০,০০০ echo-তে Python server ৬২ হাজার context switch করল আর Node ১২৩টা — পার্থক্যের উৎস কী কী? GIL এখানে কী যোগ করেছে?</li>
+      <li>C10K problem কী, আর thread-per-connection কোন তিনটা খরচে ভেঙে পড়ে?</li>
+      <li>Non-blocking socket-এ data না থাকলে <code>recv()</code> কী করে? busypoll.py-তে busy-poll কেন ২ সেকেন্ড CPU খেল আর blocking খেল শূন্য?</li>
+      <li>Blocking আর non-blocking দুটোই কেন একা অসম্পূর্ণ? যে "তৃতীয় জিনিস" দরকার, সেটা ঠিক কী করে?</li>
     </ul>
   </div>

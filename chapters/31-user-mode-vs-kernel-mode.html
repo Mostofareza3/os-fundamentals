@@ -1,38 +1,533 @@
   <p class="part-label">PART 8 · USER SPACE AND KERNEL SPACE</p>
   <h2>Chapter 31 — User Mode vs Kernel Mode</h2>
-  <p class="chap-sub">এই বইয়ের নীল-আর-amber রেখাটা এবার পুরো আলোয়।</p>
+  <p class="chap-sub">Kernel-এ ঢোকার তিন দরজা, kernel থেকে process-এর দিকে ফেরার উল্টো দরজা (signal), kernel কেন তোমার দেওয়া প্রতিটা সংখ্যা সন্দেহ করে, root কেন আসলে সর্বশক্তিমান না, আর যে দুই পাহারাদার memory আগলে রাখে — তাদের একজন একবার কীভাবে ফাঁকি খেয়েছিল।</p>
 
-  <h3>Privilege: hardware-এ খোদাই করা নিয়ম</h3>
-  <p>এটা কোনো software convention না — <strong>CPU নিজে</strong> দুই (বা ততোধিক) privilege level-এ চলে। Kernel mode-এ সব instruction, সব memory, সব device বৈধ। User mode-এ dangerous instruction (device-এ কথা বলা, page table বদলানো, interrupt বন্ধ করা) দিলে CPU নিজেই আটকে দিয়ে kernel-কে ডেকে দেয়। মানে যত বড় bug-ই লেখো, তোমার process সরাসরি hardware নাড়াতে পারবে না — দারোয়ান silicon-এ বসানো।</p>
-  <p>এখানে একটা জিনিস আলাদা করে রাখা দরকার, কারণ দুটো প্রহরীকে প্রায়ই এক ভাবা হয়। <strong>Privilege level</strong> আটকায় privileged <em>instruction</em> আর সরাসরি device access। কিন্তু "অন্য process-এর memory পড়তে পারবে না" — এটা privilege level-এর কাজ না, এটা <strong>per-process page table</strong>-এর কাজ (Chapter 9)। B-র data-র কোনো entry A-র page table-এ নেই, তাই A-র কাছে ওই address-টা উচ্চারণযোগ্যই না। দুটো ভিন্ন mechanism, দুটো ভিন্ন কাজ।</p>
-  <p>আর সীমানাগুলো পরম নয়। ইচ্ছাকৃত ফাঁক আছে (shared memory, <code>ptrace</code>, <code>/proc/&lt;pid&gt;/mem</code> — debugger এভাবেই কাজ করে), আর অনিচ্ছাকৃত ফাঁকও ধরা পড়েছে: <strong>Meltdown</strong> (২০১৮) user mode থেকেই kernel memory পড়ে ফেলেছিল, কোনো privileged instruction ছাড়া — speculative execution-এর পার্শ্বপ্রতিক্রিয়া মেপে। এজন্যই আজকের kernel user আর kernel-এর page table আলাদা রাখে (KPTI), আর এজন্যই syscall আগের চেয়ে দামি (Chapter 32)।</p>
-  <p>কেন এত কড়াকড়ি? কারণ machine-টা shared। শত process, ভিন্ন user, আধা-বিশ্বাসী code — এদের মাঝে বিশ্বাসের সীমানা টানতেই হয়। Protection ছাড়া এক process-এর ভুল মানে পুরো machine-এর মৃত্যু (পুরনো DOS-যুগের বাস্তবতা)।</p>
+  <p>Chapter 1-এ মূল কথাটা দেখেছি: CPU সবসময় দুই mode-এর একটায় থাকে — <strong>user mode</strong>-এ তোমার app চলে সীমিত ক্ষমতা নিয়ে, <strong>kernel mode</strong>-এ kernel চলে সব ক্ষমতা নিয়ে — আর app kernel-এর কাছে কাজ চায় <strong>system call</strong> দিয়ে। এই chapter সেই ছবির ভেতরে ঢোকে। Syscall ছাড়া kernel আর কোন পথে CPU হাতে পায়? Kernel process-কে কোনো খবর দেবে কীভাবে? আর যে পাহারার উপর পুরো ব্যবস্থা দাঁড়িয়ে, সেটা ঠিক কোথায় বসানো?</p>
+  <p>ARM CPU-তে (Apple Silicon, আর Docker-এর Linux VM-ও এখানে ARM) এই দুই mode-এর নাম <strong>EL0</strong> (user) আর <strong>EL1</strong> (kernel) — EL মানে exception level। Intel/AMD-এ নাম <strong>ring 3</strong> (user) আর <strong>ring 0</strong> (kernel)। নাম আলাদা, ধারণা একই।</p>
 
-  <h3>দরজাটা: system call-এর যাত্রাপথ</h3>
-  <pre class="diagram"><span class="u">Application: file পড়তে চায়</span>
-<span class="u">  → libc-র read() → বিশেষ instruction (syscall)</span>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<span class="dim">CPU: mode বদলে kernel — কিন্তু লাফ দেওয়া যাবে শুধু</span>
-<span class="dim">kernel-এর আগে-থেকে-ঠিক-করা entry point-এ, যেখানে খুশি নয়</span>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<span class="k">Kernel: কোন syscall? (নম্বর দেখে) → argument validate</span>
-<span class="k">        → কাজ করো (fd বৈধ? permission আছে? data আনো)</span>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-<span class="u">CPU: user mode-এ ফেরত → application-এর হাতে result</span></pre>
-  <p>দুটো সূক্ষ্মতা লক্ষ করো: (১) ঢোকার জায়গাটা kernel-এর নির্ধারিত — user code "kernel mode-এ গিয়ে নিজের ইচ্ছামতো code" চালাতে পারে না; পারে শুধু kernel-এর menu থেকে order দিতে। (২) Kernel প্রতিটা argument সন্দেহের চোখে দেখে — user-এর দেওয়া pointer, সংখ্যা, সবকিছু validate হয়। এই অবিশ্বাসটাই security।</p>
-  <p>Mode বদলের আরও দুই দরজা আছে, ফাউ হিসেবে জেনে রাখো: <strong>interrupt</strong> (hardware-এর ডাক — NIC-এর "data এসেছে", timer-এর tick) আর <strong>exception/fault</strong> (তোমার code-এর কাণ্ড — page fault, zero-division)। তিন দরজাই এক জায়গায় নামে: kernel-এর নিয়ন্ত্রিত entry point।</p>
+  <h3>Kernel-এ ঢোকার তিন দরজা</h3>
+  <p>ধরো syscall-ই kernel-এ ঢোকার একমাত্র পথ। তাহলে দুটো জিনিস ভেঙে পড়ে। এক: যে program কখনো syscall করে না — ধরো একটা <code>while (true)</code> loop — kernel তার কাছ থেকে CPU কোনোদিন ফেরত পাবে না। দুই: তোমার code এমন কিছু করল যেটা CPU চালাতেই পারে না, যেমন এমন memory ছুঁল যেটা নেই। তখন CPU যাবে কোথায়? Program তো kernel-কে ডাকেনি।</p>
+  <p>তাই CPU তিনটা আলাদা কারণে user mode থেকে kernel mode-এ যায়:</p>
+  <ul>
+    <li><strong>System call</strong> — program নিজে চায়। একটা বিশেষ instruction (ARM-এ <code>svc</code>, x86-এ <code>syscall</code>) দিয়ে kernel-কে ডাকে (Chapter 1)।</li>
+    <li><strong>Interrupt</strong> — বাইরের hardware ডাকে: timer chip, SSD, network card (Chapter 2)। Program তখন কী করছে তাতে কিছু যায় আসে না; যেকোনো দুই instruction-এর মাঝে এটা ঘটতে পারে।</li>
+    <li><strong>Exception</strong> — program-এর নিজের instruction CPU শেষ করতে পারল না। যেমন page table-এ ঠিকানাটা বসানো নেই (page fault, Chapter 9), বা user mode থেকে privileged instruction চালানো হয়েছে। এখানে program ডাকেনি, কিন্তু kernel-এ যাওয়ার কারণটা তার নিজের।</li>
+  </ul>
+  <p>তিন দরজার একটা মিল সবচেয়ে জরুরি: CPU যেখানে খুশি লাফ দেয় না। Boot-এর সময় kernel CPU-র কয়েকটা বিশেষ register-এ নিজের <strong>entry point</strong>-গুলোর ঠিকানা লিখে রাখে। Entry point মানে kernel-এর যে code দিয়ে একটা দরজায় ঢোকা শুরু হয়। ARM-এ এই ঠিকানার তালিকার নাম exception vector table, x86-এ IDT (আর syscall-এর জন্য আলাদা একটা register)। ওই register-গুলো শুধু kernel mode থেকেই বদলানো যায়। ফলে user mode-এর code দরজা খোলাতে পারে, কিন্তু দরজার ওপাশে কোথায় নামবে, সেটা বদলাতে পারে না।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 346" width="100%" role="img" aria-label="Three doors from user mode into kernel mode. A process in user mode makes a system call such as fs.readFileSync, or one of its instructions fails, such as touching a page that is not mapped yet; hardware such as the timer, SSD or network card raises an interrupt at any moment. Each door lands at a fixed entry point that the kernel wrote into the CPU at boot. The kernel handler validates everything and does the work, then returns to user mode, running a signal handler first if a signal is pending">
+      <defs>
+        <marker id="c31f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c31f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c31f1-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="40" class="t-u t-s">USER MODE</text>
+      <text x="24" y="56" class="t-m t-s">EL0 · ring 3</text>
+      <rect x="180" y="16" width="600" height="96" rx="8" class="b-u"/>
+      <text x="196" y="42" class="t-s">your process (node app.js): its instructions run straight on the CPU</text>
+      <text x="300" y="84" text-anchor="middle" class="mono">fs.readFileSync()</text>
+      <text x="440" y="84" text-anchor="middle" class="mono">buf[i] = 1</text>
+      <text x="580" y="84" text-anchor="middle" class="mono">while (true) x++</text>
+      <text x="580" y="102" text-anchor="middle" class="t-m t-s">(stopped mid-way)</text>
+
+      <path d="M300 112 V196" class="ln-k" marker-end="url(#c31f1-k)"/>
+      <text x="310" y="138" class="t-k t-s">syscall</text>
+      <text x="310" y="154" class="t-m t-s">program asks</text>
+      <path d="M440 112 V196" class="ln-k" marker-end="url(#c31f1-k)"/>
+      <text x="450" y="138" class="t-k t-s">exception</text>
+      <text x="450" y="154" class="t-m t-s">instruction fails</text>
+      <text x="190" y="138" text-anchor="end" class="t-u t-s">back to user mode</text>
+      <text x="190" y="154" text-anchor="end" class="t-m t-s">signal? → handler first</text>
+
+      <line x1="24" y1="176" x2="780" y2="176" class="ln-k dash"/>
+      <text x="780" y="170" text-anchor="end" class="t-k t-s">privilege boundary</text>
+
+      <text x="24" y="204" class="t-k t-s">KERNEL MODE</text>
+      <text x="24" y="220" class="t-m t-s">EL1 · ring 0</text>
+      <text x="24" y="246" class="t-m t-s">entry points</text>
+      <text x="24" y="262" class="t-m t-s">fixed at boot</text>
+      <rect x="240" y="200" width="120" height="40" rx="6" class="b-k"/>
+      <text x="300" y="225" text-anchor="middle" class="t-s">syscall entry</text>
+      <rect x="380" y="200" width="120" height="40" rx="6" class="b-k"/>
+      <text x="440" y="225" text-anchor="middle" class="t-s">exception entry</text>
+      <rect x="520" y="200" width="120" height="40" rx="6" class="b-k"/>
+      <text x="580" y="225" text-anchor="middle" class="t-s">interrupt entry</text>
+      <rect x="672" y="196" width="108" height="48" rx="6" class="b"/>
+      <text x="726" y="216" text-anchor="middle" class="t-s">hardware</text>
+      <text x="726" y="234" text-anchor="middle" class="t-m t-s">timer, SSD, NIC</text>
+      <path d="M672 220 H644" class="ln" marker-end="url(#c31f1-m)"/>
+      <text x="726" y="262" text-anchor="middle" class="t-k t-s">interrupt</text>
+
+      <path d="M300 240 V272" class="ln-k" marker-end="url(#c31f1-k)"/>
+      <path d="M440 240 V272" class="ln-k" marker-end="url(#c31f1-k)"/>
+      <path d="M580 240 V272" class="ln-k" marker-end="url(#c31f1-k)"/>
+      <rect x="180" y="276" width="600" height="56" rx="8" class="b-k"/>
+      <text x="480" y="299" text-anchor="middle" class="t-s">kernel handler: validate everything, do the work</text>
+      <text x="480" y="319" text-anchor="middle" class="t-m t-s">read the file · map the page or send SIGSEGV · pick who runs next</text>
+      <path d="M200 276 V116" class="ln-u" marker-end="url(#c31f1-u)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">তিন দরজা, এক নিয়ম। Syscall-এ program নিজে ডাকে, exception-এ তার instruction আটকে যায়, interrupt আসে বাইরের hardware থেকে। তিনটাই নামে kernel-এর boot-এ ঠিক করা entry point-এ। কাজ শেষে kernel user mode-এ ফেরায় (বাঁয়ের নীল তীর); কোনো signal জমে থাকলে ফেরার আগে তার handler-এ পাঠায় (পরের section)।</p>
+
+  <p>Syscall দরজা Chapter 1 থেকে strace-এ বহুবার দেখেছি। বাকি দুটো নিজের চোখে দেখা যাক। প্রথমে interrupt: দুটো program নেব, যারা kernel-এর কাছে কিছুই চায় না — শুধু গোনে — আর দুটোকেই একটা মাত্র CPU core-এ বেঁধে দেব। তারপর দেখব kernel তাদের মাঝে CPU ভাগ করতে পারে কিনা।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — interrupt দরজা</div>
+    <div class="codewrap"><pre><code>// spin.js — শুধু গোনা; kernel-এর কাছে কিছুই চায় না
+let x = 0;
+for (let i = 0; i &lt; 3e9; i++) x += i;
+const r = process.resourceUsage();
+console.log(`pid ${process.pid}: user ${(r.userCPUTime / 1e3).toFixed(0)} ms, ` +
+            `sys ${(r.systemCPUTime / 1e3).toFixed(0)} ms, ` +
+            `involuntary switches ${r.involuntaryContextSwitches}`);</code></pre></div>
+    <div class="codewrap"><pre><code># twospin.sh
+# CPU0-র timer interrupt কতবার এসেছে (ARM-এ লাইনের নাম arch_timer, Intel/AMD-এ LOC)
+timer() { awk '/arch_timer|LOC:/ {print $2; exit}' /proc/interrupts; }
+t0=$(timer)
+time {
+  taskset -c 0 node spin.js &amp;     # দুইজনকেই একটা মাত্র core-এ (CPU0) বাঁধা
+  taskset -c 0 node spin.js &amp;
+  wait
+}
+t1=$(timer)
+echo "CPU0 timer interrupts: $((t1 - t0))"</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --security-opt systempaths=unconfined -v "$PWD":/w:ro -w /w \
+  node:22-bookworm-slim bash twospin.sh</code></pre></div>
+    <div class="codewrap"><pre><code>pid 10: user 1930 ms, sys 7 ms, involuntary switches 541
+pid 9: user 1934 ms, sys 6 ms, involuntary switches 538
+
+real	0m3.887s
+user	0m3.869s
+sys	0m0.014s
+CPU0 timer interrupts: 3887</code></pre></div>
+  </div>
+  <p>দুটো নতুন জিনিস। <code>taskset -c 0</code> process-কে শুধু CPU0-তে চলতে দেয়। আর Docker কিছু <code>/proc</code> file লুকিয়ে রাখে, <code>/proc/interrupts</code>-ও (Chapter 2-এ এটা পাইনি); <code>--security-opt systempaths=unconfined</code> সেগুলো খুলে দেয়।</p>
+  <p>এবার সংখ্যাগুলো পড়ো। মোট সময় ৩.৯ সেকেন্ড, আর প্রত্যেকে CPU পেয়েছে ১.৯ সেকেন্ড — অর্ধেক অর্ধেক। প্রত্যেককে kernel প্রায় ৫৪০ বার জোর করে নামিয়েছে। এর নাম involuntary switch: process চলতে চাইছিল, kernel তাকে সরিয়ে দিয়েছে (Chapter 17)। অথচ কেউ kernel-কে ডাকেনি। প্রমাণ চাইলে loop চলার সময় strace লাগিয়ে গুনে দেখো:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  node spin.js &amp; sleep 0.5
+  timeout 1 strace -q -c -f -p $!; wait'</code></pre></div>
+  <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ------------------
+ 87.93    0.000772          45        17         1 futex
+  5.47    0.000048          12         4           mprotect
+  5.35    0.000047          11         4           getpid
+  1.25    0.000011          11         1           sched_getaffinity
+------ ----------- ----------- --------- --------- ------------------
+100.00    0.000878          33        26         1 total
+pid 135: user 1914 ms, sys 4 ms, involuntary switches 12</code></pre></div>
+  <p>এক সেকেন্ডে ২৬টা syscall। এগুলো V8-এর নিজের ঘরোয়া কাজ (background thread-এর <code>futex</code>, JIT-এর বানানো code-এর <code>mprotect</code>), loop-এর না। ওই এক সেকেন্ডে loop প্রায় ১৫০ কোটি বার ঘুরেছে, একবারও kernel-কে ডাকেনি। তাহলে kernel CPU কেড়ে নিল কীভাবে? উত্তর শেষ লাইনে: ৩.৮৮৭ সেকেন্ডে CPU0-তে ৩৮৮৭টা timer interrupt, মানে প্রতি millisecond-এ একটা। প্রতিটা tick-এ CPU loop-এর মাঝখানে থেমে interrupt দরজা দিয়ে kernel-এ ঢোকে। Kernel তখন ঠিক করে একই process চলবে নাকি অন্যজন। এখানে গড়ে ৩–৪ tick পরপর পালা বদলেছে।</p>
+
+  <p>এবার exception দরজা। এর দুই রকম পরিণতি আছে। Chapter 9-এর page fault মনে করো: process-এর চাওয়া memory kernel আগে থেকে বসায় না, প্রথম ছোঁয়ায় বসায়। প্রতিটা প্রথম ছোঁয়া আসলে একটা exception:</p>
+  <div class="codewrap"><pre><code>// fault.js — memory ছুঁলেই exception দরজা
+const before = process.resourceUsage().minorPageFault;
+const buf = Buffer.allocUnsafeSlow(100 * 1024 * 1024);   // ১০০ MB চাওয়া
+const mid = process.resourceUsage().minorPageFault;
+buf.fill(1);                                             // এবার প্রতিটা byte ছোঁয়া
+const after = process.resourceUsage().minorPageFault;
+console.log(`চাওয়ার সময় page fault: ${mid - before}, ছোঁয়ার সময়: ${after - mid}`);</code></pre></div>
+  <div class="codewrap"><pre><code>চাওয়ার সময় page fault: 28, ছোঁয়ার সময়: 6412</code></pre></div>
+  <p>আমার Mac-এ page-এর মাপ ১৬ KB, আর ১০০ MB ÷ ১৬ KB = ৬৪০০। প্রায় প্রতিটা page-এর প্রথম ছোঁয়ায় CPU থেমেছে, exception দরজা দিয়ে kernel-এ ঢুকেছে। Kernel একটা খালি frame বসিয়ে instruction-টা আবার চালিয়েছে, আর program কিছু টেরই পায়নি। (Docker-এর Linux-এ একই script-এ আসে মাত্র ৬০-এর মতো, কারণ সেখানে Transparent Huge Pages চালু, তাই এক fault-এ ২ MB বসে — Chapter 10।)</p>
+  <p>দ্বিতীয় পরিণতি মারাত্মক। Kernel দেখে ঠিকানাটা আসলেই অবৈধ, তখন আর বসানোর কিছু নেই। JS থেকে এটা ঘটানো কঠিন, কারণ V8 তোমাকে সাধারণত অবৈধ memory-র কাছেই যেতে দেয় না। তবে একটা ফাঁক আছে। V8 নিজের stack-এর মাপ নিজে হিসাব রাখে (default এক MB-র মতো); সীমা পেরোলে সে নিজেই <code>RangeError</code> দেয়, kernel জানতেই পারে না। <code>--stack-size</code> দিয়ে V8-কে যদি মিথ্যা বলি যে stack ৫০ MB, অথচ আসল stack মাত্র ৮ MB:</p>
+  <div class="codewrap"><pre><code>node -e "function f(){ f() } f()" 2&gt;&amp;1 | grep RangeError    # V8 নিজেই ধরে ফেলে
+node --stack-size=50000 -e "function f(){ f() } f()"          # V8-কে বলা হলো stack ৫০ MB
+echo "exit $?"</code></pre></div>
+  <div class="codewrap"><pre><code>RangeError: Maximum call stack size exceeded
+exit 139</code></pre></div>
+  <p>দ্বিতীয়বার V8 থামেনি। Stack-এর শেষ সীমা পেরিয়ে সে এমন ঠিকানায় লিখতে গেছে যেটা map করাই নেই, সেখানে exception। Kernel দেখল ঠিকানাটা কোনো বৈধ এলাকার মধ্যে পড়ে না, তাই process-কে <code>SIGSEGV</code> পাঠিয়ে মেরে ফেলল। Exit code ১৩৯ = ১২৮ + ১১, আর ১১ হলো SIGSEGV-এর নম্বর (Chapter 16)। Linux-এ strace দিয়ে দেখলে kernel নিজেই কারণটা লিখে দেয়:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  strace -e trace=none node --stack-size=50000 -e "function f(){ f() } f()"'</code></pre></div>
+  <div class="codewrap"><pre><code>--- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0xffffe02caff0} ---
+--- SIGSEGV {si_signo=SIGSEGV, si_code=SI_KERNEL, si_addr=NULL} ---
++++ killed by SIGSEGV +++</code></pre></div>
+  <p><code>SEGV_MAPERR</code> মানে "এই ঠিকানায় কিছু map করা নেই", আর <code>si_addr</code> সেই ঠিকানা — stack-এর ঠিক নিচে। দ্বিতীয় লাইনটা একটা খুঁটিনাটি: Node নিজের একটা SIGSEGV handler বসিয়ে রাখে। কিন্তু সেটা চালাতে stack-এ একটু জায়গা লাগে, আর stack তো ভরা। তাই kernel জোর করে default কাজটাই করেছে: মেরে ফেলা।</p>
+
+  <h3>উল্টো দরজা: signal</h3>
+  <p>এতক্ষণ সব দরজা ছিল user mode থেকে kernel-এর দিকে। কিন্তু kernel-কেও মাঝে মাঝে process-কে কিছু জানাতে হয়: "তুমি অবৈধ memory ছুঁয়েছ", "user Ctrl-C চেপেছে", "তোমাকে বন্ধ হতে বলা হচ্ছে", "তোমার child process শেষ"। সমস্যা হলো kernel process-এর কোনো function সরাসরি "call" করতে পারে না। Process নিজের গতিতে চলছে, আর kernel নিজে user mode-এর code চালায় না।</p>
+  <p>এর সমাধান <strong>signal</strong>: একটা নম্বরওয়ালা ছোট খবর, যেটা kernel process-কে পৌঁছে দেয়। কেউ <code>kill</code> দিয়ে পাঠাতে পারে, আবার kernel নিজেও পাঠায়। পৌঁছানোর পথটা এরকম:</p>
+  <ol>
+    <li>Kernel খবরটা process-এর PCB-তে (kernel-এর রাখা process-এর খাতা, Chapter 3) "pending" হিসেবে টুকে রাখে। Process অন্য core-এ চলতে থাকলে kernel সেই core-এ একটা interrupt পাঠায়, যাতে সে তাড়াতাড়ি থামে।</li>
+    <li>Thread যখনই kernel mode থেকে user mode-এ ফিরতে যায় — syscall শেষে, interrupt শেষে, বা exception শেষে — kernel pending signal আছে কিনা দেখে। Timer interrupt ঘন ঘন আসে (উপরের experiment-এ প্রতি millisecond-এ), তাই একটা ব্যস্ত loop-ও signal-কে বেশিক্ষণ এড়িয়ে থাকতে পারে না।</li>
+    <li>ওই signal-এর জন্য process কোনো <strong>handler</strong> (signal এলে চালানোর function) না বসালে kernel নিজেই <strong>default action</strong> করে। বেশিরভাগ signal-এর default হলো process মেরে ফেলা। এখানে process-এর একটা instruction-ও চলে না।</li>
+    <li>Handler বসানো থাকলে kernel ফেরার ঠিকানা বদলে দেয়। Process যেখানে থেমেছিল সেখানে না ফিরে handler-এর শুরুতে যায়; আগের অবস্থা kernel user stack-এ সেভ করে রাখে। Handler শেষ হলে <code>rt_sigreturn</code> নামে একটা বিশেষ syscall করে। Kernel তখন সেভ করা অবস্থা ফিরিয়ে দেয়, আর process ঠিক আগের জায়গা থেকে চলতে থাকে।</li>
+  </ol>
+  <p>দুটো signal-এর জন্য handler বসানোই যায় না: <code>SIGKILL</code> আর <code>SIGSTOP</code>। এটা kernel-এর তরফ থেকে admin-কে দেওয়া নিশ্চয়তা যে যেকোনো process-কে থামানো যাবে। সবচেয়ে বেশি যেগুলোর দেখা পাবে (নম্বরগুলো Linux-এর; macOS-এ কয়েকটা আলাদা):</p>
+  <div class="table-wrap"><table>
+    <tr><th>Signal</th><th>নম্বর</th><th>কে পাঠায়</th><th>Default</th><th>ধরা যায়?</th></tr>
+    <tr><td><code>SIGINT</code></td><td>2</td><td>Terminal-এ Ctrl-C</td><td>মৃত্যু</td><td>হ্যাঁ</td></tr>
+    <tr><td><code>SIGKILL</code></td><td>9</td><td><code>kill -9</code>, OOM killer (Chapter 10)</td><td>মৃত্যু</td><td>না</td></tr>
+    <tr><td><code>SIGSEGV</code></td><td>11</td><td>Kernel, অবৈধ memory ছুঁলে</td><td>মৃত্যু + core dump</td><td>হ্যাঁ, কিন্তু কাজে লাগে কম</td></tr>
+    <tr><td><code>SIGPIPE</code></td><td>13</td><td>Kernel, যে pipe/socket-এর ওপাশে পড়ার কেউ নেই তাতে লিখলে</td><td>মৃত্যু</td><td>হ্যাঁ — Node শুরুতেই এটা উপেক্ষা করে, তাই তুমি পাও <code>EPIPE</code> error</td></tr>
+    <tr><td><code>SIGTERM</code></td><td>15</td><td><code>kill</code>, <code>docker stop</code>, Kubernetes</td><td>মৃত্যু</td><td>হ্যাঁ</td></tr>
+    <tr><td><code>SIGCHLD</code></td><td>17</td><td>Kernel, child শেষ হলে (Chapter 15)</td><td>উপেক্ষা</td><td>হ্যাঁ</td></tr>
+    <tr><td><code>SIGSTOP</code></td><td>19</td><td><code>kill -STOP</code></td><td>থামিয়ে রাখা</td><td>না</td></tr>
+  </table></div>
+  <p>Signal-এ মরলে shell exit code দেখায় ১২৮ + signal-এর নম্বর। মিলিয়ে দেখো (Mac-এ, bash দিয়ে):</p>
+  <div class="codewrap"><pre><code># kills.sh
+# ১) কোনো handler নেই: SIGTERM-এর default কাজ — মৃত্যু
+node -e "setInterval(() =&gt; {}, 1000)" &amp;
+sleep 0.3; kill -TERM $!; wait $! 2&gt;/dev/null; echo "no handler, SIGTERM -&gt; exit $?"
+
+# ২) SIGTERM-এর handler আছে (কিছুই করে না), তারপর SIGKILL
+node -e "process.on('SIGTERM', () =&gt; {}); setInterval(() =&gt; {}, 1000)" &amp;
+sleep 0.3; kill -TERM $!; sleep 0.3
+kill -0 $! &amp;&amp; echo "SIGTERM caught, still alive"      # -0: শুধু জিজ্ঞেস, বেঁচে আছে?
+kill -KILL $!; wait $! 2&gt;/dev/null; echo "SIGKILL -&gt; exit $?"</code></pre></div>
+  <div class="codewrap"><pre><code>no handler, SIGTERM -&gt; exit 143
+SIGTERM caught, still alive
+SIGKILL -&gt; exit 137</code></pre></div>
+  <p>১৪৩ = ১২৮ + ১৫, আর ১৩৭ = ১২৮ + ৯। Container "137 দিয়ে বেরিয়েছে" দেখলে বুঝবে কেউ SIGKILL দিয়েছে: হয় OOM killer, নয়তো grace period শেষে Docker বা Kubernetes। দ্বিতীয় process-টা খেয়াল করো। Handler বসানো মানেই default কাজটা (মৃত্যু) বাতিল। Handler নিজে <code>exit</code> না করলে process দিব্যি বেঁচে থাকে, আর তখন একমাত্র উপায় SIGKILL। SIGKILL-এর handler বসাতে চাইলে kernel নিজেই মানা করে; প্রমাণ পরের section-এ।</p>
+
+  <p>এবার Node-এর একটা ব্যাপার, যেটা production-এ ঝামেলা বাধায়। নিচের script-এ SIGTERM handler আছে, কিন্তু main thread একটা ৩ সেকেন্ডের হিসাবে ব্যস্ত (যেমন একটা বড় JSON parse, বা একটা ভারী report):</p>
+  <div class="codewrap"><pre><code>// sigtrap.js — SIGTERM handler আছে, কিন্তু main thread ব্যস্ত
+const t0 = Date.now();
+const log = (m) =&gt; console.log(`${String(Date.now() - t0).padStart(5)} ms  ${m}`);
+
+setInterval(() =&gt; {}, 1000);              // server-এর মতো: process চালু থাকে
+process.on('SIGTERM', () =&gt; { log('JS SIGTERM handler: cleanup, exit'); process.exit(0); });
+
+log(`pid ${process.pid}, ৩ সেকেন্ডের হিসাব শুরু`);
+const end = Date.now() + 3000;
+while (Date.now() &lt; end);                 // event loop আটকে আছে
+log('হিসাব শেষ');</code></pre></div>
+  <div class="codewrap"><pre><code># sig.sh
+node sigtrap.js &amp; pid=$!
+sleep 0.5; echo "  500 ms  shell: kill -TERM $pid"; kill -TERM $pid
+wait $pid; echo "exit code $?"</code></pre></div>
+  <div class="codewrap"><pre><code>    0 ms  pid 30012, ৩ সেকেন্ডের হিসাব শুরু
+  500 ms  shell: kill -TERM 30012
+ 3001 ms  হিসাব শেষ
+ 3001 ms  JS SIGTERM handler: cleanup, exit
+exit code 0</code></pre></div>
+  <p>Signal গেছে ৫০০ ms-এ, handler চলেছে ৩০০১ ms-এ। মাঝের আড়াই সেকেন্ড signal কোথায় ছিল? Linux-এ strace দিয়ে দেখা যাক। <code>-r</code> প্রতিটা লাইনের আগে আগের লাইন থেকে কত সময় গেছে সেটা দেখায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — signal কীভাবে পৌঁছায়</div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  strace -f -r -e trace=read,write,rt_sigreturn -o /tmp/s.txt node sigtrap.js &amp;
+  sleep 0.7; kill -TERM $(pidof node); wait
+  sed -n "/--- SIGTERM/,\$p" /tmp/s.txt | head -9'</code></pre></div>
+    <div class="codewrap"><pre><code>    0 ms  pid 129, ৩ সেকেন্ডের হিসাব শুরু
+ 3003 ms  হিসাব শেষ
+ 3003 ms  JS SIGTERM handler: cleanup, exit
+129        0.669575 --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=1, si_uid=0} ---
+129        0.000052 read(4, "*", 1)     = 1
+129        0.000070 write(15, "\300\205~5\0\0\0\0\17\0\0\0\0\0\0\0", 16) = 16
+129        0.000067 write(5, "*", 1)    = 1
+129        0.000059 rt_sigreturn({mask=[]}) = 281473966027216
+129        2.328948 write(1, " 3003 ms  \340\246\271\340\246\277\340\246\270\340\246\276\340\246\254 \340\246\266\340\247\207"..., 36) = 36
+129        0.000521 read(16, "\1\0\0\0\0\0\0\0", 1024) = 8
+129        0.000230 read(14, "\300\205~5\0\0\0\0\17\0\0\0\0\0\0\0", 512) = 16
+129        0.000122 write(1, " 3003 ms  JS SIGTERM handler: cl"..., 44) = 44</code></pre></div>
+  </div>
+  <p>প্রথম তিন লাইন script-এর নিজের output। তারপর strace-এর লাইনগুলো ধরে ধরে পড়ো (129 হলো main thread):</p>
+  <ul>
+    <li><code>--- SIGTERM ---</code>: kernel ব্যস্ত loop-টাকে মাঝপথে থামিয়ে handler-এ পাঠাল। এটা JS handler না; libuv (Node-এর event loop library) শুরুতেই C-তে লেখা একটা ছোট handler বসিয়ে রেখেছিল, সেটা।</li>
+    <li><code>read(4)</code>/<code>write(5)</code> <code>"*"</code>: একটা ছোট pipe-কে lock হিসেবে নেওয়া আর ছাড়া।</li>
+    <li><code>write(15, ..., 16)</code>: আসল কাজ। Event loop-এর জন্য একটা pipe-এ ১৬ byte-এর একটা চিরকুট লেখা। <code>\17</code> octal-এ ১৫, মানে SIGTERM-এর নম্বর।</li>
+    <li><code>rt_sigreturn</code>: C handler শেষ, thread ফিরে গেল loop-এর ঠিক সেই জায়গায়।</li>
+    <li>তারপর <strong>২.৩৩ সেকেন্ড</strong> কিছুই না। Loop চলছে, কেউ চিরকুট পড়ছে না।</li>
+    <li>Loop শেষ হলে event loop জাগে, <code>read(14, ...)</code> দিয়ে চিরকুট পড়ে (সেই একই ১৬ byte), আর তবেই তোমার JS handler চলে।</li>
+  </ul>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Timeline of sigtrap.js. The main thread runs a busy loop from 0 to 3003 milliseconds. At 700 milliseconds SIGTERM arrives: the kernel stops the thread and sends it to libuv's small C handler, which writes a note saying signal 15 into a pipe and returns with rt_sigreturn in a fraction of a millisecond. The note then waits 2.3 seconds; only when the loop ends does the event loop read the note and run the JavaScript handler">
+      <defs>
+        <marker id="c31f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <line x1="276" y1="38" x2="276" y2="50" class="ln-d"/>
+      <text x="276" y="32" text-anchor="middle" class="t-d t-s">kill -TERM (700 ms)</text>
+      <line x1="690" y1="38" x2="690" y2="50" class="ln"/>
+      <text x="690" y="32" text-anchor="middle" class="t-s">loop ends (3003 ms)</text>
+
+      <text x="24" y="70" class="t-u t-s">main thread</text>
+      <text x="24" y="86" class="t-m t-s">(your JS)</text>
+      <rect x="150" y="54" width="540" height="36" rx="6" class="b-u"/>
+      <text x="490" y="77" text-anchor="middle" class="mono">while (Date.now() &lt; end) — loop blocked</text>
+      <rect x="694" y="54" width="96" height="36" rx="6" class="b-ok"/>
+      <text x="742" y="77" text-anchor="middle" class="t-s">JS handler</text>
+
+      <text x="24" y="122" class="t-u t-s">libuv C handler</text>
+      <text x="24" y="138" class="t-m t-s">(user mode)</text>
+      <rect x="274" y="108" width="6" height="36" rx="1" class="b-u"/>
+      <text x="292" y="131" class="t-s">writes a note “signal 15” into a pipe · rt_sigreturn</text>
+
+      <line x1="24" y1="160" x2="780" y2="160" class="ln-k dash"/>
+      <text x="780" y="154" text-anchor="end" class="t-k t-s">user / kernel</text>
+
+      <text x="24" y="192" class="t-k t-s">kernel</text>
+      <path d="M277 182 V148" class="ln-k" marker-end="url(#c31f2-k)"/>
+      <text x="292" y="192" class="t-s">SIGTERM arrives: thread stopped, sent to the handler</text>
+
+      <line x1="150" y1="226" x2="690" y2="226" class="axis"/>
+      <line x1="150" y1="226" x2="150" y2="232" class="axis"/>
+      <line x1="330" y1="226" x2="330" y2="232" class="axis"/>
+      <line x1="510" y1="226" x2="510" y2="232" class="axis"/>
+      <line x1="690" y1="226" x2="690" y2="232" class="axis"/>
+      <text x="150" y="248" text-anchor="middle" class="t-m t-s">0 ms</text>
+      <text x="330" y="248" text-anchor="middle" class="t-m t-s">1000</text>
+      <text x="510" y="248" text-anchor="middle" class="t-m t-s">2000</text>
+      <text x="690" y="248" text-anchor="middle" class="t-m t-s">3000</text>
+
+      <path d="M282 264 V270 H686 V264" class="ln dash"/>
+      <text x="484" y="290" text-anchor="middle" class="t-m t-s">2.3 s: signal already delivered, JS handler still waiting for the loop</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">sigtrap.js-এর সময়রেখা, strace-এর মাপা সংখ্যায়। Kernel signal পৌঁছে দিয়েছে সাথে সাথেই, আর libuv-এর C handler এক millisecond-এরও কম সময়ে শুধু একটা চিরকুট লিখে ফিরে গেছে। JS handler-কে অপেক্ষা করতে হয়েছে main thread খালি হওয়া পর্যন্ত।</p>
+
+  <p>কেন এই ঘুরপথ? Signal handler যেকোনো instruction-এর মাঝে চলে আসতে পারে, এমনকি V8 যখন নিজের memory অর্ধেক গোছানো অবস্থায় রেখেছে তখনও। সেই মুহূর্তে JS চালানো নিরাপদ না। তাই C handler শুধু চিরকুট রাখে, আর JS চলে পরে, নিরাপদ মুহূর্তে। এর দাম হলো: event loop আটকে থাকলে তোমার SIGTERM handler-ও আটকে থাকে।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>process.on('SIGTERM', ...)</code> লিখে দিয়েছি, graceful shutdown নিশ্চিত।" না, দুটো ফাঁক থাকে। এক: handler JS-এ, তাই event loop ফাঁকা না হলে সেটা চলে না। Kubernetes SIGTERM পাঠিয়ে grace period-এর (default ৩০ সেকেন্ড, Chapter 30) জন্য অপেক্ষা করে; তার মধ্যে loop মুক্ত না হলে আসে SIGKILL, exit 137, cleanup ছাড়াই। দুই: handler বসালে default মৃত্যু বাতিল হয়। Handler যদি শেষে <code>process.exit</code> না করে, বা এমন কিছুর অপেক্ষায় থাকে যেটা কখনো শেষ হয় না, process ঝুলে থাকে। এর সমাধান হলো ভারী sync কাজ worker-এ পাঠানো (Chapter 19), আর handler-এর ভেতরে নিজের একটা timeout রাখা।</p>
+  </div>
+
+  <h3>Kernel কাউকে বিশ্বাস করে না</h3>
+  <p>Syscall-এর প্রতিটা argument আসে user mode-এর code থেকে, আর সেই code buggy হতে পারে, এমনকি ইচ্ছে করে বিপজ্জনকও হতে পারে। <code>read(fd, buffer, n)</code> ধরো। এখানে <code>buffer</code> হলো একটা ঠিকানা (address): memory-র কোন ঘর থেকে data বসানো শুরু হবে তার নম্বর (Chapter 7)। Kernel mode-এ kernel সব memory ছুঁতে পারে। সে যদি যাচাই না করেই তোমার দেওয়া ঠিকানায় লিখে দিত, তাহলে <code>read()</code> দিয়ে একটা file-এর data kernel-এর নিজের memory-র উপর লেখানো যেত। তখন যেকোনো user পুরো machine দখল করতে পারত।</p>
+  <p>তাই kernel প্রতিটা argument যাচাই করে। Fd-টা কি বৈধ, আর এই process-এর? Permission আছে? ঠিকানাটা কি user-এর ভাগের memory-র মধ্যে পড়ে, আর সেখানে কিছু map করা আছে? User memory-তে লিখতে kernel বিশেষ copy function ব্যবহার করে (Linux-এ <code>copy_to_user</code>)। এই function আগে ঠিকানার সীমা দেখে, আর মাঝপথে fault হলেও crash করে না, error ফেরত দেয়।</p>
+  <p>JS থেকে এটা পরীক্ষা করা যায় না: Node-এর <code>Buffer</code> ঠিকানা লুকিয়ে রাখে, ভুল ঠিকানা দেওয়ার কোনো উপায়ই নেই। Python-এর <code>ctypes</code> দিয়ে পারা যায়। এটা C library-র <code>read()</code> সরাসরি ডাকতে দেয়, আর buffer-এর জায়গায় যেকোনো সংখ্যা বসাতে দেয়:</p>
+  <div class="codewrap"><pre><code># badptr.py — kernel-কে আজেবাজে address দিলে কী হয়, আর নিজে ছুঁলে কী হয়
+import ctypes, os
+libc = ctypes.CDLL(None, use_errno=True)       # C library-র read() সরাসরি ডাকার উপায়
+fd = os.open('badptr.py', os.O_RDONLY)
+
+for name, addr in [('a real buffer', ctypes.addressof(ctypes.create_string_buffer(100))),
+                   ('address 16', 16),
+                   ('a kernel address', 0xffff800000001000)]:
+    n = libc.read(fd, ctypes.c_void_p(addr), 100)
+    err = os.strerror(ctypes.get_errno()) if n &lt; 0 else 'ok'
+    print(f'read() into {name:&lt;16} -&gt; {n:&gt;4}  {err}')
+
+print('এবার নিজেই address 16-এ লিখছি...', flush=True)
+ctypes.memset(16, 0, 1)
+print('এই লাইন কখনো print হবে না')</code></pre></div>
+  <div class="codewrap"><pre><code>python3 badptr.py; echo "exit $?"</code></pre></div>
+  <div class="codewrap"><pre><code>read() into a real buffer    -&gt;  100  ok
+read() into address 16       -&gt;   -1  Bad address
+read() into a kernel address -&gt;   -1  Bad address
+এবার নিজেই address 16-এ লিখছি...
+exit 139</code></pre></div>
+  <p>একই ঠিকানা ১৬, দুই রকম ফল। Kernel-কে দিলে সে যাচাই করে ভদ্রভাবে "Bad address" (<code>EFAULT</code>) ফেরত দিয়েছে, আর program চলতে থেকেছে। Kernel-এর ভাগের ঠিকানা দিলেও একই উত্তর: kernel তোমার হয়ে নিজের memory-তে লিখবে না। কিন্তু program নিজে ১৬-তে লিখতে গেলে CPU-র exception, তারপর SIGSEGV, exit ১৩৯। Linux-এ strace-এ kernel-এর উত্তর সরাসরি দেখা যায়: <code>read(3, 0x10, 100) = -1 EFAULT (Bad address)</code> আর <code>read(3, 0xffff800000001000, 100) = -1 EFAULT (Bad address)</code>। (<code>0x10</code> হলো hex-এ ১৬।)</p>
+  <p>বাকি যাচাইগুলো Node থেকেই দেখা যায়। এবার একজন সাধারণ user হিসেবে চালাব (Node-এর Docker image-এ <code>node</code> নামে একটা user আছে, uid 1000):</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — validate.js</div>
+    <div class="codewrap"><pre><code>// validate.js — kernel-এর কাছে তিনটা আজেবাজে অনুরোধ
+const fs = require('fs');
+const tries = [
+  ['fd 999 থেকে পড়ো',        () =&gt; fs.readSync(999, Buffer.alloc(10))],
+  ['/etc/shadow খোলো',        () =&gt; fs.readFileSync('/etc/shadow')],
+  ['SIGKILL-এর handler বসাও', () =&gt; process.on('SIGKILL', () =&gt; {})],
+];
+for (const [what, fn] of tries) {
+  try { fn(); console.log(`${what} -&gt; ok`); }
+  catch (e) { console.log(`${what} -&gt; ${e.code ?? e.message}`); }
+}</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  runuser -u node -- strace -f -e trace=read,openat,rt_sigaction -o /tmp/v.txt node validate.js
+  grep -E "EBADF|EACCES|EINVAL" /tmp/v.txt'</code></pre></div>
+    <div class="codewrap"><pre><code>fd 999 থেকে পড়ো -&gt; EBADF
+/etc/shadow খোলো -&gt; EACCES
+SIGKILL-এর handler বসাও -&gt; EINVAL
+129   read(999, 0x37138850, 10)         = -1 EBADF (Bad file descriptor)
+129   openat(AT_FDCWD, "/etc/shadow", O_RDONLY|O_CLOEXEC) = -1 EACCES (Permission denied)
+129   rt_sigaction(SIGKILL, {sa_handler=0x1c3a300, sa_mask=~[RTMIN RT_1], sa_flags=SA_RESTART}, NULL, 8) = -1 EINVAL (Invalid argument)</code></pre></div>
+  </div>
+  <p>তিনটাই kernel-এর উত্তর, JS-এর না। <code>EBADF</code>: এই process-এর fd table-এ ৯৯৯ নম্বরে কিছু নেই (Chapter 21)। <code>EACCES</code>: <code>/etc/shadow</code>-এ password hash থাকে, শুধু root পড়তে পারে। <code>EINVAL</code>: <code>rt_sigaction</code> হলো signal handler বসানোর syscall, আর SIGKILL-এর বেলায় kernel সেটা মানে না। Node-এর error-এর <code>code</code> বেশিরভাগ সময় kernel-এর দেওয়া এই নামগুলোই।</p>
+
+  <h3>root মানেও user mode</h3>
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>sudo</code> দিলে program kernel-এর ক্ষমতা পায়, kernel mode-এ চলে।" না। root মানে process-এর user id (uid) ০। এটা process-এর PCB-তে লেখা একটা সংখ্যা মাত্র, আর CPU-র mode এই সংখ্যার কথা জানেই না। root-এর process user mode-এই চলে, আর বাকি সবার মতোই syscall দিয়ে kernel-এর কাছে চায়। পার্থক্য শুধু একটা: kernel যখন যাচাই করে "এই process কি এটা করতে পারে?", তখন root বেশিরভাগ যাচাই পার হয়ে যায়। Privileged instruction root চালালেও একই exception, একই signal।</p>
+  </div>
+  <p>প্রমাণটা সহজ। Docker container-এ default user root, সেখানে <code>spin.js</code> চালাও:</p>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'echo "uid: $(id -u)"; node spin.js'</code></pre></div>
+  <div class="codewrap"><pre><code>uid: 0
+pid 1: user 1938 ms, sys 8 ms, involuntary switches 27</code></pre></div>
+  <p>root-এর loop-ও পুরোটাই user time, ঠিক আগের মতো। Kernel mode-এ code চলে শুধু ওই তিন দরজা দিয়ে ঢুকে, আর দরজার ওপাশে চলে kernel-এর নিজের code।</p>
+  <p>তবে "root সব যাচাই পার হয়" কথাটাও পুরো সত্যি না। পুরনো Unix-এ root ছিল all-or-nothing, আর তাতে একটা সমস্যা ছিল। যে web server-এর শুধু port 80 দরকার, root হতে গিয়ে সে kernel module load করার ক্ষমতাও পেয়ে যেত, আর তার একটা bug মানে পুরো machine হাতছাড়া। তাই Linux root-এর ক্ষমতাকে ৪১টা আলাদা টুকরোয় ভেঙেছে, নাম <strong>capabilities</strong>। যেমন <code>CAP_NET_BIND_SERVICE</code> (১০২৪-এর নিচের port), <code>CAP_NET_ADMIN</code> (network সাজানো), <code>CAP_SYS_PTRACE</code> (অন্যের process-এ ptrace লাগানো, strace যেটা ব্যবহার করে), <code>CAP_SYS_ADMIN</code> (hostname বদলানো সহ অনেক কিছু)। বেশিরভাগ কাজে kernel uid ০ দেখে না, দেখে নির্দিষ্ট capability-টা আছে কিনা। আর Docker container-এর root পায় মাত্র ১৪টা:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — root.sh</div>
+    <div class="codewrap"><pre><code># root.sh
+apt-get update -qq &amp;&amp; apt-get install -y -qq strace iproute2 &gt; /dev/null
+echo "uid: $(id -u)"                        # 0 মানে root
+head -c 12 /etc/shadow; echo                # সাধারণ user পারে না, root পারে
+hostname demo                               # machine-এর নাম বদলানো
+ip link add dummy0 type dummy               # নতুন network interface বানানো
+setpriv --reuid 1000 --regid 1000 --clear-groups sleep 5 &amp;   # অন্য user-এর একটা process
+sleep 0.2; timeout 1 strace -p $! 2&gt;&amp;1 | head -1             # তাতে strace লাগানো</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w debian:bookworm-slim bash root.sh
+docker run --rm --cap-add NET_ADMIN --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w debian:bookworm-slim bash root.sh</code></pre></div>
+    <div class="codewrap"><pre><code>uid: 0
+root:*:20714
+hostname: you must be root to change the host name
+RTNETLINK answers: Operation not permitted
+strace: attach: ptrace(PTRACE_SEIZE, 358): Operation not permitted
+
+uid: 0
+root:*:20714
+hostname: you must be root to change the host name
+strace: Process 358 attached</code></pre></div>
+  </div>
+  <p>প্রথম container-এ uid ০, <code>/etc/shadow</code>-ও পড়া গেল। অথচ <code>hostname</code> বলছে "you must be root"! Tool-টা ধরে নিয়েছে যে "অনুমতি নেই" মানে "root না"। আসলে kernel <code>EPERM</code> দিয়েছে <code>CAP_SYS_ADMIN</code> না থাকায়। Network interface বানানো আর অন্য user-এর process-এ strace লাগানোও আটকে গেছে। দ্বিতীয় container-এ ঠিক দুটো capability যোগ করেছি, আর ঠিক ওই দুটো কাজই খুলে গেছে; hostname এখনো বন্ধ। একটা container-এর নিজের capability-র তালিকা দেখতে <code>grep CapEff /proc/self/status</code> চালাও। সেটা একটা hex সংখ্যা দেয়, আর <code>capsh --decode=&lt;সেই সংখ্যা&gt;</code> তাকে নামে বদলায়।</p>
+  <p>এবার বইয়ের একটা পুরনো ঋণ শোধ করি। Chapter 1 থেকে strace-এর আগে <code>--cap-add SYS_PTRACE</code> দিয়ে আসছি। strace <code>ptrace</code> নামের একটা syscall দিয়ে অন্য process-এর syscall দেখে। নতুন Docker-এ নিজের চালানো child-কে strace করতে এই flag আর লাগে না, কিন্তু পুরনো Docker-এ ptrace পুরোপুরি আটকানো থাকত। আর উপরে যেমন দেখলে, অন্য user-এর process-এ লাগাতে এখনো লাগে। তাই নিরাপদ থাকতে flag-টা সবসময় দিয়েছি। উল্টো দিকে <code>--privileged</code> দিলে container পায় ৪১টার সবগুলো, আর অনেক নিষেধও উঠে যায়। তখন container-এর root প্রায় host-এর root-এর সমান, তাই এটা হালকাভাবে দিও না।</p>
+  <p>JS developer-এর চেনা একটা উদাহরণ: আসল Linux server-এ সাধারণ user হিসেবে <code>listen(80)</code> করলে আসে <code>EACCES</code>। পুরো root না দিয়ে শুধু ওই একটা ক্ষমতা দেওয়া যায়:</p>
+  <div class="codewrap"><pre><code>node -e "require('net').createServer().listen(80).on('error', e =&gt; console.log(e.code))"
+# EACCES
+sudo setcap cap_net_bind_service=+ep "$(readlink -f "$(which node)")"
+# এবার একই command চলে — root ছাড়াই</code></pre></div>
+  <p>আমি এটা Docker-এ চালিয়ে দেখেছি: <code>--sysctl net.ipv4.ip_unprivileged_port_start=1024</code> দিয়ে, <code>node</code> user হিসেবে। Flag-টা লাগে কারণ Docker নিজে container-এ এই সীমা ০ করে রাখে, তাই container-এ সাধারণত এই error দেখবে না। একটা সাবধানতা: এতে ওই node binary দিয়ে চলা <em>সব</em> script ক্ষমতাটা পায়। বাস্তবে সাধারণত app চলে ৩০০০-এর মতো port-এ, আর সামনে একটা reverse proxy বা load balancer ৮০ ধরে।</p>
+
+  <h3>দুই পাহারাদার: CPU mode আর page table</h3>
+  <p>এখন পর্যন্ত "পাহারা" বলতে একটা জিনিস বুঝিয়েছি, কিন্তু আসলে পাহারাদার দুইজন, আর তারা আলাদা জিনিস আগলায়। বুঝতে একটা জিনিস দরকার: প্রতিটা process-এর virtual address-এর নম্বর দুই ভাগে ভাগ করা। নিচের অর্ধেক user-এর: x86-64 Linux-এ <code>0x00007fff_ffffffff</code> পর্যন্ত, ARM64-এ <code>0x0000ffff_ffffffff</code> পর্যন্ত। উপরের অর্ধেক, <code>0xffff...</code> দিয়ে শুরু হওয়া ঠিকানাগুলো, kernel-এর। Chapter 9-এর কথা মনে করো: প্রতিটা process-এর নিজের page table আছে, আর প্রতিটা memory access-এ MMU সেই table দেখে virtual ঠিকানাকে RAM-এর frame-এ বদলায়।</p>
+  <div class="codewrap"><pre><code># guards.py — নিজের memory পড়া যায়; kernel-এর ভাগের address না
+import ctypes
+mine = ctypes.create_string_buffer(b'hello')          # আমার process-এর ৬ byte
+addr = ctypes.addressof(mine)
+print(f'{addr:#018x}  (user half)   -&gt;', ctypes.string_at(addr, 5))
+
+kernel = 0xffff800000001000                          # 64-bit ঠিকানার উপরের অর্ধেক
+print(f'{kernel:#018x}  (kernel half) -&gt; ...', flush=True)
+ctypes.string_at(kernel, 1)
+print('এই লাইন আসবে না')</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w python:3.12-slim bash -c 'python3 guards.py; echo "exit $?"'</code></pre></div>
+  <div class="codewrap"><pre><code>0x0000ffff98bf0320  (user half)   -&gt; b'hello'
+0xffff800000001000  (kernel half) -&gt; ...
+exit 139
+bash: line 1:     7 Segmentation fault      python3 guards.py</code></pre></div>
+  <p>নিজের ঠিকানা (নিচের অর্ধেকে) থেকে পড়া গেল। উপরের অর্ধেকে হাত দিতেই exception, তারপর SIGSEGV। (Mac-এও একই ফল, শুধু নিজের ঠিকানাটা <code>0x0000000104ca5598</code>-এর মতো।) এবার দুই পাহারাদারকে আলাদা করে দেখো:</p>
+  <ul>
+    <li><strong>পাহারাদার ১ — CPU mode।</strong> এটা আটকায় privileged instruction (page table বদলানো, interrupt বন্ধ করা, device-এর register ছোঁয়া)। আর page table-এর যে entry-তে "kernel-only" চিহ্ন দেওয়া, user mode-এ সেটা ছোঁয়াও আটকায়। প্রতিটা access-এ MMU চিহ্নটা মিলিয়ে দেখে CPU এখন কোন mode-এ। guards.py-র SIGSEGV এই পাহারাদারের কাজ।</li>
+    <li><strong>পাহারাদার ২ — page table।</strong> এটা ঠিক করে কোন RAM-এ পৌঁছানো <em>আদৌ</em> সম্ভব। Process B-র frame-গুলো A-র page table-এ নেই-ই। A যে ঠিকানাই বলুক, সেটা A-র নিজের table দিয়ে অনুবাদ হয়, তাই B-র data-র নাম নেওয়ারও উপায় নেই (Chapter 9-এর same-address demo)। এখানে mode কোনো কাজ করে না, শুধু table।</li>
+  </ul>
+  <p>একটা প্রশ্ন থেকে যায়: kernel-এর অর্ধেক প্রতিটা process-এর page table-এ আছেই বা কেন? কারণ গতি। Syscall বা interrupt এলে CPU সোজা kernel-এর code-এ নামতে পারে, page table বদলাতে হয় না, কারণ kernel তো আগে থেকেই map করা। একে পাহারা দেয় শুধু ওই "kernel-only" চিহ্ন। এই কথাটা মনে রাখো, পরের section ঠিক এখানেই আঘাত করে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 316" width="100%" role="img" aria-label="Two guards. Process A's page table and process B's page table each have a kernel half at the top, marked kernel-only and holding the same kernel pages, an unmapped gap, and a user half holding the process's own code, heap and stack. A can read and write its own user half. Guard 1, the CPU mode, blocks A in user mode from touching kernel-only pages, which becomes an exception and SIGSEGV, and also blocks privileged instructions. Guard 2, the page table, gives A no entry for B's frames, because every address A uses is looked up in A's own table">
+      <defs>
+        <marker id="c31f3-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-d" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="160" y="28" text-anchor="middle" class="t-h t-s">process A's page table</text>
+      <text x="700" y="28" text-anchor="middle" class="t-h t-s">process B's page table</text>
+
+      <rect x="80" y="44" width="160" height="80" rx="6" class="b-k"/>
+      <text x="160" y="78" text-anchor="middle" class="t-s">kernel</text>
+      <text x="160" y="98" text-anchor="middle" class="t-m t-s">marked kernel-only</text>
+      <rect x="80" y="124" width="160" height="46" class="b-m"/>
+      <text x="160" y="152" text-anchor="middle" class="t-m t-s">not mapped</text>
+      <rect x="80" y="170" width="160" height="130" rx="6" class="b-u"/>
+      <text x="160" y="222" text-anchor="middle" class="t-s">A's code, heap,</text>
+      <text x="160" y="240" text-anchor="middle" class="t-s">stack</text>
+      <text x="160" y="274" text-anchor="middle" class="t-ok t-s">✓ read / write</text>
+      <text x="72" y="54" text-anchor="end" class="mono">0xffff…</text>
+      <text x="72" y="298" text-anchor="end" class="mono">0x0000…</text>
+
+      <rect x="620" y="44" width="160" height="80" rx="6" class="b-k"/>
+      <text x="700" y="78" text-anchor="middle" class="t-s">kernel</text>
+      <text x="700" y="98" text-anchor="middle" class="t-m t-s">marked kernel-only</text>
+      <rect x="620" y="124" width="160" height="46" class="b-m"/>
+      <text x="700" y="152" text-anchor="middle" class="t-m t-s">not mapped</text>
+      <rect x="620" y="170" width="160" height="130" rx="6" class="b-u"/>
+      <text x="700" y="222" text-anchor="middle" class="t-s">B's code, heap,</text>
+      <text x="700" y="240" text-anchor="middle" class="t-s">stack</text>
+
+      <path d="M244 58 H616" class="ln dash"/>
+      <text x="430" y="50" text-anchor="middle" class="t-m t-s">the same kernel pages in every table</text>
+
+      <path d="M240 190 C 276 190, 276 104, 246 104" class="ln-d" marker-end="url(#c31f3-d)"/>
+      <text x="290" y="94" class="t-d t-s">✕ guard 1 · CPU mode</text>
+      <text x="290" y="112" class="t-s">user mode + kernel-only page → exception → SIGSEGV</text>
+      <text x="290" y="130" class="t-m t-s">also blocks privileged instructions</text>
+
+      <text x="290" y="210" class="t-d t-s">✕ guard 2 · page table</text>
+      <text x="290" y="228" class="t-s">A's table has no entry for B's frames</text>
+      <path d="M244 250 H614" class="ln-d dash" marker-end="url(#c31f3-d)"/>
+      <text x="290" y="274" class="t-m t-s">every address A uses goes through A's table</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই পাহারাদার, দুই আলাদা কাজ। Kernel-এর অর্ধেক (উপরে, amber) সব process-এর table-এ একই, শুধু "kernel-only" চিহ্ন দেওয়া; user mode-এ ছুঁলে CPU mode-এর পাহারাদার ধরে ফেলে। B-র memory A-র table-এ নেই-ই, তাই সেখানে পৌঁছানোর কোনো পথই নেই।</p>
+
+  <h3>Meltdown: পাহারাদার যখন দেরিতে জাগল</h3>
+  <p>দুটো পুরনো কথা এখানে লাগবে। Chapter 14: CPU অপেক্ষা না করে আন্দাজে সামনের instruction আগেই চালিয়ে ফেলে (speculative execution)। আন্দাজ ভুল হলে ফলগুলো ফেলে দেয়, কিন্তু cache-এ কী এল সেই চিহ্ন থেকে যায়। Chapter 13: cache-এ থাকা data পড়া আর RAM থেকে আনার মধ্যে সময়ের পার্থক্য এত বড় যে সেটা মাপা যায়। ২০১৮-র জানুয়ারিতে প্রকাশিত <strong>Meltdown</strong> এই দুটো জোড়া দিয়ে পাহারাদার ১-কে ফাঁকি দিয়েছিল। মূলত সেই সময়ের Intel CPU-তে এটা কাজ করত। কৌশলটা মোটা দাগে এরকম (code না, শুধু ধারণা):</p>
+  <ol>
+    <li>User mode-এর code kernel-এর অর্ধেক থেকে একটা byte পড়তে বলে। "Kernel-only" যাচাই ব্যর্থ হবে, exception আসবেই। কিন্তু আক্রান্ত CPU-তে byte-টা আগে চলে আসে, আর exception ঘোষণা হওয়ার আগেই পরের instruction-গুলো আন্দাজে চলে যায়।</li>
+    <li>পরের instruction সেই byte-কে সূচক ধরে ২৫৬ ঘরের একটা বড় array-র একটা ঘর ছোঁয়। Byte-এর মান ৯৭ হলে ৯৭ নম্বর ঘর, আর সেই ঘর cache-এ চলে আসে।</li>
+    <li>Exception আসে, CPU সব register-এর ফল ফেলে দেয়। Byte-টা আর কোথাও নেই, কিন্তু ৯৭ নম্বর ঘর cache-এ রয়ে গেছে।</li>
+    <li>Program ২৫৬টা ঘরই পড়ে দেখে, কোনটা কত দ্রুত আসে। যেটা দ্রুত আসে (cache hit), সেটাই গোপন byte। তারপর পরের byte।</li>
+  </ol>
+  <p>এটা ভয়াবহ ছিল, কারণ Linux kernel-এর অর্ধেকে গোটা physical RAM map করা থাকে। ফলে kernel memory পড়া মানে সব process-এর সব data পড়া: অন্যের password, key, সবকিছু। একটা hardware বাগ দুই পাহারাদারকেই এক সাথে ডিঙিয়ে গেল।</p>
+  <p>Hardware রাতারাতি বদলানো যায় না, তাই সমাধান এল software-এ: <strong>KPTI</strong> (Kernel Page-Table Isolation)। প্রতিটা process-এর জন্য এখন দুটো page table। User mode-এ যেটা চলে, তাতে kernel-এর অর্ধেক প্রায় পুরোটাই সরানো; আছে শুধু দরজার ছোট একটা entry stub, যেটা table বদলানোর কাজটা করে। কোনো দরজা দিয়ে ঢুকলেই (syscall, interrupt, exception) সেই stub পুরো table-এ বদলে নেয়, আর বেরোনোর সময় আবার ফেরত যায়। User mode-এ kernel memory map করাই না থাকলে আন্দাজে পড়ারও কিছু থাকে না।</p>
+  <p>তবে এর দাম আছে। প্রতিটা দরজা পেরোতে দুইবার table বদল। আর table বদলালে TLB-র (ঠিকানা অনুবাদের ছোট cache, Chapter 9) জমানো অনুবাদও কাজে লাগে না, যদি না CPU-তে PCID থাকে। PCID হলো TLB-র entry-তে কোন table-এর সেটা লিখে রাখার ব্যবস্থা। ২০১৮-তে যেসব কাজ অনেক syscall করে (ছোট ছোট database query, অনেক ছোট network write), সেগুলো চোখে পড়ার মতো ধীর হয়েছিল। একটা syscall-এর দাম আসলে কত, সেটা পরের chapter-এ মাপব।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 306" width="100%" role="img" aria-label="Kernel page-table isolation. Before KPTI, one page table served both modes and its kernel half, holding the kernel and all of RAM, was always mapped and only marked kernel-only, which Meltdown read speculatively. With KPTI, the table used in user mode maps only the process's memory and a tiny entry stub, so there is nothing to read; entering the kernel switches to a second table where the kernel half is fully mapped, and returning switches back. The cost is a table switch on every entry and exit">
+      <defs>
+        <marker id="c31f4-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c31f4-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="120" y="24" text-anchor="middle" class="t-h t-s">before KPTI</text>
+      <text x="120" y="42" text-anchor="middle" class="t-m t-s">one table, both modes</text>
+      <text x="410" y="24" text-anchor="middle" class="t-h t-s">with KPTI</text>
+      <text x="410" y="42" text-anchor="middle" class="t-m t-s">table used in user mode</text>
+      <text x="690" y="24" text-anchor="middle" class="t-h t-s">with KPTI</text>
+      <text x="690" y="42" text-anchor="middle" class="t-m t-s">table used in kernel mode</text>
+
+      <rect x="40" y="56" width="160" height="90" rx="6" class="b-k"/>
+      <text x="120" y="96" text-anchor="middle" class="t-s">kernel + all RAM</text>
+      <text x="120" y="116" text-anchor="middle" class="t-m t-s">kernel-only mark</text>
+      <rect x="40" y="160" width="160" height="80" rx="6" class="b-u"/>
+      <text x="120" y="205" text-anchor="middle" class="t-s">A's memory</text>
+
+      <line x1="265" y1="16" x2="265" y2="296" class="ln dash"/>
+
+      <rect x="330" y="56" width="160" height="90" rx="6" class="b-m"/>
+      <text x="410" y="96" text-anchor="middle" class="t-m t-s">not mapped</text>
+      <rect x="336" y="120" width="148" height="22" rx="4" class="b-k"/>
+      <text x="410" y="135" text-anchor="middle" class="t-s">entry stub</text>
+      <rect x="330" y="160" width="160" height="80" rx="6" class="b-u"/>
+      <text x="410" y="205" text-anchor="middle" class="t-s">A's memory</text>
+
+      <rect x="610" y="56" width="160" height="90" rx="6" class="b-k"/>
+      <text x="690" y="96" text-anchor="middle" class="t-s">kernel + all RAM</text>
+      <text x="690" y="116" text-anchor="middle" class="t-m t-s">fully mapped</text>
+      <rect x="610" y="160" width="160" height="80" rx="6" class="b-u"/>
+      <text x="690" y="205" text-anchor="middle" class="t-s">A's memory</text>
+
+      <path d="M494 110 H606" class="ln-k" marker-end="url(#c31f4-k)"/>
+      <text x="550" y="100" text-anchor="middle" class="t-k t-s">enter kernel</text>
+      <path d="M606 200 H494" class="ln-u" marker-end="url(#c31f4-u)"/>
+      <text x="550" y="190" text-anchor="middle" class="t-u t-s">return</text>
+
+      <text x="120" y="270" text-anchor="middle" class="t-d t-s">Meltdown: kernel half is</text>
+      <text x="120" y="286" text-anchor="middle" class="t-d t-s">right there to read</text>
+      <text x="410" y="270" text-anchor="middle" class="t-ok t-s">nothing to read</text>
+      <text x="410" y="286" text-anchor="middle" class="t-m t-s">from user mode</text>
+      <text x="690" y="270" text-anchor="middle" class="t-m t-s">cost: a table switch on</text>
+      <text x="690" y="286" text-anchor="middle" class="t-m t-s">every entry and exit</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে পুরনো ব্যবস্থা: একটা table, kernel-এর অর্ধেক সবসময় map করা, পাহারা শুধু "kernel-only" চিহ্ন, আর Meltdown সেটাই আন্দাজে পড়েছিল। ডানে KPTI: user mode-এর table-এ kernel প্রায় নেই, আর kernel-এ ঢোকার সময় পুরো table-এ বদল হয়। নিরাপত্তা বাড়ল, প্রতিটা দরজা একটু দামি হলো।</p>
+
+  <p>তোমার machine-এর CPU আক্রান্ত কিনা, আর kernel কী ব্যবস্থা নিয়েছে, Linux সেটা একটা file-এ লিখে রাখে:</p>
+  <div class="codewrap"><pre><code>docker run --rm alpine sh -c 'cd /sys/devices/system/cpu/vulnerabilities; grep . meltdown spectre_v1 spectre_v2'</code></pre></div>
+  <div class="codewrap"><pre><code>meltdown:Not affected
+spectre_v1:Mitigation: __user pointer sanitization
+spectre_v2:Not affected</code></pre></div>
+  <p>Apple Silicon-এর উপর চলা এই VM-এর CPU-কে kernel Meltdown-এ আক্রান্ত মনে করে না, তাই KPTI বন্ধ রেখেছে। আক্রান্ত Intel server-এ লেখা থাকত <code>Mitigation: PTI</code>। দ্বিতীয় লাইনটা দেখো: <code>__user pointer sanitization</code>। Kernel শুধু তোমার দেওয়া ঠিকানা যাচাই করেই থামে না; যাচাই শেষ হওয়ার আগে CPU যেন আন্দাজেও সেই ঠিকানা ব্যবহার করতে না পারে, সেটাও নিশ্চিত করে। "Kernel কাউকে বিশ্বাস করে না" কথাটা এই পর্যন্ত যায়।</p>
 
   <div class="box concept">
     <div class="box-title">MENTAL MODEL</div>
-    <p>Kernel হলো ব্যাংকের vault-এর কর্মকর্তা। তুমি (user process) vault-এ ঢুকতে পারো না — কাউন্টারে (syscall interface) slip জমা দাও, কর্মকর্তা ভিতরে গিয়ে কাজ করে ফলাফল আনে। Slip-এ যা-ই লেখো, কর্মকর্তা যাচাই করেই কাজ করবে। ব্যবস্থাটা একটু আনুষ্ঠানিক, তাই একটু ধীর — কিন্তু এজন্যই ব্যাংক লুট হয় না।</p>
+    <p>User mode থেকে kernel mode-এ ঢোকার দরজা তিনটা: syscall (program চায়), interrupt (hardware ডাকে, যেকোনো মুহূর্তে), exception (instruction আটকে যায়)। তিনটাই নামে boot-এ ঠিক করা entry point-এ, অন্য কোথাও না। ফেরার পথে kernel signal গুঁজে দিতে পারে। Handler না থাকলে kernel নিজেই default কাজ করে; SIGKILL-এ কোনো বিকল্প নেই। Kernel প্রতিটা argument যাচাই করে, আর ভুল হলে crash না করে error ফেরত দেয়। root শুধু kernel-এর permission যাচাইয়ে সুবিধা পায়, আর সেটাও capability ধরে ধরে; CPU mode বদলায় না। Memory আগলায় দুই পাহারাদার: CPU mode (privileged instruction আর kernel-only page) আর page table (কোন memory আদৌ আছে)। Meltdown দেখিয়েছে hardware-এর পাহারাও ফাঁকি খেতে পারে। KPTI সেটার দাম: প্রতিটা দরজা পেরোনো একটু বেশি খরচের।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Privilege enforcement software না hardware — কেন এটা গুরুত্বপূর্ণ পার্থক্য?</li>
-      <li>"অন্যের memory পড়তে পারি না" — এটা কোন mechanism-এর কাজ, privilege level না page table?</li>
-      <li>User code kernel-এর "যেখানে খুশি" ঢুকতে পারে না — ব্যবস্থাটা কী?</li>
-      <li>Mode switch-এর তিন দরজা কী কী?</li>
+      <li>twospin.sh-এ দুটো process প্রায় কোনো syscall না করেও প্রত্যেকে ~৫৪০ বার CPU হারাল। Kernel কোন দরজা দিয়ে ঢুকল? ৩.৯ সেকেন্ডে CPU0-তে ৩৮৮৭টা timer interrupt থেকে এই kernel-এর tick সম্পর্কে কী বোঝা যায়?</li>
+      <li>fault.js-এ ১০০ MB ছুঁতে ৬৪১২টা exception হলো, program টেরই পেল না। অথচ <code>--stack-size=50000</code>-এ exception-এর পরে program মরল (exit ১৩৯)। দুই ক্ষেত্রে kernel-এর সিদ্ধান্ত আলাদা হলো কেন?</li>
+      <li>sigtrap.js-এ kernel SIGTERM পৌঁছে দিয়েছে প্রায় সাথে সাথে, অথচ JS handler চলেছে ৩ সেকেন্ডে। মাঝের সময়টা signal কোথায় ছিল, আর Node কেন JS handler সরাসরি signal-এর মুহূর্তে চালায় না? Kubernetes-এ এর পরিণতি কী হতে পারে?</li>
+      <li>badptr.py-তে ঠিকানা ১৬ kernel-কে দিলে <code>EFAULT</code>, কিন্তু নিজে লিখলে SIGSEGV। পার্থক্য কেন? Kernel এই যাচাই না করলে <code>read()</code> দিয়ে কী করা যেত?</li>
+      <li>Container-এর root <code>/etc/shadow</code> পড়তে পারল কিন্তু hostname বদলাতে পারল না কেন? guards.py-র kernel-half read কোন পাহারাদার আটকাল? Meltdown সেই পাহারাদারকে কীভাবে ফাঁকি দিয়েছিল, আর KPTI তার জন্য কী দাম নিল?</li>
     </ul>
   </div>

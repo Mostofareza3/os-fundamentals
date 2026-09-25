@@ -1,41 +1,273 @@
   <p class="part-label">PART 6 · STORAGE</p>
   <h2>Chapter 20 — Persistent Storage</h2>
-  <p class="chap-sub">RAM-এর বাইরের জগৎ — যেখানে data power গেলেও বাঁচে, কিন্তু দাম দিতে হয় speed-এ।</p>
+  <p class="chap-sub">Power চলে গেলেও data যেখানে টিকে থাকে — HDD আর SSD ভেতরে কীভাবে কাজ করে, "ধীর" মাপার তিনটা আলাদা উপায়, আর কেন একসাথে অনেক অনুরোধ পাঠালে SSD হঠাৎ দশ গুণ কাজ করে।</p>
 
-  <h3>কেন persistence আলাদা সমস্যা</h3>
-  <p>RAM volatile — তাই database, file, log সবকিছুর একটা "স্থায়ী ঠিকানা" লাগে। সেই ঠিকানাই storage। কিন্তু storage-এর economics সম্পূর্ণ আলাদা: RAM-এর চেয়ে অনেক সস্তা আর বড়, কিন্তু অনেক ধীর। এই gap-টাই file I/O-র পুরো design-কে shape করে।</p>
+  <p>Chapter 7-এ দেখেছি RAM-এর প্রতিটা bit একটা ছোট্ট capacitor-এ জমা থাকা charge, যেটা নিজে থেকেই চুইয়ে পড়ে — তাই power গেলে RAM মুছে যায়। এমন memory-কে বলে <strong>volatile</strong>। তোমার code, database, photo টিকিয়ে রাখতে লাগে <strong>persistent</strong> (বা non-volatile) storage — যেখানে data power ছাড়াও থাকে। Chapter 2-এর টেবিলে দামটাও দেখেছিলাম: RAM ~১০০ ns, SSD ~২০–১০০ µs, hard disk ~৫–১০ ms। এই chapter-এ দেখব এই সংখ্যাগুলো কোথা থেকে আসে, আর নিজের machine-এর SSD মেপে দেখব।</p>
 
-  <h3>তিন প্রজন্ম</h3>
-  <div class="table-wrap"><table>
-    <tr><th>Device</th><th>কীভাবে কাজ করে</th><th>Character</th></tr>
-    <tr><td><strong>HDD</strong></td><td>ঘূর্ণায়মান চুম্বকীয় disk + নড়াচড়া করা read head</td><td>Mechanical বলে <em>seek</em> (head সরানো) ভীষণ দামি — random access-এ মরে, sequential-এ চলনসই। এখনো সস্তা bulk storage-এ রাজত্ব।</td></tr>
-    <tr><td><strong>SSD (SATA)</strong></td><td>Flash memory — কোনো moving part নেই</td><td>Random access-এ HDD-র চেয়ে কয়েক মাত্রা ভালো। তবে পুরনো SATA interface-এর গলা চিপা।</td></tr>
-    <tr><td><strong>NVMe SSD</strong></td><td>Flash + PCIe দিয়ে সরাসরি CPU-র কাছে</td><td>আজকের standard। বিশাল parallelism — একসাথে বহু request গিলতে পারে। তোমার Mac-এর ভিতরে এটাই।</td></tr>
-  </table></div>
+  <h3>HDD: ঘুরন্ত থালা আর নড়াচড়ার দাম</h3>
+  <p><strong>HDD</strong> (hard disk drive) হলো চুম্বকীয় আবরণ দেওয়া কয়েকটা গোল থালা (<strong>platter</strong>), যেগুলো একটা motor-এ অবিরাম ঘোরে। Data থাকে থালার উপর বৃত্তাকার পথে (<strong>track</strong>), আর প্রতিটা track ছোট ছোট টুকরোয় ভাগ করা (<strong>sector</strong>, সাধারণত 512 byte বা 4 KB)। পড়া-লেখা করে একটা <strong>head</strong>, যেটা একটা হাতলের (arm) মাথায় বসানো। একটা নির্দিষ্ট sector পড়তে দুইটা শারীরিক অপেক্ষা লাগে:</p>
+  <ol>
+    <li><strong>Seek:</strong> হাতলটা সরিয়ে head-কে ঠিক track-এর উপর আনা। এটা যান্ত্রিক নড়াচড়া — গড়ে কয়েক millisecond।</li>
+    <li><strong>Rotational latency:</strong> head ঠিক track-এ এল, কিন্তু চাওয়া sector-টা হয়তো থালার উল্টো পাশে। সেটা ঘুরে head-এর নিচে আসা পর্যন্ত অপেক্ষা। থালা মিনিটে কতবার ঘোরে, তাকে বলে <strong>RPM</strong>।</li>
+  </ol>
+  <p>হিসাবটা নিজেই করা যায়। সাধারণ desktop disk মিনিটে ৭২০০ বার ঘোরে: একবার ঘুরতে ৬০ ÷ ৭২০০ = ৮.৩ ms। গড়ে অর্ধেক পাক অপেক্ষা = ~৪.২ ms, তার সাথে seek ~৪ ms। মানে একটা এলোমেলো জায়গা পড়তে ~৮–১০ ms, সেকেন্ডে বড়জোর ~১০০টা। অথচ head একবার জায়গামতো বসে গেলে পরপর sector গুলো এমনিই তার নিচ দিয়ে ঘুরে যায় — তাই পরপর (<strong>sequential</strong>) পড়লে HDD সেকেন্ডে ~২০০ MB দিতে পারে। এলোমেলো (<strong>random</strong>) পড়ায় সে মরে, পরপর পড়ায় চলনসই — এই বৈষম্যই পুরনো database আর filesystem-এর অনেক নকশার পেছনের কারণ।</p>
 
-  <h3>Latency vs throughput — আলাদা করে ভাবো</h3>
+  <h3>SSD: নড়াচড়া নেই, কিন্তু মোছার ঝামেলা</h3>
+  <p><strong>SSD</strong> (solid-state drive) data রাখে <strong>flash</strong> memory-র chip-এ: প্রতিটা cell-এর ভেতরে একটা অন্তরক দেয়ালে ঘেরা জায়গায় electron আটকে রাখা হয়, আর চারপাশ অন্তরক বলে power ছাড়াও electron পালাতে পারে না। কোনো নড়াচড়ার অংশ নেই, তাই seek বা ঘোরার অপেক্ষাও নেই। কিন্তু flash-এর দুইটা অদ্ভুত নিয়ম আছে, আর এখানে দুইটা শব্দ আগের chapter-এর অর্থ থেকে আলাদা — সাবধান:</p>
   <ul>
-    <li><strong>Latency:</strong> <em>একটা</em> request-এর জবাব আসতে কত সময়। DB-র একটা ছোট read এখানে আটকায়।</li>
-    <li><strong>Throughput:</strong> প্রতি second মোট কত data। বড় file copy/backup এখানে আটকায়।</li>
+    <li><strong>Flash page</strong> (Chapter 9-এর memory page না): flash-এ পড়া-লেখার সবচেয়ে ছোট একক, সাধারণত কয়েক KB থেকে 16 KB।</li>
+    <li><strong>Erase block</strong>: কয়েকশো flash page মিলে একটা block। Flash-এ একবার লেখা page-এর উপর আবার লেখা যায় না — আগে মুছতে হয়, আর মোছা যায় শুধু পুরো block একসাথে।</li>
   </ul>
-  <p>দুটো আলাদা অক্ষ — একটা device-এর throughput দুর্দান্ত হয়েও latency মাঝারি হতে পারে। আর সব device-এই sequential access random-এর চেয়ে সুবিধাজনক (HDD-তে আকাশ-পাতাল, SSD-তেও লক্ষণীয়)। Database-রা এজন্যই append-only log (WAL) এত ভালোবাসে — লেখাগুলো sequential করে ফেলা।</p>
+  <p>তাহলে তুমি file-এর একটা 4 KB জায়গা বদলালে কী হয়? পুরো block মুছে আবার লেখা ভয়ংকর ধীর হতো। তাই SSD-র ভেতরের controller-এ একটা ছোট software চলে — <strong>FTL</strong> (flash translation layer)। বাইরে থেকে SSD নিজেকে দেখায় নম্বর দেওয়া block-এর একটা লম্বা সারি হিসেবে — এই নম্বরকে বলে <strong>LBA</strong> (logical block address); OS শুধু বলে "LBA ৭ পড়ো/লেখো"। FTL-এর কাছে একটা table আছে: কোন LBA আসলে কোন chip-এর কোন flash page-এ। নতুন লেখা এলে FTL সেটা একটা খালি page-এ লেখে, table বদলে দেয়, আর পুরনো page-কে "বাতিল" (stale) দাগায়। Chapter 9-এর page table-এর সাথে মিলটা খেয়াল করো — এখানেও একটা নাম (LBA) আর আসল জায়গার মাঝে অনুবাদ, যাতে আসল জায়গা চুপচাপ বদলানো যায়।</p>
+  <p>বাতিল page জমতে থাকলে FTL পেছনে পরিষ্কারের কাজ চালায় (<strong>garbage collection</strong>): একটা block-এর যে কয়টা page এখনো কাজের, সেগুলো অন্য জায়গায় সরিয়ে পুরো block মুছে ফেলে। এই সরানোর জন্য তুমি যত byte লিখেছ, flash-এ আসলে তার চেয়ে বেশি লেখা হয় — একে বলে <strong>write amplification</strong>। আর প্রতিটা flash cell কয়েক হাজার বার মোছার পরে নষ্ট হয়ে যায়, তাই FTL লেখাগুলো সব block-এ সমানভাবে ছড়ায় (<strong>wear leveling</strong>)। OS-ও সাহায্য করে: file মুছলে <strong>TRIM</strong> command দিয়ে SSD-কে জানায় "এই LBA গুলো আর লাগবে না" — তাহলে garbage collection-এর সময় সেগুলো সরাতে হয় না।</p>
+  <div class="codewrap"><pre><code>system_profiler SPNVMeDataType | grep -E "Model|TRIM|Capacity" | head -3   # macOS
+diskutil info / | grep -E "Solid State|Device Block Size"                    # macOS</code></pre></div>
+  <p>আমার Mac-এ: <code>Capacity: 500.28 GB</code>, <code>Model: APPLE SSD AP0512Z</code>, <code>TRIM Support: Yes</code>, আর <code>Device Block Size: 4096 Bytes</code> — বাইরে থেকে SSD নিজেকে 4 KB-র LBA-র সারি হিসেবে দেখায়। ভেতরের flash page, erase block, FTL-এর table — সবই controller-এর গোপন ব্যাপার।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 400" width="100%" role="img" aria-label="Left: a hard disk with a spinning platter, tracks, and a head on an arm; reading a random sector costs a seek plus rotational wait. Right: an SSD with a controller running the FTL, several flash chips in parallel, and one erase block made of pages that are valid, stale, or free">
+      <text x="30" y="34" class="t-h">HDD</text>
+      <circle cx="185" cy="175" r="118" class="b"/>
+      <circle cx="185" cy="175" r="90" fill="none" class="ln dash"/>
+      <circle cx="185" cy="175" r="62" fill="none" class="ln dash"/>
+      <circle cx="185" cy="175" r="14" class="b-m"/>
+      <path d="M185 85 A90 90 0 0 1 248.6 111.4" class="ln-u" stroke-width="6"/>
+      <text x="252" y="92" class="t-u t-s">wanted sector</text>
+      <line x1="355" y1="320" x2="226" y2="192" class="ln-k" stroke-width="5"/>
+      <circle cx="355" cy="320" r="9" class="b-k"/>
+      <rect x="214" y="182" width="18" height="14" rx="2" class="b-k"/>
+      <text x="292" y="252" class="t-k t-s">arm + head</text>
+      <text x="30" y="332" class="t-s">① seek: move the arm to the track (~4 ms)</text>
+      <text x="30" y="354" class="t-s">② rotation: wait for the sector (~4.2 ms avg @ 7200 RPM)</text>
+      <text x="30" y="380" class="t-m t-s">random read ≈ 8–10 ms → ~100 per second</text>
+
+      <line x1="400" y1="24" x2="400" y2="384" class="grid"/>
+
+      <text x="430" y="34" class="t-h">SSD</text>
+      <rect x="430" y="50" width="340" height="56" rx="8" class="b-k"/>
+      <text x="600" y="73" text-anchor="middle" class="t-k t-s">controller + FTL</text>
+      <text x="600" y="94" text-anchor="middle" class="mono">LBA 7 → chip 2, block 91, page 5</text>
+      <line x1="467" y1="106" x2="467" y2="134" class="ln"/>
+      <line x1="552" y1="106" x2="552" y2="134" class="ln"/>
+      <line x1="637" y1="106" x2="637" y2="134" class="ln"/>
+      <line x1="722" y1="106" x2="722" y2="134" class="ln"/>
+      <rect x="432" y="134" width="70" height="44" rx="5" class="b"/>
+      <text x="467" y="161" text-anchor="middle" class="t-s">chip 0</text>
+      <rect x="517" y="134" width="70" height="44" rx="5" class="b"/>
+      <text x="552" y="161" text-anchor="middle" class="t-s">chip 1</text>
+      <rect x="602" y="134" width="70" height="44" rx="5" class="b-u"/>
+      <text x="637" y="161" text-anchor="middle" class="t-u t-s">chip 2</text>
+      <rect x="687" y="134" width="70" height="44" rx="5" class="b"/>
+      <text x="722" y="161" text-anchor="middle" class="t-s">chip 3</text>
+      <text x="600" y="200" text-anchor="middle" class="t-m t-s">chips work at the same time</text>
+
+      <rect x="430" y="214" width="340" height="112" rx="8" class="b"/>
+      <text x="446" y="236" class="t-h t-s">one erase block (chip 2, block 91)</text>
+      <rect x="446" y="248" width="32" height="30" rx="3" class="b-u"/>
+      <rect x="484" y="248" width="32" height="30" rx="3" class="b-d"/>
+      <rect x="522" y="248" width="32" height="30" rx="3" class="b-u"/>
+      <rect x="560" y="248" width="32" height="30" rx="3" class="b-d"/>
+      <rect x="598" y="248" width="32" height="30" rx="3" class="b-u"/>
+      <rect x="636" y="248" width="32" height="30" rx="3" class="b-ok"/>
+      <rect x="674" y="248" width="32" height="30" rx="3" class="b-m"/>
+      <rect x="712" y="248" width="32" height="30" rx="3" class="b-m"/>
+      <text x="652" y="298" text-anchor="middle" class="t-ok t-s">page 5: new data</text>
+      <rect x="446" y="306" width="10" height="10" class="b-u"/>
+      <text x="460" y="316" class="t-s">valid</text>
+      <rect x="502" y="306" width="10" height="10" class="b-d"/>
+      <text x="516" y="316" class="t-s">stale</text>
+      <rect x="560" y="306" width="10" height="10" class="b-m"/>
+      <text x="574" y="316" class="t-s">free</text>
+      <text x="430" y="352" class="t-s">page = read/write unit · block = erase unit</text>
+      <text x="430" y="374" class="t-m t-s">no overwrite: new data → free page, old page → stale</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে HDD: একটা random read মানে হাতল সরানো (①) আর sector ঘুরে আসার অপেক্ষা (②) — দুটোই যান্ত্রিক, তাই millisecond। ডানে SSD: controller-এর FTL প্রতিটা LBA-কে কোনো chip-এর কোনো flash page-এ বসায়; একই জায়গায় আবার লেখা যায় না, তাই নতুন data যায় খালি page-এ আর পুরনোটা stale হয়। আর chip গুলো আলাদা আলাদা কাজ একসাথে করতে পারে — এই chapter-এর শেষ অংশের চাবি এটাই।</p>
+
+  <h3>তিনটা মাপ: latency, throughput, IOPS</h3>
+  <p>"Disk ধীর" বললে তিনটা আলাদা জিনিস বোঝাতে পারে, আর তিনটা আলাদা অক্ষে মাপতে হয়:</p>
+  <ul>
+    <li><strong>Latency:</strong> একটা অনুরোধ পাঠানো থেকে উত্তর আসা পর্যন্ত সময়। Database-এর একটা ছোট lookup এখানে আটকায়।</li>
+    <li><strong>Throughput</strong> (বা bandwidth): প্রতি সেকেন্ডে মোট কত byte সরানো যায়। বড় file copy বা backup এখানে আটকায়।</li>
+    <li><strong>IOPS</strong> (I/O operations per second): প্রতি সেকেন্ডে কয়টা আলাদা অনুরোধ শেষ হয়, প্রতিটা যত ছোটই হোক। হাজার হাজার ছোট random read-এর কাজে এটাই আসল সীমা।</li>
+  </ul>
+  <p>মাপতে একটা বাধা আছে। কোনো file একবার পড়লে kernel সেটা RAM-এ রেখে দেয় (Chapter 2-এর page cache, বিস্তারিত Chapter 23), তাই দ্বিতীয়বার পড়লে আসলে RAM মাপা হয়ে যায়। macOS-এ <code>F_NOCACHE</code> নামের একটা setting আছে যেটা একটা খোলা file-এর জন্য বলে "এর data RAM-এ জমিয়ো না" — তাহলে প্রতিটা read সত্যি SSD পর্যন্ত যায়। Node-এ এই setting দেওয়ার উপায় নেই, তাই script-টা Python-এ। <code>os.pread(fd, n, offset)</code> মানে "file-এর <code>offset</code> byte থেকে <code>n</code> byte পড়ো" — Node-এর <code>fh.read(buf, 0, n, offset)</code>-এর একই কাজ।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — storage.py (macOS, 2 GB জায়গা লাগবে)</div>
+    <div class="codewrap"><pre><code># storage.py — cache এড়িয়ে (F_NOCACHE) Mac-এর SSD থেকে সরাসরি পড়া
+import os, fcntl, random, time, threading
+
+PATH = 'test.bin'
+SIZE = 2 * 1024**3                      # 2 GB
+BLK  = 4096
+
+if not os.path.exists(PATH):
+    fd = os.open(PATH, os.O_WRONLY | os.O_CREAT, 0o644)
+    fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)  # লেখার সময়ও RAM-এ জমিয়ো না
+    chunk = os.urandom(8 * 1024**2)
+    for _ in range(SIZE // len(chunk)):
+        os.write(fd, chunk)
+    os.fsync(fd); os.close(fd)
+
+def open_nocache():
+    fd = os.open(PATH, os.O_RDONLY)
+    fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
+    return fd
+
+def run(label, bs, offsets):
+    fd = open_nocache()
+    t = time.perf_counter()
+    for off in offsets:
+        os.pread(fd, bs, off)
+    dt = time.perf_counter() - t
+    os.close(fd)
+    n = len(offsets)
+    print(f'{label:28s} {n*bs/dt/1e6:8.0f} MB/s  {n/dt:9.0f} IOPS  {dt/n*1e6:7.1f} µs/read')
+
+N = 20000
+seq = [i * BLK for i in range(N)]
+rnd = [random.randrange(SIZE // BLK) * BLK for _ in range(N)]
+run('sequential 4 KB', BLK, seq)
+run('random     4 KB', BLK, rnd)
+run('sequential 1 MB', 1024**2, [i * 1024**2 for i in range(1024)])
+
+# একসাথে অনেক অনুরোধ: T টা thread, প্রত্যেকে random 4 KB পড়ে
+for T in (1, 4, 16, 64):
+    per = 40000 // T
+    def work():
+        fd = open_nocache()
+        for _ in range(per):
+            os.pread(fd, BLK, random.randrange(SIZE // BLK) * BLK)
+        os.close(fd)
+    ths = [threading.Thread(target=work) for _ in range(T)]
+    t = time.perf_counter()
+    for th in ths: th.start()
+    for th in ths: th.join()
+    dt = time.perf_counter() - t
+    print(f'random 4 KB, {T:2d} at a time    {per*T/dt:9.0f} IOPS')</code></pre></div>
+    <p><code>python3 storage.py</code> — আমার Mac-এ (M4 Pro, 512 GB SSD):</p>
+    <div class="codewrap"><pre><code>sequential 4 KB                   187 MB/s      45723 IOPS     21.9 µs/read
+random     4 KB                    52 MB/s      12706 IOPS     78.7 µs/read
+sequential 1 MB                  2618 MB/s       2497 IOPS    400.5 µs/read
+random 4 KB,  1 at a time        12568 IOPS
+random 4 KB,  4 at a time        45118 IOPS
+random 4 KB, 16 at a time       111610 IOPS
+random 4 KB, 64 at a time       123258 IOPS</code></pre></div>
+    <p>প্রথম তিন লাইন এখানে দেখো; শেষ চার লাইন পরের অংশে। কাজ শেষে <code>rm test.bin</code>।</p>
+  </div>
+  <p>প্রথম তিন লাইন থেকে তিনটা শিক্ষা:</p>
+  <ul>
+    <li><strong>SSD-র latency µs-এর ঘরে:</strong> একটা random 4 KB read ~৭৯ µs। Chapter 7-এ RAM থেকে একটা cache line আনতে লেগেছিল ~১২০ ns — SSD প্রায় ৬৫০ গুণ ধীর। আর HDD-র হিসাব করা ~৮ ms-এর চেয়ে প্রায় ১০০ গুণ দ্রুত।</li>
+    <li><strong>SSD-তেও sequential জেতে:</strong> পরপর 4 KB পড়ায় ~২২ µs, এলোমেলোতে ~৭৯ µs — প্রায় সাড়ে তিন গুণ। SSD-র controller-ও পরপর চাওয়া চিনতে পারে, আর একটা flash page (4 KB-র কয়েক গুণ বড়) একবারে পড়ে পরের অংশগুলো হাতে রাখতে পারে। HDD-র মতো আকাশ-পাতাল না, কিন্তু উপেক্ষা করার মতোও না।</li>
+    <li><strong>বড় অনুরোধে throughput:</strong> 1 MB করে পড়লে সেকেন্ডে ২.৬ GB, অথচ random 4 KB-তে মাত্র ৫২ MB — পঞ্চাশ গুণ পার্থক্য, একই disk-এ। প্রতিটা অনুরোধের একটা স্থির খরচ আছে (Chapter 11-এর descriptor, doorbell, interrupt), বড় অনুরোধে সেটা অনেক byte-এ ভাগ হয়ে যায়।</li>
+  </ul>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"SSD-তে তো seek নেই, তাই random আর sequential একই।" মাপে দেখলে না: আমার SSD-তে sequential 4 KB random-এর চেয়ে সাড়ে তিন গুণ দ্রুত, আর 1 MB-র টুকরোয় পড়লে throughput পঞ্চাশ গুণ। HDD-তে পার্থক্যটা শত গুণের, SSD-তে কম — কিন্তু আছে। এজন্যই database গুলো লেখার সময় আগে সবকিছু একটা file-এর শেষে পরপর জুড়ে দেয় — একে বলে <strong>append-only log</strong> বা <strong>WAL</strong> (write-ahead log) — তারপর সময় নিয়ে আসল জায়গায় সাজায়।</p>
+  </div>
+
+  <h3>NVMe: একসাথে অনেক অনুরোধ</h3>
+  <p>এবার শেষ চার লাইন। একটা thread একটা করে random read পাঠালে ~১২,৬০০ IOPS — মানে প্রতিটা ৭৯ µs, হিসাব মিলে যায় (১ সেকেন্ড ÷ ৭৯ µs ≈ ১২,৬০০)। কিন্তু ৪টা thread একসাথে পাঠালে ৪৫,০০০, ১৬টায় ১,১১,০০০ — প্রায় নয় গুণ, একই disk। কীভাবে?</p>
+  <p>উপরের ছবির ডান পাশটা মনে করো: একটা SSD-তে অনেকগুলো flash chip, প্রত্যেকে আলাদা কাজ একসাথে করতে পারে। একটা অনুরোধ একটা chip-এ গেলে বাকিরা বসে থাকে। একসাথে অনেক অনুরোধ হাতে পেলে controller সেগুলো আলাদা chip-এ ছড়িয়ে দেয়। কতগুলো অনুরোধ একই মুহূর্তে device-এর হাতে আছে, তাকে বলে <strong>queue depth</strong>। পুরনো <strong>SATA</strong> interface (HDD-র যুগে বানানো) একটা queue-তে বড়জোর ৩২টা অনুরোধ রাখতে পারত। <strong>NVMe</strong> হলো SSD-র জন্য নতুন করে বানানো নিয়ম: device বসে সরাসরি <strong>PCIe</strong>-তে (CPU-র সাথে device জোড়ার দ্রুততম bus, Chapter 2), আর standard অনুযায়ী ৬৫ হাজার পর্যন্ত queue রাখা যায়, প্রতিটায় ৬৫ হাজার পর্যন্ত অনুরোধ — সাধারণত প্রতিটা CPU core-এর জন্য নিজস্ব queue, যাতে core-দের মধ্যে lock-এর লড়াই না লাগে। Chapter 11-এর descriptor ring-ই এই queue।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="Chart of random 4 KB reads per second versus number of requests in flight on an Apple SSD: 12,568 at 1, 45,118 at 4, 111,610 at 16, 123,258 at 64. A dashed reference line shows perfect scaling from the single-request rate">
+      <line x1="110" y1="270" x2="740" y2="270" class="axis"/>
+      <line x1="110" y1="225.8" x2="740" y2="225.8" class="grid"/>
+      <line x1="110" y1="181.5" x2="740" y2="181.5" class="grid"/>
+      <line x1="110" y1="137.3" x2="740" y2="137.3" class="grid"/>
+      <line x1="110" y1="93.1" x2="740" y2="93.1" class="grid"/>
+      <line x1="110" y1="48.8" x2="740" y2="48.8" class="grid"/>
+      <text x="100" y="274" text-anchor="end" class="t-m t-s">0</text>
+      <text x="100" y="229.8" text-anchor="end" class="t-m t-s">25K</text>
+      <text x="100" y="185.5" text-anchor="end" class="t-m t-s">50K</text>
+      <text x="100" y="141.3" text-anchor="end" class="t-m t-s">75K</text>
+      <text x="100" y="97.1" text-anchor="end" class="t-m t-s">100K</text>
+      <text x="100" y="52.8" text-anchor="end" class="t-m t-s">125K</text>
+      <text x="30" y="30" class="t-h t-s">random 4 KB reads per second (IOPS)</text>
+      <text x="140" y="292" text-anchor="middle" class="t-m t-s">1</text>
+      <text x="326.7" y="292" text-anchor="middle" class="t-m t-s">4</text>
+      <text x="513.3" y="292" text-anchor="middle" class="t-m t-s">16</text>
+      <text x="700" y="292" text-anchor="middle" class="t-m t-s">64</text>
+      <text x="425" y="320" text-anchor="middle" class="t-m t-s">requests in flight at the same time (queue depth)</text>
+      <polyline points="140,247.8 326.7,181 425.3,40" class="ln dash"/>
+      <text x="436" y="42" class="t-m t-s">perfect scaling (×n)</text>
+      <polyline points="140,247.8 326.7,190.2 513.3,72.5 700,51.9" class="ln-s"/>
+      <g><title>1 at a time: 12,568 IOPS (78.7 µs each)</title><circle cx="140" cy="247.8" r="5" class="dot-s"/><circle cx="140" cy="247.8" r="14" fill="transparent"/></g>
+      <g><title>4 at a time: 45,118 IOPS</title><circle cx="326.7" cy="190.2" r="5" class="dot-s"/><circle cx="326.7" cy="190.2" r="14" fill="transparent"/></g>
+      <g><title>16 at a time: 111,610 IOPS</title><circle cx="513.3" cy="72.5" r="5" class="dot-s"/><circle cx="513.3" cy="72.5" r="14" fill="transparent"/></g>
+      <g><title>64 at a time: 123,258 IOPS</title><circle cx="700" cy="51.9" r="5" class="dot-s"/><circle cx="700" cy="51.9" r="14" fill="transparent"/></g>
+      <text x="156" y="252" class="t-s">12.6K</text>
+      <text x="342" y="206" class="t-s">45.1K</text>
+      <text x="529" y="90" class="t-s">111.6K</text>
+      <text x="700" y="38" text-anchor="middle" class="t-s">123.3K</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একই SSD, একই random 4 KB read — শুধু একসাথে কতগুলো অনুরোধ পাঠানো হচ্ছে সেটা বদলেছে (x-অক্ষে ১, ৪, ১৬, ৬৪ সমান দূরত্বে, কারণ প্রতিটা আগেরটার ৪ গুণ)। ৪ পর্যন্ত প্রায় নিখুঁত বাড়ে (dashed রেখা), ১৬-তে ৯ গুণ, তারপর device-এর ভেতরের chip-রা সবাই ব্যস্ত — আর বাড়ে না। বিন্দুতে hover করলে ঠিক সংখ্যা।</p>
+  <details>
+    <summary>Chart-এর সংখ্যাগুলো টেবিলে</summary>
+    <div class="d-body">
+      <div class="table-wrap"><table>
+        <tr><th>একসাথে অনুরোধ</th><th>IOPS</th><th>১-এর তুলনায়</th></tr>
+        <tr><td>১</td><td>১২,৫৬৮</td><td>১×</td></tr>
+        <tr><td>৪</td><td>৪৫,১১৮</td><td>৩.৬×</td></tr>
+        <tr><td>১৬</td><td>১,১১,৬১০</td><td>৮.৯×</td></tr>
+        <tr><td>৬৪</td><td>১,২৩,২৫৮</td><td>৯.৮×</td></tr>
+      </table></div>
+    </div>
+  </details>
+
+  <p>এর মানে পরিষ্কার: SSD থেকে পুরো গতি পেতে হলে একসাথে অনেক অনুরোধ তার হাতে দিতে হয়। এক thread-এ একটার পর একটা <code>readFileSync</code> দিলে তুমি device-এর দশ ভাগের এক ভাগ ব্যবহার করছ। এবার Node-এর দিকে তাকাও। Chapter 19-এ দেখেছিলাম Node-এর async <code>fs</code> call গুলো libuv-এর thread pool-এ চলে, আর pool-এ default ৪টা thread। মানে তুমি যত <code>await</code>-ই একসাথে ছাড়ো, disk-এর হাতে একসাথে বড়জোর ৪টা অনুরোধ যায়:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — nodeqd.js (storage.py যে test.bin বানিয়েছে, সেটাই পড়ে)</div>
+    <div class="codewrap"><pre><code>// nodeqd.js — Node-এর fs দিয়ে 20,000টা random 4 KB read, একসাথে 64টা চাওয়া
+const fs = require('fs/promises');
+const [half] = process.argv.slice(2).map(Number);     // 0 বা 1: file-এর কোন অর্ধেক
+(async () => {
+  const fh = await fs.open('test.bin');
+  const blocks = 1024 ** 3 / 4096;                    // এক অর্ধেকে (1 GB) কয়টা 4 KB block
+  const buf = () => Buffer.alloc(4096);
+  let left = 20000;
+  const t = performance.now();
+  async function worker() {
+    while (left-- > 0) {
+      const b = half * blocks + Math.floor(Math.random() * blocks);
+      await fh.read(buf(), 0, 4096, b * 4096);
+    }
+  }
+  await Promise.all(Array.from({ length: 64 }, worker));
+  const ms = performance.now() - t;
+  console.log(`pool=${process.env.UV_THREADPOOL_SIZE || 4}: ${Math.round(20000 / ms * 1000)} IOPS`);
+  await fh.close();
+})();</code></pre></div>
+    <div class="codewrap"><pre><code>node nodeqd.js 0                          # প্রথম 1 GB, default pool
+UV_THREADPOOL_SIZE=64 node nodeqd.js 1    # দ্বিতীয় 1 GB, 64টা thread</code></pre></div>
+    <p>আমার output: <code>pool=4: 52294 IOPS</code>, <code>pool=64: 129651 IOPS</code>। দুইবার file-এর আলাদা অর্ধেক পড়া হয়েছে, যাতে প্রথম run-এর পড়া data RAM-এ থেকে গিয়ে দ্বিতীয়টাকে সাহায্য না করে (একই কারণে আবার চালালে সংখ্যা বাড়বে — Chapter 23)।</p>
+  </div>
+  <p>Script-এ ৬৪টা কাজ একসাথে <code>await</code> করছে, কিন্তু default pool-এ Python-এর "৪টা একসাথে"-র মতোই ~৫০ হাজার IOPS। Pool ৬৪ করতেই আড়াই গুণ। Random read-ভারী কাজে (যেমন নিজের বানানো key-value store, বা হাজারটা ছোট file পড়া) <code>UV_THREADPOOL_SIZE</code> বাড়ানোর যুক্তি এটাই — তবে Chapter 19-এর সতর্কতাও মনে রেখো: pool-টা <code>crypto</code>, <code>zlib</code>, <code>dns.lookup</code>-এর সাথে ভাগাভাগি।</p>
+
+  <h3>এসব জেনে software কীভাবে বদলায়</h3>
+  <p>এই মাপগুলো থেকে কয়েকটা সরাসরি নিয়ম বেরোয়, আর বড় system-গুলো ঠিক এভাবেই বানানো:</p>
+  <ul>
+    <li><strong>লেখাকে sequential বানাও:</strong> WAL, log file, Kafka-র মতো system — সবাই file-এর শেষে জুড়ে যায়, এলোমেলো জায়গায় বসায় না।</li>
+    <li><strong>বড় টুকরোয় পড়ো-লেখো:</strong> ৪ KB-র হাজারটা অনুরোধের চেয়ে ১ MB-র চারটা অনেক সস্তা, কারণ অনুরোধ-প্রতি খরচ ভাগ হয়ে যায়।</li>
+    <li><strong>একসাথে অনেক অনুরোধ হাতে দাও:</strong> SSD-র parallelism একা একটা sequential loop কখনো ব্যবহার করতে পারে না।</li>
+    <li><strong>Cloud disk-এর সীমা জানো:</strong> cloud-এ ভাড়া করা disk-এর IOPS আর throughput দুটোই কেনা সীমা — যেমন AWS-এর gp3 volume-এর মূল সীমা ৩,০০০ IOPS আর ১২৫ MB/s, বেশি চাইলে আলাদা দাম। তোমার laptop-এর SSD এক thread-েই এর চার গুণ দেয়; তাই laptop-এ দ্রুত চলা কাজ server-এ হঠাৎ ধীর হতে পারে।</li>
+  </ul>
 
   <div class="box concept">
-    <div class="box-title">মাত্রাজ্ঞান (মুখস্থ না, অনুপাত)</div>
-    <p>মোটা দাগে সিঁড়িটা এরকম — লাফগুলো সমান নয়, আর অসমতাটাই আসল খবর:</p>
-    <pre class="diagram">CPU cache   <span class="dim">~1 ns</span>
-RAM         <span class="dim">~100 ns      ← ×১০০</span>
-NVMe        <span class="dim">~50–100 µs   ← ×~৫০০  (সিঁড়ির সবচেয়ে বড় লাফ)</span>
-HDD         <span class="dim">~10 ms       ← ×~১০০</span></pre>
-    <p>মানে RAM-এ যা চোখের পলক, disk-এ তা দুপুরের খাবার-বিরতি। বিশেষ করে <strong>RAM → NVMe</strong> লাফটা খেয়াল করো — এটা এক-দুই মাত্রা না, তিন মাত্রার কাছাকাছি। এটাই বোঝায় কেন OS এত মরিয়া হয়ে disk access এড়াতে চায় (Chapter 23-এর page cache)।</p>
-    <p>Network storage-কে ইচ্ছা করেই সিঁড়ির শেষে বসাইনি, কারণ তার কোনো স্থির ধাপ নেই — same-AZ-এ ভালো provisioned network SSD (EBS, NVMe-oF) প্রায়ই ১ ms-এর নিচে জবাব দেয়, অর্থাৎ <em>local HDD-র চেয়ে দ্রুত</em>। আর WAN-এর ওপাশে বসা storage শত ms-ও নিতে পারে। "Network মানেই সবচেয়ে ধীর" — এই intuition টা ভুল সিদ্ধান্ত আনে; দূরত্ব আর provisioning দেখে বিচার করতে হয়।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Storage-এর গতি একটা সংখ্যা না, তিনটা: একটা অনুরোধের latency, সেকেন্ডে কত অনুরোধ (IOPS), সেকেন্ডে কত byte (throughput)। HDD-র latency যান্ত্রিক (seek + ঘোরা), তাই random-এ মরে। SSD-র latency µs-এ, কিন্তু ভেতরে FTL অনুবাদ করে আর মুছে-লিখে সামলায়, আর তার আসল শক্তি অনেক chip-এর parallelism — যেটা পেতে হলে একসাথে অনেক অনুরোধ দিতে হয়। ছোট, একা, এলোমেলো অনুরোধ — storage-এর সবচেয়ে খারাপ ব্যবহার।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>HDD random access-এ এত খারাপ কেন?</li>
-      <li>Latency আর throughput-এর পার্থক্য একটা উদাহরণে?</li>
-      <li>Database-রা sequential write পছন্দ করে কেন?</li>
+      <li>৭২০০ RPM-এর HDD-তে একটা random read ~৮–১০ ms লাগে কেন — দুইটা যান্ত্রিক অপেক্ষা কী কী, আর হিসাবটা কীভাবে?</li>
+      <li>Flash-এ একটা page-এর উপর সরাসরি আবার লেখা যায় না — তাহলে SSD একটা 4 KB জায়গা বদলায় কীভাবে? FTL, stale page, garbage collection আর TRIM — কে কী করে?</li>
+      <li>Latency, throughput আর IOPS-এর পার্থক্য কী? storage.py-তে random 4 KB ৫২ MB/s কিন্তু 1 MB-র টুকরোয় ২.৬ GB/s কেন?</li>
+      <li>একই SSD এক thread-এ ~১২,৬০০ IOPS কিন্তু ১৬ thread-এ ~১,১১,০০০ দেয় কেন? Queue depth কী, আর NVMe এখানে SATA থেকে কীভাবে আলাদা?</li>
+      <li>nodeqd.js-এ ৬৪টা <code>await</code> একসাথে দিয়েও default Node-এ ~৫০ হাজার IOPS কেন? <code>UV_THREADPOOL_SIZE=64</code> দিলে কী বদলায়?</li>
     </ul>
   </div>

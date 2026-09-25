@@ -1,61 +1,347 @@
   <p class="part-label">PART 6 · STORAGE</p>
-  <h2>Chapter 21 — File I/O ভিতরে কীভাবে কাজ করে</h2>
-  <p class="chap-sub">fs.readFile() লেখা থেকে disk-এর data হাতে পাওয়া পর্যন্ত — পুরো stack-টা এবার সিরিয়াসলি।</p>
+  <h2>Chapter 21 — How File I/O Works</h2>
+  <p class="chap-sub"><code>fs.readFile()</code> থেকে SSD পর্যন্ত প্রতিটা স্তর, fd-র পেছনের তিন স্তরের হিসাব, আর লেখার পথের সবচেয়ে বড় ফাঁদ — <code>write()</code> ফিরে আসা মানে data নিরাপদ না।</p>
 
-  <h3>Stack-টা</h3>
-  <pre class="diagram"><span class="u">Application        — read(fd, buf, 4096)</span>
-      ↓ <span class="dim">system call</span>
-<span class="k">VFS                — "file" ধারণাটা সামলায়, fd → আসল file</span>
-<span class="k">File System (ext4) — file-এর byte → disk-এর কোন block, হিসাব রাখে</span>
-<span class="k">Page Cache         — data RAM-এ আছে? থাকলে এখানেই শেষ ✓</span>
-<span class="k">Block Layer        — disk request-দের queue, merge, schedule</span>
-<span class="k">Driver             — device-এর ভাষায় command</span>
-      ↓
-Storage Device     — data পড়ে DMA-তে RAM-এ দেয়</pre>
+  <p>Chapter 2-এ একটা <code>readFileSync</code>-কে disk পর্যন্ত অনুসরণ করেছিলাম, আর Chapter 3-এ দেখেছিলাম kernel খোলা file-এর জন্য process-কে একটা ছোট সংখ্যা দেয় — <strong>file descriptor</strong> (fd)। এই chapter-এ সেই যাত্রার প্রতিটা স্তর খুলব, fd-র পেছনে আসলে কী আছে দেখব, তারপর উল্টো দিকের যাত্রা — লেখা — যেখানে production-এ data হারানোর বেশিরভাগ গল্পের জন্ম।</p>
 
-  <h3>একটা read-এর গল্প, step by step</h3>
+  <h3>স্তরগুলো: কেন এত ভাগ</h3>
+  <p>ভাবো kernel-এ কোনো ভাগ নেই। তাহলে <code>read()</code>-এর code-কে একসাথে জানতে হতো: file-টা ext4-এ নাকি APFS-এ নাকি USB drive-এর FAT-এ, disk-টা NVMe নাকি SATA নাকি network-এর ওপারে, data আগে পড়া হয়েছে কি না। প্রতিটা নতুন filesystem বা নতুন device এলে সব আবার লিখতে হতো। তাই kernel কাজটা স্তরে ভাগ করে, প্রতিটা স্তর শুধু তার ঠিক নিচেরটার সাথে কথা বলে:</p>
+  <ul>
+    <li><strong>VFS</strong> (virtual file system): সব filesystem-এর উপরে একটা সাধারণ স্তর। fd থেকে খোলা file খুঁজে বের করে, permission দেখে, তারপর নিচের আসল filesystem-কে ডাকে। এজন্যই একই <code>read()</code> সব ধরনের file-এ চলে।</li>
+    <li><strong>Filesystem</strong> (Linux-এ সাধারণত ext4, Mac-এ APFS): "এই file-এর byte ০ থেকে ১৪" কথাটাকে অনুবাদ করে "disk-এর অমুক block"-এ (Chapter 22)।</li>
+    <li><strong>Page cache</strong>: RAM-এ রাখা file data-র কপি। Data এখানে পাওয়া গেলে নিচে আর যেতেই হয় না (Chapter 23)।</li>
+    <li><strong>Block layer</strong>: disk-এর জন্য অনুরোধের লাইন। পাশাপাশি block-এর আলাদা অনুরোধ জুড়ে একটা বানায় (<strong>merge</strong>), আর ক্রম সাজায় — এই সাজানোর নিয়মকে বলে <strong>I/O scheduler</strong>।</li>
+    <li><strong>Driver</strong>: device-এর নিজের ভাষায় command বানায় — NVMe-র বেলায় Chapter 11-এর descriptor আর doorbell।</li>
+  </ul>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 560" width="100%" role="img" aria-label="The layers a file read passes through: the Node program and a libuv thread in user space, the system call boundary, then VFS, the filesystem, the page cache, the block layer and the driver in the kernel, and finally the SSD which sends data back by DMA. A page cache hit returns early">
+      <defs>
+        <marker id="c21f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c21f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c21f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="30" y="34" class="t-u t-s">USER SPACE</text>
+      <rect x="150" y="18" width="360" height="44" rx="8" class="b-u"/>
+      <text x="330" y="45" text-anchor="middle" class="mono">fs.readFile('config.json')</text>
+      <line x1="330" y1="62" x2="330" y2="80" class="ln-u" marker-end="url(#c21f1-u)"/>
+      <rect x="150" y="82" width="360" height="44" rx="8" class="b-u"/>
+      <text x="330" y="109" text-anchor="middle" class="mono">libuv thread: read(17, buf, 15)</text>
+
+      <line x1="20" y1="148" x2="780" y2="148" class="ln-k dash"/>
+      <text x="30" y="142" class="t-k t-s">system call: user → kernel</text>
+      <line x1="330" y1="126" x2="330" y2="166" class="ln-k" marker-end="url(#c21f1-k)"/>
+      <text x="30" y="178" class="t-k t-s">KERNEL</text>
+
+      <rect x="150" y="168" width="360" height="48" rx="8" class="b-k"/>
+      <text x="170" y="190" class="t-k t-s">VFS</text>
+      <text x="170" y="207" class="t-m t-s">fd 17 → open file → inode, permission check</text>
+      <line x1="330" y1="216" x2="330" y2="228" class="ln-k" marker-end="url(#c21f1-k)"/>
+      <rect x="150" y="230" width="360" height="48" rx="8" class="b-k"/>
+      <text x="170" y="252" class="t-k t-s">Filesystem (ext4 / APFS)</text>
+      <text x="170" y="269" class="t-m t-s">bytes 0–14 of this file → disk block 88210</text>
+      <line x1="330" y1="278" x2="330" y2="290" class="ln-k" marker-end="url(#c21f1-k)"/>
+      <rect x="150" y="292" width="360" height="48" rx="8" class="b-ok"/>
+      <text x="170" y="314" class="t-ok t-s">Page cache</text>
+      <text x="170" y="331" class="t-m t-s">is block 88210 already in RAM?</text>
+      <line x1="330" y1="340" x2="330" y2="352" class="ln-k" marker-end="url(#c21f1-k)"/>
+      <text x="320" y="350" text-anchor="end" class="t-m t-s">miss</text>
+      <rect x="150" y="354" width="360" height="48" rx="8" class="b-k"/>
+      <text x="170" y="376" class="t-k t-s">Block layer</text>
+      <text x="170" y="393" class="t-m t-s">queue, merge neighbours, order (I/O scheduler)</text>
+      <line x1="330" y1="402" x2="330" y2="414" class="ln-k" marker-end="url(#c21f1-k)"/>
+      <rect x="150" y="416" width="360" height="48" rx="8" class="b-k"/>
+      <text x="170" y="438" class="t-k t-s">Driver (nvme)</text>
+      <text x="170" y="455" class="t-m t-s">descriptor + doorbell (Chapter 11)</text>
+
+      <line x1="20" y1="480" x2="780" y2="480" class="ln dash"/>
+      <text x="30" y="474" class="t-m t-s">HARDWARE</text>
+      <line x1="330" y1="464" x2="330" y2="494" class="ln" marker-end="url(#c21f1-a)"/>
+      <rect x="150" y="496" width="360" height="44" rx="8" class="b"/>
+      <text x="330" y="523" text-anchor="middle" class="t-s">SSD</text>
+
+      <path d="M510 316 H600 V104 H514" class="ln-u" marker-end="url(#c21f1-u)"/>
+      <text x="612" y="300" class="t-ok t-s">hit: copy to buf,</text>
+      <text x="612" y="318" class="t-ok t-s">return — no disk</text>
+      <path d="M510 518 H560 V332 H514" class="ln dash" marker-end="url(#c21f1-a)"/>
+      <text x="574" y="436" class="t-s">DMA into page cache,</text>
+      <text x="574" y="454" class="t-s">interrupt, then copy</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা read নীল user space থেকে system call দিয়ে kernel-এ নামে, তারপর স্তরে স্তরে নিচে। Page cache-এ data পেলে (সবুজ) সেখান থেকেই ফেরত — disk ছোঁয়াই লাগে না। না পেলে block layer আর driver হয়ে SSD পর্যন্ত যায়, data DMA দিয়ে page cache-এ ফেরে, তারপর তোমার buffer-এ copy হয়।</p>
+
+  <p>Block layer-এর merge কতটা কাজ করে, Linux-এ দেখা যায়। <code>/proc/diskstats</code>-এ প্রতিটা disk-এর জন্য হিসাব রাখা থাকে; নিচের <code>awk</code> শুধু দরকারি column গুলো বাছে:</p>
+  <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim sh -c '
+  cat /sys/block/vda/queue/scheduler
+  awk "\$3==\"vda\"{print \"reads\", \$4, \"merged\", \$5, \"| writes\", \$8, \"merged\", \$9}" /proc/diskstats'</code></pre></div>
+  <p>আমার Docker VM-এ: <code>none [mq-deadline] kyber</code> — তিনটা scheduler আছে, বন্ধনীরটা চালু। আর <code>reads 129537 merged 130847 | writes 279244 merged 430191</code> — লেখার অনুরোধের মধ্যে ৪ লাখেরও বেশি আলাদা অনুরোধ হিসেবে device-এ যায়ইনি, পাশের অনুরোধের সাথে জুড়ে গেছে। Chapter 20-এর শিক্ষাটাই kernel নিজে থেকে প্রয়োগ করছে: অনেক ছোট অনুরোধের চেয়ে কম বড় অনুরোধ সস্তা।</p>
+
+  <h3>একটা read, system call ধরে ধরে</h3>
+  <p>এবার Node আসলে কী চায়, দেখি। <code>strace</code> (Chapter 1) দিয়ে শুধু file-সংক্রান্ত system call গুলো ধরছি:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — readFile-এর system call</div>
+    <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-bookworm-slim bash
+apt-get update -qq &amp;&amp; apt-get install -y -qq strace
+echo '{"port": 8080}' &gt; config.json
+
+strace -f -e trace=openat,statx,read,close \
+  node -e "require('fs').readFileSync('config.json')" 2&gt;&amp;1 | grep -A3 config.json</code></pre></div>
+    <div class="codewrap"><pre><code>openat(AT_FDCWD, "config.json", O_RDONLY|O_CLOEXEC) = 17
+statx(17, "", AT_STATX_SYNC_AS_STAT|AT_EMPTY_PATH, STATX_ALL, {... stx_size=15, ...}) = 0
+read(17, "{\"port\": 8080}\n", 15) = 15
+close(17)                   = 0</code></pre></div>
+  </div>
+  <p>চারটা call, চারটা কাজ:</p>
   <ol>
-    <li><strong>open("config.json")</strong> — kernel file-টা খুঁজে বের করে, process-এর file descriptor table-এ একটা entry বসায়, তোমাকে দেয় একটা ছোট number — <strong>fd</strong> (ধরো 3)। এরপরের সব কথাবার্তা এই fd দিয়েই।</li>
-    <li><strong>read(3, buf, 4096)</strong> — system call। Kernel-এ ঢুকলো।</li>
-    <li>Filesystem হিসাব করে: এই file-এর প্রথম 4096 bytes মানে disk-এর অমুক block গুলো।</li>
-    <li><strong>Page cache check</strong> — block গুলোর data কি আগে থেকেই RAM-এ? <em>থাকলে সরাসরি copy করে দাও — disk ছোঁয়াই লাগলো না।</em> বাস্তবের বেশিরভাগ read এখানেই মিটে যায়।</li>
-    <li>Cache miss হলে: block layer-এ request → driver → device। ততক্ষণ তোমার process <strong>Waiting</strong> state-এ; CPU অন্য কাউকে চালায় (Chapter 15, 17 জোড়া লাগছে দেখো)।</li>
-    <li>Device DMA-তে data page cache-এ দেয়, interrupt দেয় (Chapter 11)। Kernel process-কে জাগায়, data user buffer-এ copy করে, read() return করে।</li>
+    <li><code>openat</code>: path থেকে file খুঁজে (Chapter 22) একটা fd দেয় — এখানে 17 (০ থেকে ১৬ Node নিজেই আগে খুলে রেখেছে)। <code>O_RDONLY</code> মানে শুধু পড়ব; <code>O_CLOEXEC</code> মানে এই process পরে অন্য program <code>exec</code> করলে (Chapter 4) সেই নতুন program এই fd পাবে না — ভুল করে fd ফাঁস হওয়া ঠেকাতে Node সব file-এ এটা দেয়।</li>
+    <li><code>statx</code>: file-এর তথ্য (metadata) — এখানে দরকার size, <code>stx_size=15</code>, যাতে ঠিক ১৫ byte-এর buffer বানানো যায়।</li>
+    <li><code>read</code>: ১৫ byte চাইল, ১৫ byte পেল।</li>
+    <li><code>close</code>: fd ফেরত দিল, kernel তার হিসাব মুছে ফেলল।</li>
   </ol>
+  <p>Async <code>fs.promises.readFile</code>-এ একই চারটা call, কিন্তু একটা মজার পার্থক্য। একই command-এ <code>readFileSync</code>-এর জায়গায় <code>require('fs').promises.readFile('config.json')</code> দিলে আমার output-এ (ছাঁটা):</p>
+  <div class="codewrap"><pre><code>[pid   147] openat(AT_FDCWD, "config.json", O_RDONLY|O_CLOEXEC) = 17
+[pid   140] read(16, "\1\0\0\0\0\0\0\0", 1024) = 8
+[pid   148] statx(17, "", ...) = 0
+[pid   140] read(16, "\1\0\0\0\0\0\0\0", 1024) = 8
+[pid   149] read(17, "{\"port\": 8080}\n", 15) = 15
+[pid   140] read(16, "\1\0\0\0\0\0\0\0", 1024) = 8
+[pid   150] close(17)                   = 0</code></pre></div>
+  <p>চারটা কাজ চারটা আলাদা thread-এ (pid 147, 148, 149, 150) — Chapter 19-এর libuv thread pool। আর প্রতিটার পরে main thread (pid 140) fd 16 থেকে ৮ byte পড়ছে। Fd 16 একটা <strong>eventfd</strong>: kernel-এর ভেতরের একটা ছোট counter, যেটা fd হিসেবে পাওয়া যায়। Pool-এর thread কাজ শেষে এতে লেখে, আর main thread-এর event loop সেটা দেখে জেগে ওঠে: "একটা কাজ শেষ, তার callback চালাও।" একটা ছোট file পড়তে তাই চারবার thread বদল আর চারবার ঘুম ভাঙানো — এজন্যই অনেক ছোট file-এর বেলায় async <code>readFile</code> sync-এর চেয়ে ধীর হতে পারে, যদিও event loop আটকায় না।</p>
 
-  <h3>Write-এর গল্প: একটা মোচড় আছে</h3>
-  <p><code>write(fd, data, len)</code> return করলো মানে data disk-এ পৌঁছে গেছে? <strong>না।</strong> Default behavior: kernel data-টা page cache-এ লিখে page-টাকে <em>dirty</em> mark করে <em>সাথে সাথেই return করে দেয়</em>। Disk-এ আসল লেখা হয় পরে, background-এ (writeback)। ফলে write অবিশ্বাস্য fast লাগে — কারণ তুমি আসলে RAM-এ লিখেছ।</p>
-  <p>Trade-off পরিষ্কার: মাঝখানে power গেলে সেই dirty data হারিয়ে যায়। এজন্যই "সত্যি সত্যি disk-এ নামাও" বলার আলাদা system call আছে — <code>fsync(fd)</code>। Database-রা transaction commit-এ এটাই করে; এজন্যই durable write ধীর, আর এজন্যই Postgres-এর WAL config-এ fsync নিয়ে এত কথা।</p>
-  <p>কিন্তু শিকলটা দুই ধাপের না, তিন ধাপের — আর এটা না জানলেই "fsync করেছি তো, তাহলে গেল কীভাবে?" প্রশ্নটা জন্মায়:</p>
-  <pre class="diagram">write()
-   ↓
-<span class="k">page cache (dirty)</span>
-   ↓  <span class="dim">fsync এখানে ঠেলে দেয়</span>
-device
-   ↓  <span class="dim">fsync flush command-ও পাঠায়</span>
-<span class="dim">device-এর নিজের cache</span>
-   ↓  <span class="dim">← এই ধাপটাই বইয়ে সাধারণত থাকে না</span>
-media <span class="dim">(power গেলেও টেকে)</span></pre>
-  <p><code>fsync</code> দুটো কাজ করে: dirty page গুলো device-এ পাঠায়, <em>এবং</em> device-কে "তোমার নিজের cache খালি করো" command দেয়। দ্বিতীয় কাজটা device না মানলে (consumer SSD-র volatile cache, barrier ছাড়া <code>hdparm -W1</code>, hypervisor-এ <code>cache=unsafe</code>) fsync সফল return করবে, কিন্তু data তখনো volatile cache-এ — power গেলে গেল। মানে <strong>fsync দরকারি, কিন্তু একা যথেষ্ট না</strong> — নিচের স্তরটাকেও সৎ হতে হয়।</p>
-  <p>আর একটা ফাঁদ, যেটা আসল data-loss bug-এর জন্ম দেয়: <code>fsync</code> fail করতে পারে, আর Linux-এ writeback fail হলে kernel dirty bit মুছে দিয়ে error টা <em>একজন</em> caller-কেই জানাতে পারে। ফলে একই fd-তে আবার fsync ডাকলে সে <strong>success return করবে</strong> যদিও data কখনো লেখা হয়নি। নিয়মটা তাই: <code>fsync</code> fail মানে "আবার চেষ্টা করি" না — মানে "এই data সম্ভবত চিরতরে গেছে"। (Postgres-এর ২০১৮-র "fsyncgate" এই নিয়েই।)</p>
+  <h3>fd, open file, inode: তিন স্তরের হিসাব</h3>
+  <p>একটা প্রশ্ন: file-এর কোথা থেকে পড়ছি, সেই অবস্থান (<strong>offset</strong>) কে মনে রাখে? <code>read(17, buf, 15)</code>-এ তো কোনো অবস্থান দেওয়া নেই। Kernel আসলে তিন স্তরে হিসাব রাখে:</p>
+  <ul>
+    <li><strong>fd table</strong>: প্রতিটা process-এর নিজের তালিকা — fd নম্বর থেকে একটা "খোলা file"-এর দিকে ইশারা।</li>
+    <li><strong>Open file description</strong>: প্রতিটা <code>open()</code> call-এ kernel একটা নতুন বানায়। এখানে থাকে offset আর খোলার সময়ের flag (পড়া না লেখা, append কি না)।</li>
+    <li><strong>Inode</strong>: file-টা নিজে — size, permission, data কোথায় (Chapter 22)। একটা file-এর একটাই inode, যতবারই খোলা হোক।</li>
+  </ul>
+  <p>তাহলে একই file দুইবার খুললে দুইটা আলাদা offset — আর দুজনেই শুরু থেকে লিখলে একে অন্যের উপর লিখবে:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — offsets.js</div>
+    <div class="codewrap"><pre><code>// offsets.js — একই file দুইবার খোলা: প্রতিটা open-এর নিজস্ব offset
+const fs = require('fs');
+
+fs.writeFileSync('log.txt', '');
+const a = fs.openSync('log.txt', 'r+');   // দুইটা আলাদা open
+const b = fs.openSync('log.txt', 'r+');
+for (let i = 0; i &lt; 3; i++) {
+  fs.writeSync(a, `A${i}\n`);              // position না দিলে: "আমার offset থেকে লেখো"
+  fs.writeSync(b, `B${i}\n`);
+}
+console.log('r+ :', JSON.stringify(fs.readFileSync('log.txt', 'utf8')));
+
+fs.writeFileSync('log.txt', '');
+const c = fs.openSync('log.txt', 'a');    // 'a' = O_APPEND: প্রতিটা write file-এর শেষে
+const d = fs.openSync('log.txt', 'a');
+for (let i = 0; i &lt; 3; i++) {
+  fs.writeSync(c, `A${i}\n`);
+  fs.writeSync(d, `B${i}\n`);
+}
+console.log('a  :', JSON.stringify(fs.readFileSync('log.txt', 'utf8')));</code></pre></div>
+    <div class="codewrap"><pre><code>r+ : "B0\nB1\nB2\n"
+a  : "A0\nB0\nA1\nB1\nA2\nB2\n"</code></pre></div>
+  </div>
+  <p><code>r+</code>-এ A-র তিনটা লাইনই হারিয়ে গেছে: <code>a</code> আর <code>b</code>-এর offset আলাদা, দুজনেই ০ থেকে শুরু করেছে, আর B প্রতিবার A-র লেখার উপর লিখেছে। <code>'a'</code> flag (<strong>O_APPEND</strong>) দিলে kernel প্রতিটা write-এর ঠিক আগে offset-কে file-এর শেষে সরায়, আর সরানো আর লেখা এক ধাপে করে — মাঝে কেউ ঢুকতে পারে না (Chapter 18-এর atomic)। একাধিক process একই log file-এ লিখলে (যেমন cluster mode-এ চলা কয়েকটা Node process) <code>'a'</code> ছাড়া লেখা মানে log হারানো।</p>
+  <p>উল্টো ঘটনাও আছে: দুইটা fd একই open file description দেখাতে পারে — তখন offset ভাগাভাগি। Child process-কে নিজের একটা fd দিলে ঠিক এটাই হয় (Chapter 15-এ দেখেছ, fork-এ child parent-এর fd table-এর কপি পায়):</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — inherit.js</div>
+    <div class="codewrap"><pre><code>// inherit.js — child process একই fd পেলে offset-ও ভাগাভাগি
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+
+const fd = fs.openSync('log.txt', 'w');           // O_APPEND ছাড়া
+fs.writeSync(fd, 'P0\n');
+spawnSync('node', ['-e', 'for (let i = 0; i &lt; 3; i++) process.stdout.write(`C${i}\\n`)'],
+          { stdio: ['ignore', fd, 'inherit'] });  // child-এর stdout = আমাদের fd
+fs.writeSync(fd, 'P1\n');
+console.log(JSON.stringify(fs.readFileSync('log.txt', 'utf8')));</code></pre></div>
+    <div class="codewrap"><pre><code>"P0\nC0\nC1\nC2\nP1\n"</code></pre></div>
+  </div>
+  <p>Parent-এর <code>P1</code> child-এর লেখার পরে বসেছে, উপরে না — কারণ child-এর fd 1 আর parent-এর <code>fd</code> একই open file description দেখায়, তাই child লিখে offset যতদূর সরিয়েছে, parent সেখান থেকেই শুরু করেছে। Shell-এ <code>node app.js &gt; out.log</code> চালালে app আর তার সব child একই file-এ গুছিয়ে লিখতে পারে এই কারণেই।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="Three levels: per-process fd tables point to open file descriptions, which hold the offset and flags, and those point to one shared inode. Two separate opens create two descriptions with separate offsets; a child that inherits an fd shares the parent's description and offset">
+      <defs>
+        <marker id="c21f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c21f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="30" y="30" class="t-h t-s">per process: fd table</text>
+      <text x="300" y="30" class="t-h t-s">kernel: open file descriptions</text>
+      <text x="600" y="30" class="t-h t-s">kernel: inode</text>
+
+      <rect x="30" y="46" width="170" height="130" rx="8" class="b-u"/>
+      <text x="44" y="68" class="t-u t-s">parent process</text>
+      <text x="44" y="96" class="mono">fd 3</text>
+      <text x="44" y="126" class="mono">fd 4</text>
+      <text x="44" y="156" class="mono">fd 5</text>
+
+      <rect x="30" y="206" width="170" height="90" rx="8" class="b-u"/>
+      <text x="44" y="228" class="t-u t-s">child process</text>
+      <text x="44" y="262" class="mono">fd 1 (stdout)</text>
+
+      <rect x="300" y="60" width="200" height="50" rx="6" class="b-k"/>
+      <text x="314" y="81" class="t-s">open #1 ('r+')</text>
+      <text x="314" y="99" class="mono">offset 9</text>
+      <rect x="300" y="126" width="200" height="50" rx="6" class="b-k"/>
+      <text x="314" y="147" class="t-s">open #2 ('r+')</text>
+      <text x="314" y="165" class="mono">offset 9</text>
+      <rect x="300" y="206" width="200" height="50" rx="6" class="b-k"/>
+      <text x="314" y="227" class="t-s">open #3 ('w')</text>
+      <text x="314" y="245" class="mono">offset shared</text>
+
+      <rect x="600" y="100" width="170" height="110" rx="8" class="b"/>
+      <text x="614" y="124" class="t-s">log.txt</text>
+      <text x="614" y="148" class="t-m t-s">size, permissions,</text>
+      <text x="614" y="166" class="t-m t-s">where the data is</text>
+      <text x="614" y="190" class="t-m t-s">one per file</text>
+
+      <line x1="92" y1="92" x2="298" y2="84" class="ln-u" marker-end="url(#c21f2-u)"/>
+      <line x1="92" y1="122" x2="298" y2="148" class="ln-u" marker-end="url(#c21f2-u)"/>
+      <line x1="92" y1="152" x2="298" y2="224" class="ln-u" marker-end="url(#c21f2-u)"/>
+      <line x1="150" y1="258" x2="298" y2="236" class="ln-u" marker-end="url(#c21f2-u)"/>
+      <line x1="500" y1="85" x2="598" y2="130" class="ln" marker-end="url(#c21f2-a)"/>
+      <line x1="500" y1="151" x2="598" y2="155" class="ln" marker-end="url(#c21f2-a)"/>
+      <line x1="500" y1="231" x2="598" y2="190" class="ln" marker-end="url(#c21f2-a)"/>
+      <text x="300" y="296" class="t-m t-s">each open() makes a new description; inheriting an fd shares one</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">তিন স্তর: fd নম্বর process-এর নিজের; offset থাকে মাঝের open file description-এ; file নিজে (inode) একটাই। offsets.js-এর <code>a</code> আর <code>b</code> হলো open #1 আর #2 — আলাদা offset, তাই একে অন্যের উপর লেখে। inherit.js-এ parent-এর fd আর child-এর stdout দুটোই open #3 দেখায় — একটাই offset।</p>
+
+  <h3>Write: ফিরে আসা মানেই disk-এ পৌঁছানো না</h3>
+  <p><code>write()</code> ফিরে এলে data কোথায়? সাধারণ অবস্থায় kernel data-টা শুধু page cache-এ copy করে, সেই page-কে <strong>dirty</strong> (RAM-এর কপি disk-এর চেয়ে নতুন) বলে দাগায়, আর সাথে সাথে ফিরে আসে। Disk-এ আসল লেখা হয় পরে, kernel-এর নিজের সময়ে — একে বলে <strong>writeback</strong>। এতে write খুব দ্রুত হয় আর কাছাকাছি অনেক write একসাথে disk-এ যেতে পারে। দাম: writeback-এর আগে power গেলে সেই dirty data হারায়।</p>
+  <p>"এখনই disk-এ নামাও" বলার system call হলো <strong>fsync</strong> (Node-এ <code>fs.fsyncSync(fd)</code>)। কিন্তু Chapter 20-এর SSD-র ভেতরেও একটা ছোট volatile RAM আছে, যেখানে device নিজে লেখা জমায়। তাই শিকলটা তিন ধাপের: page cache → device-এর নিজের cache → flash। Power গেলে শুধু শেষ ধাপটা টেকে। Linux-এ fsync দুটো কাজ করে: dirty page গুলো device-এ পাঠায়, তারপর device-কে একটা flush command দেয় — "তোমার cache-ও খালি করো"। macOS-এ সাধারণ <code>fsync</code> প্রথম কাজটুকুই করে; পুরো পথ যেতে আলাদা একটা command লাগে — <code>F_FULLFSYNC</code>। মেপে দেখো:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — fsync.py আর fsync.js (macOS)</div>
+    <div class="codewrap"><pre><code># fsync.py — macOS: সাধারণ fsync বনাম F_FULLFSYNC, প্রতিবার 100 byte লিখে
+import os, fcntl, time
+line = b'x' * 99 + b'\n'
+def bench(label, sync):
+    fd = os.open('t.txt', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    t = time.perf_counter()
+    for _ in range(200):
+        os.write(fd, line)
+        sync(fd)
+    ms = (time.perf_counter() - t) * 1000
+    os.close(fd)
+    print(f'{label:18s} {ms/200:7.3f} ms per write')
+bench('no sync', lambda fd: None)
+bench('fsync', os.fsync)
+bench('F_FULLFSYNC', lambda fd: fcntl.fcntl(fd, fcntl.F_FULLFSYNC))
+os.remove('t.txt')</code></pre></div>
+    <div class="codewrap"><pre><code>// fsync.js — Node-এর fsyncSync কত সময় নেয়
+const fs = require('fs');
+const fd = fs.openSync('t.txt', 'w');
+const line = 'x'.repeat(99) + '\n';
+const t = performance.now();
+for (let i = 0; i &lt; 200; i++) { fs.writeSync(fd, line); fs.fsyncSync(fd); }
+console.log('node fsyncSync', ((performance.now() - t) / 200).toFixed(3), 'ms per write');
+fs.closeSync(fd); fs.unlinkSync('t.txt');</code></pre></div>
+    <div class="codewrap"><pre><code>no sync              0.001 ms per write
+fsync                0.023 ms per write
+F_FULLFSYNC          3.592 ms per write
+node fsyncSync 3.766 ms per write</code></pre></div>
+  </div>
+  <p>তিনটা আলাদা জগৎ। Sync ছাড়া write ১ µs — শুধু RAM-এ copy। সাধারণ <code>fsync</code> ২৩ µs — data device-এর হাতে পৌঁছেছে, কিন্তু device-এর cache-এ। <code>F_FULLFSYNC</code> ৩.৬ ms — device flash-এ লেখা শেষ করে তবে জবাব দিয়েছে; প্রায় দেড়শো গুণ ধীর, কারণ এটাই আসল কাজ। আর Node-এর <code>fsyncSync</code> পড়েছে তৃতীয় সারিতে: libuv macOS-এ নিজে থেকেই <code>F_FULLFSYNC</code> ব্যবহার করে। Chapter 2-এর disk.js-এ Mac-এ ২০০টা fsync-এ ৭২৫ ms লেগেছিল কেন, এখন বোঝা গেল — প্রতিবার ~৩.৬ ms।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 260" width="100%" role="img" aria-label="Durability chain: write puts data in the page cache in RAM, fsync pushes it to the device's volatile cache, and a flush (F_FULLFSYNC on macOS) makes the device write it to flash, which is the only level that survives a power cut. Measured cost per write: 0.001 ms, 0.023 ms, 3.6 ms">
+      <defs>
+        <marker id="c21f3-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="20" y="40" width="160" height="70" rx="8" class="b-u"/>
+      <text x="100" y="70" text-anchor="middle" class="mono">write()</text>
+      <text x="100" y="92" text-anchor="middle" class="t-m t-s">your program</text>
+      <rect x="220" y="40" width="160" height="70" rx="8" class="b-d"/>
+      <text x="300" y="68" text-anchor="middle" class="t-s">page cache</text>
+      <text x="300" y="90" text-anchor="middle" class="t-d t-s">RAM, dirty</text>
+      <rect x="420" y="40" width="160" height="70" rx="8" class="b-d"/>
+      <text x="500" y="68" text-anchor="middle" class="t-s">device cache</text>
+      <text x="500" y="90" text-anchor="middle" class="t-d t-s">volatile RAM in SSD</text>
+      <rect x="620" y="40" width="160" height="70" rx="8" class="b-ok"/>
+      <text x="700" y="68" text-anchor="middle" class="t-s">flash</text>
+      <text x="700" y="90" text-anchor="middle" class="t-ok t-s">survives power cut</text>
+      <line x1="180" y1="75" x2="218" y2="75" class="ln" marker-end="url(#c21f3-a)"/>
+      <line x1="380" y1="75" x2="418" y2="75" class="ln" marker-end="url(#c21f3-a)"/>
+      <line x1="580" y1="75" x2="618" y2="75" class="ln" marker-end="url(#c21f3-a)"/>
+
+      <text x="300" y="140" text-anchor="middle" class="t-s">write() returns here</text>
+      <text x="300" y="160" text-anchor="middle" class="mono">0.001 ms</text>
+      <text x="500" y="140" text-anchor="middle" class="t-s">macOS fsync() returns here</text>
+      <text x="500" y="160" text-anchor="middle" class="mono">0.023 ms</text>
+      <text x="700" y="140" text-anchor="middle" class="t-s">F_FULLFSYNC / Linux fsync</text>
+      <text x="700" y="160" text-anchor="middle" class="mono">3.6 ms</text>
+
+      <line x1="220" y1="196" x2="780" y2="196" class="ln-d"/>
+      <text x="220" y="220" class="t-d t-s">lost if the power goes before the data reaches flash</text>
+      <text x="220" y="240" class="t-m t-s">later, on its own schedule, the kernel's writeback moves dirty pages right</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা write-এর তিন ঠিকানা। লাল দুইটা RAM — power গেলে মুছে যায়; শুধু সবুজ flash টেকে। কোন call কোথায় পৌঁছে তবে ফেরে, আর আমার Mac-এ তার দাম কত, নিচে লেখা। (Linux-এর fsync নিজেই device-কে flush করতে বলে — তাই সেটা ডান প্রান্তে।)</p>
+
+  <p>দুইটা সতর্কতা, দুটোই বাস্তব data-হারানোর গল্প থেকে। এক, device নিজে মিথ্যা বলতে পারে: কিছু সস্তা SSD, বা virtual machine-এর disk যার setting-এ flush উপেক্ষা করা আছে, flush command পেয়েও সাথে সাথে "হয়ে গেছে" বলে। তখন fsync সফল, কিন্তু data তখনো volatile cache-এ। দুই, fsync নিজে fail করতে পারে (disk ভরা, device error)। Linux-এ writeback fail করলে kernel সেই page গুলোর dirty দাগ মুছে দিতে পারে, আর error-টা একবারই জানায় — তারপর একই fd-তে আবার fsync ডাকলে সফল ফেরে, যদিও data কখনো disk-এ পৌঁছায়নি। PostgreSQL ২০১৮-তে ঠিক এই ফাঁদে পড়েছিল ("fsyncgate"), আর তার পর থেকে fsync fail করলে Postgres আবার চেষ্টা না করে নিজেকে বন্ধ করে দেয়। নিয়মটা তাই: fsync-এর error মানে "আবার চেষ্টা করো" না, মানে "এই data হয়তো গেছে"।</p>
+
+  <h3>Crash-safe লেখা: temp file আর rename</h3>
+  <p>এবার একটা রোজকার কাজ: app-এর config বা state একটা JSON file-এ save করা। <code>fs.writeFileSync('config.json', data)</code> ভেতরে <code>'w'</code> দিয়ে খোলে — আর <code>'w'</code> প্রথমেই পুরনো file খালি করে দেয় (<strong>truncate</strong>), তারপর নতুনটা লেখে। মাঝপথে process মারা গেলে (crash, deploy-এর সময় <code>kill -9</code>, OOM killer) কী থাকে?</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — torn.js</div>
+    <div class="codewrap"><pre><code>// torn.js — config লেখার মাঝপথে process মারা গেলে file-এ কী থাকে
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+const [role, how] = process.argv.slice(2);
+
+function save(file, text, crash) {                  // সরাসরি file-এর উপর লেখা
+  const fd = fs.openSync(file, 'w');                // 'w' আগে file-টা খালি করে দেয়
+  fs.writeSync(fd, text.slice(0, text.length / 2));
+  if (crash) process.kill(process.pid, 'SIGKILL');  // ঠিক এখানে crash
+  fs.writeSync(fd, text.slice(text.length / 2));
+  fs.fsyncSync(fd);
+  fs.closeSync(fd);
+}
+function safeSave(file, text, crash) {              // আগে পাশের একটা file-এ, তারপর rename
+  save(file + '.tmp', text, crash);
+  fs.renameSync(file + '.tmp', file);
+  const dir = fs.openSync('.', 'r');                // নতুন নামটাও disk-এ পাকা করো
+  fs.fsyncSync(dir);
+  fs.closeSync(dir);
+}
+
+if (role === 'child') {
+  const text = JSON.stringify({ version: 2, items: Array.from({ length: 1e5 }, (_, i) =&gt; i) });
+  (how === 'safe' ? safeSave : save)('config.json', text, true);
+} else {
+  for (const how of ['direct', 'safe']) {
+    fs.writeFileSync('config.json', JSON.stringify({ version: 1 }));   // পুরনো, ঠিকঠাক config
+    spawnSync(process.execPath, [__filename, 'child', how]);
+    const text = fs.readFileSync('config.json', 'utf8');
+    let verdict;
+    try { verdict = 'valid, version ' + JSON.parse(text).version; } catch { verdict = 'BROKEN JSON'; }
+    console.log(`${how.padEnd(6)} → ${text.length} bytes, ${verdict}`);
+  }
+}</code></pre></div>
+    <div class="codewrap"><pre><code>direct → 294456 bytes, BROKEN JSON
+safe   → 13 bytes, valid, version 1</code></pre></div>
+    <p>Mac আর Docker-এর Linux — দুই জায়গাতেই হুবহু একই output।</p>
+  </div>
+  <p>সরাসরি লেখায় পুরনো config গেছে, নতুনটার অর্ধেক এসেছে — app পরের বার চালু হতেই <code>JSON.parse</code>-এ মরবে। Safe পদ্ধতিতে crash-এর পরেও <code>config.json</code> পুরনো, অক্ষত version 1; শুধু পাশে একটা আধা-লেখা <code>config.json.tmp</code> পড়ে আছে, যেটা পরের চালুতে মুছে দিলেই হয়। কৌশলটা <code>rename</code>-এ: একই folder-এর মধ্যে rename মানে folder-এর নামের তালিকায় "config.json" নামটাকে পুরনো file থেকে সরিয়ে নতুন file-এ বসানো (Chapter 22) — kernel এটা এক ধাপে করে। যে-ই file-টা খুলুক, হয় পুরো পুরনোটা পাবে, নয় পুরো নতুনটা; মাঝামাঝি কিছু কখনো না।</p>
+  <p>Power cut-এর বিরুদ্ধে দুইটা fsync-ও লাগে, আর দুইটাই কোডে আছে। Rename-এর আগে tmp file-এর fsync: না দিলে power cut-এর পরে এমন হতে পারে যে নতুন নাম disk-এ পৌঁছে গেছে কিন্তু ভেতরের data পৌঁছায়নি — ফলে একটা খালি বা ভাঙা <code>config.json</code> (ext4-এ ২০০৯ সালে ঠিক এই অভিযোগে বহু খালি file-এর ঘটনা ঘটেছিল)। আর rename-এর পরে folder-এর fsync: নামের তালিকাও তো disk-এর data, সেটার বদলও পাকা করতে হয়। npm-এর <code>write-file-atomic</code> package ঠিক এই কাজটাই করে।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"write() সফল return করেছে মানে data নিরাপদ।" না — মানে data <em>kernel-এর হাতে</em> পৌঁছেছে। Durability চাইলে fsync (এবং তার দাম) লাগবে, আর fsync-এর return value দেখতেই হবে। এই এক ভুল বোঝাবুঝি থেকে বহু "power গেল, data গেল" ঘটনা জন্মেছে।</p>
+    <p>"<code>writeFileSync</code> একটা call, তাই পুরো file একসাথে বদলায়।" না — সে আগে file খালি করে, তারপর লেখে, আর মাঝের যেকোনো মুহূর্তে process মারা যেতে পারে। আর <code>write()</code> বা <code>writeFileSync</code> সফল ফিরলেও data তখনো RAM-এ। পুরনো-বা-নতুন নিশ্চয়তা চাইলে temp file + rename; power cut-এর পরেও টেকার নিশ্চয়তা চাইলে তার সাথে fsync — আর fsync-এর error মানে data হয়তো গেছে।</p>
   </div>
 
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT (Linux)</div>
-    <p><code>strace -e trace=openat,read,write,close cat /etc/hostname</code> চালাও। নিজের চোখে দেখো <code>cat</code>-এর মতো সামান্য command-ও ঠিক এই system call গুলোই করে: open → fd পেলো → read → write (stdout-এ) → close। এই x-ray মেশিনটা (strace) মনে রেখো — Chapter 32-এ আবার আসবে।</p>
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>File I/O হলো স্তরের সিঁড়ি: VFS → filesystem → page cache → block layer → driver → device। পড়া নামে যতক্ষণ না কোথাও data পাওয়া যায় — বেশিরভাগ সময় page cache-এই। লেখা উল্টো: সবচেয়ে উপরের সুবিধাজনক জায়গায় (RAM) রেখেই "হয়ে গেছে" বলে, আর নিচে নামে পরে। Durability মানে নিজে ধাক্কা দিয়ে নামানো (fsync), নামার দাম দেওয়া (ms), আর নামতে না পারলে সেটা শোনা। আর fd একটা নম্বর মাত্র — offset থাকে মাঝের open file description-এ, file থাকে inode-এ।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>File descriptor কী, কোথায় থাকে?</li>
-      <li>Read path-এ page cache কোথায় বসে, কী বাঁচায়?</li>
-      <li>write() fast কেন, আর সেই speed-এর দাম কী?</li>
-      <li>fsync কখন লাগে — আর কেন fsync একা durability-র গ্যারান্টি না?</li>
-      <li>fsync fail করলে কী করতে হবে, আর কী করলে সর্বনাশ?</li>
+      <li>একটা read কোন কোন স্তর পেরোয়, আর page cache-এ data পেলে কোথায় থেমে যায়? Block layer-এর "merge" কী, আর <code>/proc/diskstats</code>-এ সেটা কীভাবে দেখা গেল?</li>
+      <li><code>readFileSync</code>-এর strace-এ চারটা system call কী কী, প্রত্যেকে কী করে? Async <code>readFile</code>-এ সেগুলো কোন thread-এ চলে, আর main thread কীভাবে খবর পায়?</li>
+      <li>offsets.js-এ <code>'r+'</code>-এ A-র লাইন হারাল কেন, আর <code>'a'</code>-তে হারাল না কেন? inherit.js-এ <code>P1</code> child-এর লেখার উপরে না বসে পরে বসল কেন?</li>
+      <li><code>write()</code> ফিরে আসার পর data কোথায়? macOS-এ <code>fsync</code> ০.০২৩ ms কিন্তু <code>F_FULLFSYNC</code> ৩.৬ ms কেন — আর Node-এর <code>fsyncSync</code> কোনটা ব্যবহার করে?</li>
+      <li>torn.js-এ সরাসরি লেখায় JSON ভাঙল কেন, আর temp file + rename-এ ভাঙল না কেন? Rename-এর আগে আর পরে fsync লাগে কেন?</li>
     </ul>
   </div>

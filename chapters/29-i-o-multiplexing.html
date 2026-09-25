@@ -1,42 +1,218 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
   <h2>Chapter 29 — I/O Multiplexing</h2>
-  <p class="chap-sub">"এই হাজারটা fd-র কোনোটায় কিছু ঘটলে ডেকো" — nginx, Node, Redis সবার হৃদপিণ্ড।</p>
+  <p class="chap-sub">"এই হাজারটা socket-এর যেকোনোটায় কিছু এলে আমাকে জাগিও" — select, poll থেকে epoll পর্যন্ত বিবর্তন, মেপে দেখা কেন epoll হাজারো connection-এও একই দামে চলে, ২০ লাইনের একটা আসল event loop, আর Node-এর ভেতরের ছবি।</p>
 
-  <h3>Evolution-টা বোঝাই আসল</h3>
-  <ul>
-    <li><strong>select / poll (আদি যুগ):</strong> প্রতিবার call-এ পুরো fd list kernel-কে দাও → kernel <em>সবগুলো</em> scan করে বলে কারা ready। কাজ চলে, কিন্তু connection N হলে প্রতি call-এ O(N) কাজ + পুরো list আনা-নেওয়া। ১০,০০০ fd-তে প্রতিটা event-এর জন্য ১০,০০০-এর scan — বাড়ে না (doesn't scale)।</li>
-    <li><strong>epoll (Linux-এর উত্তর):</strong> Approach উল্টে দাও — kernel-এর ভিতরেই একটা স্থায়ী interest list রাখো:
-      <ol>
-        <li><code>epoll_create()</code> — kernel-এ একটা "watch center" বানাও</li>
-        <li><code>epoll_ctl(ADD, fd)</code> — "এটার উপর নজর রেখো" (একবারই বলতে হয়)</li>
-        <li><code>epoll_wait()</code> — ঘুমাও; kernel জাগাবে <em>শুধু ready fd-দের list</em> হাতে দিয়ে</li>
-      </ol>
-      Data আসামাত্র kernel নিজেই (receive path-এর সেই "জাগাও" মুহূর্তে!) ready list-এ fd টা টুকে রাখে। ফলে কাজের খরচ ready event-এর সংখ্যার সমানুপাতিক — মোট connection যত-ই হোক। <strong>১০,০০০ ঘুমন্ত connection কার্যত free।</strong></li>
-    <li><strong>আত্মীয়স্বজন:</strong> kqueue (macOS/BSD-র epoll-সমতুল্য), IOCP (Windows-এর — দর্শন একটু আলাদা: "ready হলে বলো" না, "কাজ <em>শেষ</em> হলে বলো"), আর <strong>io_uring</strong> (Linux-এর নতুন প্রজন্ম — shared memory-র ring-এ request/completion বিনিময় করে system call-এর সংখ্যাই কমিয়ে দেয়; Chapter 32-এর পরে এর মর্ম আরও বুঝবে)।</li>
-  </ul>
+  <p>Chapter 28 শেষ হয়েছিল একটা চাহিদায়: একটা thread ঘুমাবে, কিন্তু সবগুলো socket-এর জন্য একসাথে, আর kernel তাকে জাগাবে ঠিক তখনই যখন কোনো একটায় কিছু ঘটেছে — সাথে বলে দেবে কোনটায়। একটা thread দিয়ে অনেক I/O channel সামলানোর এই কৌশলের নাম <strong>I/O multiplexing</strong>। Kernel গত চল্লিশ বছরে এর তিনটা প্রজন্ম দিয়েছে; পার্থক্যটা হলো "কে কী মনে রাখে"।</p>
 
-  <h3>একটা event-driven server-এর কঙ্কাল</h3>
-  <div class="codewrap"><pre><code>loop {
-    events = epoll_wait()             // ঘুমাও, ঘটনা এলে জাগো
-    for (e of events) {
-        if (e.fd == listening_fd)     // নতুন connection!
-            accept() → non-blocking করে epoll-এ ADD
-        else                          // পুরনো connection-এ data
-            read() → request process → write(response)
-    }
-}</code></pre></div>
-  <p>এটাই — literally এটাই — Node.js-এর event loop-এর, nginx-এর worker-এর, Redis-এর মূল কাঠামো। তোমার প্রতিটা <code>app.get(...)</code> handler ওই <code>process</code> জায়গাটায় বসে চলে। আর এখন এটাও পরিষ্কার কেন event loop-এ CPU-ভারী synchronous কাজ বিষ — loop-টা <code>epoll_wait</code>-এ ফিরতে না পারলে জমে থাকা কারো সেবাই হয় না।</p>
+  <h3>প্রথম চেষ্টা: select আর poll</h3>
+  <p><code>select()</code> আর <code>poll()</code>-এ প্রতিবার ডাকার সময় তুমি পুরো তালিকা দাও: "এই fd গুলোর মধ্যে কেউ ready হলে জাগিও।" Kernel প্রতিটা fd আলাদা করে দেখে, কেউ ready না হলে সবার অপেক্ষার তালিকায় তোমাকে বসায়, জাগলে আবার সবাইকে দেখে কে ready, তারপর পুরো তালিকা ফেরত দেয় — আর তুমি নিজে পুরো তালিকা ঘুরে খুঁজে বের করো কারা ready। পরের বার? আবার শূন্য থেকে, পুরো তালিকা নিয়ে। মানে প্রতিটা call-এর খরচ মোট connection-এর সংখ্যার সমানুপাতিক — ১০,০০০ connection থাকলে, মাত্র একটায় data এলেও, ১০,০০০-এর হিসাব। <code>select</code>-এর আরেকটা পুরনো সীমা: fd গুলো একটা নির্দিষ্ট মাপের bit-এর সারিতে পাঠাতে হয়, যেটা ১০২৪-এ থামে — ১০২৩-এর চেয়ে বড় নম্বরের fd সে ধরতেই পারে না।</p>
+
+  <h3>epoll: তালিকা kernel-এর কাছেই থাকে</h3>
+  <p>Linux-এর <strong>epoll</strong> প্রশ্নটা উল্টে দেয়: তালিকাটা প্রতিবার পাঠিয়ো না, একবার kernel-কে দিয়ে দাও, সে মনে রাখবে। তিনটা call:</p>
+  <ol>
+    <li><code>epoll_create1()</code>: kernel-এর ভেতরে একটা নজরদারি object বানাও (এটাও একটা fd)।</li>
+    <li><code>epoll_ctl(ADD, fd)</code>: "এই fd-র উপর নজর রাখো" — প্রতিটা fd-র জন্য একবারই। Kernel এটা নিজের <strong>interest list</strong>-এ রাখে।</li>
+    <li><code>epoll_wait()</code>: ঘুমাও; জাগলে শুধু ready fd-দের তালিকা হাতে পাবে।</li>
+  </ol>
+  <p>জাদুটা ঘটে Chapter 27-এর আসার পথে: TCP যখন একটা socket-এর receive buffer-এ data রাখে আর "অপেক্ষায় থাকা কাউকে জাগাও" ধাপে পৌঁছায়, তখন epoll-এর নজরে থাকা socket হলে kernel সেটাকে একটা <strong>ready list</strong>-এ টুকে রাখে, আর <code>epoll_wait</code>-এ ঘুমন্ত thread-কে জাগায়। <code>epoll_wait</code> শুধু ready list-টা ফেরত দেয়। ফলে খরচ মোট connection-এর সংখ্যার উপর না, যতগুলো ready হয়েছে তার উপর নির্ভর করে। মেপে দেখি — N-টা চুপচাপ socket, যার মধ্যে শুধু একটায় data আছে; প্রতিটা পদ্ধতিতে "কে ready?" জিজ্ঞেস করার দাম:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — watchcost.py</div>
+    <div class="codewrap"><pre><code># watchcost.py (Linux) — N টা চুপচাপ socket-এর উপর নজর: select, poll আর epoll-এর দাম
+import select, socket, time
+
+def cost(n):
+    pairs = [socket.socketpair() for _ in range(n)]     # প্রতিটা জোড়া = দুই প্রান্তের একটা নল
+    fds = [a.fileno() for a, b in pairs]
+    p = select.poll()
+    for fd in fds: p.register(fd, select.POLLIN)
+    e = select.epoll()
+    for fd in fds: e.register(fd, select.EPOLLIN)
+    pairs[-1][1].send(b'x')                              # শুধু শেষেরটায় data আছে
+
+    def per_call(f, reps=200):
+        t = time.perf_counter()
+        for _ in range(reps): f()
+        return (time.perf_counter() - t) / reps * 1e6
+    line = f'{n:6d} sockets:  poll {per_call(lambda: p.poll(0)):8.1f} µs   epoll {per_call(lambda: e.poll(0)):6.1f} µs'
+    try:
+        select.select(fds, [], [], 0)
+        line += '   select ok'
+    except ValueError as err:
+        line += f'   select: {err}'
+    print(line)
+    for a, b in pairs: a.close(); b.close()
+
+for n in (10, 100, 1000, 10000):
+    cost(n)</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/watchcost.py</code></pre></div>
+    <div class="codewrap"><pre><code>    10 sockets:  poll      0.5 µs   epoll    0.3 µs   select ok
+   100 sockets:  poll      2.9 µs   epoll    0.3 µs   select ok
+  1000 sockets:  poll     46.9 µs   epoll    0.3 µs   select: filedescriptor out of range in select()
+ 10000 sockets:  poll    944.7 µs   epoll    0.3 µs   select: filedescriptor out of range in select()</code></pre></div>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 320" width="100%" role="img" aria-label="Log-log chart of the cost of one readiness check with only one socket ready: poll grows from 0.5 microseconds at 10 sockets to 944.7 microseconds at 10,000 sockets, while epoll stays flat at 0.3 microseconds">
+      <line x1="110" y1="260" x2="760" y2="260" class="axis"/>
+      <line x1="110" y1="205" x2="760" y2="205" class="grid"/>
+      <line x1="110" y1="150" x2="760" y2="150" class="grid"/>
+      <line x1="110" y1="95" x2="760" y2="95" class="grid"/>
+      <line x1="110" y1="40" x2="760" y2="40" class="grid"/>
+      <text x="100" y="264" text-anchor="end" class="t-m t-s">0.1 µs</text>
+      <text x="100" y="209" text-anchor="end" class="t-m t-s">1 µs</text>
+      <text x="100" y="154" text-anchor="end" class="t-m t-s">10 µs</text>
+      <text x="100" y="99" text-anchor="end" class="t-m t-s">100 µs</text>
+      <text x="100" y="44" text-anchor="end" class="t-m t-s">1 ms</text>
+      <text x="140" y="282" text-anchor="middle" class="t-m t-s">10</text>
+      <text x="340" y="282" text-anchor="middle" class="t-m t-s">100</text>
+      <text x="540" y="282" text-anchor="middle" class="t-m t-s">1,000</text>
+      <text x="740" y="282" text-anchor="middle" class="t-m t-s">10,000</text>
+      <text x="440" y="308" text-anchor="middle" class="t-m t-s">sockets being watched (only one has data)</text>
+      <text x="24" y="24" class="t-h t-s">cost of one "who is ready?" call</text>
+      <polyline points="140,233.8 340,233.8 540,233.8 740,233.8" class="ln dash"/>
+      <text x="740" y="250" text-anchor="end" class="t-m t-s">epoll: 0.3 µs, flat</text>
+      <polyline points="140,221.6 340,179.6 540,113.1 740,41.4" class="ln-s"/>
+      <g><title>10 sockets: poll 0.5 µs</title><circle cx="140" cy="221.6" r="5" class="dot-s"/><circle cx="140" cy="221.6" r="14" fill="transparent"/></g>
+      <g><title>100 sockets: poll 2.9 µs</title><circle cx="340" cy="179.6" r="5" class="dot-s"/><circle cx="340" cy="179.6" r="14" fill="transparent"/></g>
+      <g><title>1,000 sockets: poll 46.9 µs</title><circle cx="540" cy="113.1" r="5" class="dot-s"/><circle cx="540" cy="113.1" r="14" fill="transparent"/></g>
+      <g><title>10,000 sockets: poll 944.7 µs</title><circle cx="740" cy="41.4" r="5" class="dot-s"/><circle cx="740" cy="41.4" r="14" fill="transparent"/></g>
+      <text x="132" y="206" text-anchor="middle" class="t-s">poll 0.5</text>
+      <text x="356" y="200" class="t-s">2.9</text>
+      <text x="556" y="134" class="t-s">46.9</text>
+      <text x="726" y="36" text-anchor="end" class="t-s">poll 944.7 µs</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই অক্ষই log scale — প্রতি ঘর আগেরটার ১০ গুণ। Connection ১০ গুণ বাড়লে poll-এর দাম ৬ থেকে ২০ গুণ বাড়ে, ১০,০০০-এ প্রায় ১ ms; epoll (dashed) ১০ থেকে ১০,০০০ পর্যন্ত একই ০.৩ µs। বিন্দুতে hover করলে মান।</p>
+
+  <p>দশ হাজার connection-এ poll-এর একটা "কে ready?" জিজ্ঞাসা প্রায় ১ ms — প্রতি সেকেন্ডে হাজারবার জিজ্ঞেস করলে পুরো একটা core শুধু এতেই শেষ। epoll-এর দাম connection ১০ হোক বা ১০,০০০, একই ০.৩ µs। আর <code>select</code> ১০০০ connection-এর পরীক্ষাতেই হার মেনেছে, কারণ socket-জোড়া বানাতে বানাতে fd নম্বর ১০২৩ পেরিয়ে গেছে। ঘুমন্ত connection epoll-এ কার্যত বিনামূল্যে — C10K-এর আসল উত্তর এটাই।</p>
+  <p>অন্য OS-এর আত্মীয়: Mac আর BSD-তে <strong>kqueue</strong> (একই দর্শন: kernel তালিকা মনে রাখে, শুধু ঘটনাগুলো ফেরত দেয়)। Windows-এর IOCP আর Linux-এর io_uring অন্য দর্শনের — "ready হলে জানাও" না, "কাজটা শেষ হলে জানাও" (Chapter 24)। এই পার্থক্যের কারণেই libuv নামের একটা আলাদা library লেগেছিল: Node-এর জন্য সব OS-এর ব্যবস্থাকে একই চেহারা দেওয়া।</p>
+
+  <h3>একটা event loop, ২০ লাইনে</h3>
+  <p>এবার নিজে একটা event loop বানাই। Python-এর <code>selectors</code> module OS দেখে সবচেয়ে ভালো ব্যবস্থা বেছে নেয় — Linux-এ epoll, Mac-এ kqueue (আমার Mac-এ <code>KqueueSelector</code>):</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — tiny_loop.py</div>
+    <div class="codewrap"><pre><code># tiny_loop.py — এক thread, এক event loop, হাজারো connection (Linux-এ ভেতরে epoll, Mac-এ kqueue)
+import selectors, socket
+
+sel = selectors.DefaultSelector()
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(('127.0.0.1', 9002)); srv.listen(4096)
+srv.setblocking(False)
+sel.register(srv, selectors.EVENT_READ, 'accept')      # "নতুন connection এলে জানিও"
+print('selector:', type(sel).__name__, flush=True)
+
+while True:
+    for key, _ in sel.select():                        # ঘুমাও; কেউ ready হলে জাগো
+        if key.data == 'accept':
+            conn, _ = srv.accept()
+            conn.setblocking(False)
+            sel.register(conn, selectors.EVENT_READ, 'echo')
+        else:
+            data = key.fileobj.recv(4096)
+            if data:
+                key.fileobj.send(data)                 # echo (ছোট data, send buffer-এ জায়গা আছে ধরে নিচ্ছি)
+            else:
+                sel.unregister(key.fileobj); key.fileobj.close()</code></pre></div>
+    <p>Chapter 28-এর <code>burst_clients.js</code> দিয়ে একই ১০০০ connection × ১০ দফা:</p>
+    <div class="codewrap"><pre><code># loopdemo.sh
+python3 tiny_loop.py &amp; PY=$!
+sleep 1
+node burst_clients.js 9002 1000 &amp; C=$!
+sleep 2.5
+echo "tiny_loop.py: $(awk '/^Threads/ {print $2}' /proc/$PY/status) thread(s)"
+wait $C; kill $PY</code></pre></div>
+    <div class="codewrap"><pre><code>selector: EpollSelector
+:9002 10 rounds x 1000 echoes in 52 ms
+tiny_loop.py: 1 thread(s)</code></pre></div>
+  </div>
+  <p>একটা thread, ৫২ ms — Chapter 28-এর ১০০১-thread-এর Python server-এর (৩৮২ ms) চেয়ে সাত গুণ দ্রুত, আর Node-এর (৪৮ ms) প্রায় সমান, একই ভাষা Python হওয়া সত্ত্বেও। পুরো loop-টার গঠন: listening socket আর প্রতিটা connection-এর socket নজরে দাও; ঘুমাও; জাগলে শুধু ready গুলোর কাজ করো — নতুন connection হলে accept করে নজরে যোগ করো, data হলে পড়ো আর উত্তর দাও; আবার ঘুমাও। nginx, Redis, Node — সবার হৃদপিণ্ড এই কয়েক লাইন। (একটা সরলীকরণ করেছি: বড় উত্তর হলে send buffer ভরে যেতে পারে, তখন "লেখার জায়গা হলে জানিও" — <code>EVENT_WRITE</code> — নজরেও দিতে হয়; Chapter 27-এর backpressure।)</p>
+
+  <h3>Node-এর ভেতরে</h3>
+  <p>Node-এর event loop (libuv) ঠিক এই কাঠামো, কয়েকটা বাড়তি ধাপ সহ। প্রতিটা পাক মোটামুটি এরকম: সময় হয়ে যাওয়া timer-এর callback চালাও → epoll-এ ঘুমাও, কিন্তু বড়জোর পরের timer পর্যন্ত (তাই <code>setTimeout</code> সময়মতো চলে) → জেগে ready fd-দের callback চালাও → <code>setImmediate</code>-এর callback → বন্ধ হওয়া জিনিসের callback → আবার। আর Chapter 24 থেকে মনে রাখো: file-এর কাজ epoll-এ যায় না, thread pool-এ যায়; pool শেষ হলে eventfd-তে লেখে, আর সেই eventfd-ও epoll-এর নজরে — তাই file-এর খবরও একই ঘুম ভাঙায়। Node server-এর উপর একই burst চালিয়ে system call গুনি:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — stracenode.sh</div>
+    <div class="codewrap"><pre><code># stracenode.sh — Node server-এর system call গুনে দেখো, ১০০০ connection × ১০ দফা echo-র সময়
+strace -f -c -o /tmp/sc.txt -e trace=epoll_wait,epoll_pwait,epoll_ctl,accept4,read,write,writev \
+  node -e "require('net').createServer(c =&gt; c.pipe(c)).listen(9001, '127.0.0.1', 4096);
+           setTimeout(() =&gt; process.exit(0), 6000)" &amp;
+sleep 1
+node burst_clients.js 9001 1000
+wait; cat /tmp/sc.txt</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
+  bash stracenode.sh'</code></pre></div>
+    <div class="codewrap"><pre><code>:9001 10 rounds x 1000 echoes in 1371 ms
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 71.68    0.341974         330      1036           epoll_pwait
+ 17.29    0.082508           8     10012           write
+  8.69    0.041476           3     11029           read
+  1.59    0.007577           3      2007           epoll_ctl
+  0.74    0.003546           3      1000           accept4
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.477081          19     25084           total</code></pre></div>
+  </div>
+  <p>(strace প্রতিটা system call-এ থামিয়ে দেখে, তাই সময় ৪৮ থেকে ১৩৭১ ms হয়ে গেছে — গণনাগুলোই এখানে কাজের।) ১০০০টা <code>accept4</code>, ১০,০০০-এর মতো <code>read</code> আর <code>write</code> — প্রতিটা echo-র জন্য একটা করে। কিন্তু <code>epoll_pwait</code> (epoll_wait-এর একটা রূপ) মাত্র ১০৩৬ বার: event loop প্রতিবার জেগে গড়ে ১০টারও বেশি ready socket-এর কাজ সেরেছে, তারপর আবার ঘুমিয়েছে। চাপ যত বাড়ে, প্রতি ঘুম-ভাঙায় তত বেশি কাজ জমে, আর জাগার খরচ তত বেশি ভাগ হয়ে যায়। <code>epoll_ctl</code> ২০০৭ বার — প্রতিটা নতুন socket নজরে দেওয়া আর বন্ধের সময় সরানো, মোটামুটি একবার করে।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 330" width="100%" role="img" aria-label="The event loop cycle across the user-kernel boundary: the loop calls epoll_wait and sleeps in the kernel; packets arrive and the kernel puts their sockets on the ready list and wakes the loop; the loop runs one callback per ready socket in JavaScript, then calls epoll_wait again. If one callback runs for a long time, the loop cannot return to epoll_wait and every other ready socket waits">
+      <defs>
+        <marker id="c29f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c29f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-u t-s">USER — one thread</text>
+      <rect x="60" y="44" width="200" height="56" rx="8" class="b-u"/>
+      <text x="160" y="68" text-anchor="middle" class="t-s">run callbacks for</text>
+      <text x="160" y="86" text-anchor="middle" class="t-s">each ready socket (JS)</text>
+      <rect x="440" y="44" width="200" height="56" rx="8" class="b-u"/>
+      <text x="540" y="68" text-anchor="middle" class="t-s">timers due?</text>
+      <text x="540" y="86" text-anchor="middle" class="t-m t-s">then compute sleep time</text>
+      <path d="M260 72 H436" class="ln-u" marker-end="url(#c29f2-u)"/>
+      <text x="348" y="64" text-anchor="middle" class="t-u t-s">done</text>
+
+      <line x1="20" y1="140" x2="780" y2="140" class="ln-k dash"/>
+      <text x="24" y="134" class="t-k t-s">system call</text>
+      <path d="M540 100 V200" class="ln-k" marker-end="url(#c29f2-k)"/>
+      <text x="550" y="124" class="mono">epoll_wait(timeout)</text>
+
+      <text x="24" y="170" class="t-k t-s">KERNEL</text>
+      <rect x="440" y="204" width="200" height="70" rx="8" class="b-k"/>
+      <text x="540" y="228" text-anchor="middle" class="t-s">thread asleep</text>
+      <text x="540" y="248" text-anchor="middle" class="t-m t-s">costs no CPU</text>
+      <rect x="160" y="204" width="200" height="70" rx="8" class="b-k"/>
+      <text x="260" y="226" text-anchor="middle" class="t-s">ready list</text>
+      <text x="260" y="246" text-anchor="middle" class="mono">fd 21, fd 57, fd 903</text>
+      <text x="260" y="264" text-anchor="middle" class="t-m t-s">filled as packets land</text>
+      <path d="M440 239 H364" class="ln-k" marker-end="url(#c29f2-k)"/>
+      <text x="402" y="230" text-anchor="middle" class="t-k t-s">wake</text>
+      <path d="M160 204 V104" class="ln-k" marker-end="url(#c29f2-k)"/>
+      <text x="172" y="176" class="t-k t-s">returns only</text>
+      <text x="172" y="192" class="t-k t-s">the ready ones</text>
+      <text x="24" y="310" class="t-d t-s">one slow callback = the loop never gets back to epoll_wait = every other socket waits (Chapter 19: 432 ms)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Event loop-এর এক পাক। Loop <code>epoll_wait</code>-এ kernel-এ ঘুমায়; packet আসতেই kernel socket-টা ready list-এ টুকে loop-কে জাগায়; loop শুধু ready socket-গুলোর callback চালায় (নীল, JS), তারপর timer দেখে আবার ঘুমায়। এক callback দীর্ঘক্ষণ চললে loop আর <code>epoll_wait</code>-এ ফিরতে পারে না — বাকি সবার data kernel-এর buffer-এ পড়ে থাকে।</p>
+
+  <p>এবার Chapter 19-এর সেই পরীক্ষাটা (main thread-এ password hash, <code>/ping</code>-এর উত্তর ৪৩২ ms) kernel-এর চোখে দেখো: ওই সময় kernel নিজের কাজ ঠিকই করছিল — নতুন connection-এর handshake, আসা data receive buffer-এ, socket গুলো ready list-এ। শুধু যে thread-এর <code>epoll_wait</code> ডেকে ready list তোলার কথা, সে তখন hash করছে। তাই event loop-এ CPU-ভারী synchronous কাজ বিষ: সেই পুরো সময়টা server-এর প্রতিটা client-এর জন্য জমাট।</p>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
-    <p>"Node.js single-threaded, তাই এক core-এ এক সাথে একটাই কাজ — slow।" আসল ছবি: I/O-bound জগতে "কাজ"-এর সংজ্ঞাই হলো ছোট ছোট CPU-র ঝলক, মাঝে বিশাল অপেক্ষা। Event loop সেই অপেক্ষাগুলো epoll-এ জমা দিয়ে ঝলকগুলো পরপর চালায় — এক thread-েই হাজারো connection। Single thread দুর্বলতা না, এই model-এর <em>design choice</em> — দুর্বলতা শুধু CPU-bound কাজে (তখন worker/process — Chapter 19)।</p>
+    <p>"Node single-threaded, তাই একসাথে একটাই request সামলাতে পারে।" একসাথে একটাই <em>callback</em> চালায় — কিন্তু request-এর জীবনের বেশিরভাগ সময় অপেক্ষা (network, database), আর সেই অপেক্ষা epoll-এ জমা থাকে, কোনো thread আটকে না রেখে। tiny_loop.py-র একটা thread ১০০০ connection একসাথে ধরে রেখে ১০,০০০ echo ৫২ ms-এ শেষ করেছে। সীমাটা আসে কেবল তখন, যখন একটা callback নিজেই CPU-তে দীর্ঘক্ষণ চলে (Chapter 19)।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>select/poll: প্রতিবার পুরো তালিকা নিয়ে kernel-এর কাছে যাও, kernel সবাইকে দেখে — খরচ ∝ মোট connection। epoll/kqueue: তালিকা একবার kernel-কে দিয়ে দাও; data আসার মুহূর্তেই kernel ready list-এ টুকে রাখে; <code>epoll_wait</code> শুধু সেটুকু দেয় — খরচ ∝ ready connection, ঘুমন্ত connection বিনামূল্যে। Event loop = ঘুমাও → ready গুলোর ছোট ছোট কাজ সারো → আবার ঘুমাও। শর্ত একটাই: প্রতিটা কাজ ছোট হতে হবে।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>select/poll-এর scaling সমস্যাটা ঠিক কোথায়?</li>
-      <li>epoll কোন কাজটা "একবার" করে ফেলে বারবার করা এড়ায়?</li>
-      <li>Event loop block করলে ঠিক কী ঘটে — kernel level-এ ভেবে বলো।</li>
+      <li>poll-এর প্রতিটা call-এর খরচ মোট connection-এর সংখ্যার সাথে বাড়ে কেন? <code>select</code> ১০০০ socket-এর পরীক্ষাতেই <code>filedescriptor out of range</code> দিল কেন?</li>
+      <li>epoll কোন কাজটা "একবার" করে ফেলে প্রতিবার করা এড়ায়? Ready list-এ একটা socket কখন, কে যোগ করে?</li>
+      <li>watchcost.py-তে ১০ থেকে ১০,০০০ socket-এ epoll-এর দাম একই ০.৩ µs থাকল কেন, আর poll ০.৫ থেকে ৯৪৫ µs হলো কেন?</li>
+      <li>tiny_loop.py-র loop-এর প্রতিটা ধাপ কী করে? একটা thread হয়েও সে ১০০১-thread-এর server-এর চেয়ে দ্রুত হলো কেন?</li>
+      <li>stracenode.sh-এ ১০,০০০ echo-তে মাত্র ১০৩৬টা <code>epoll_pwait</code> কেন? Event loop-এ দীর্ঘ synchronous কাজ চললে kernel-এর ভেতরে আর বাইরে কী ঘটে?</li>
     </ul>
   </div>

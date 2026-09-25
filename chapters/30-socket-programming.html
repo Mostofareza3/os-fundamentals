@@ -1,51 +1,250 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
-  <h2>Chapter 30 — Socket Programming: হাতেকলমে</h2>
-  <p class="chap-sub">একটা ন্যূনতম TCP server, C-তে — প্রতিটা লাইন এতক্ষণের theory-র প্রমাণ।</p>
+  <h2>Chapter 30 — Socket Programming, হাতেকলমে</h2>
+  <p class="chap-sub">Node-এর <code>net</code> দিয়ে: JS-এর প্রতিটা call-এর নিচে কোন system call, framework ছাড়া নিজের HTTP server, চেনা error গুলোর আসল মানে, fd-র সীমা, আর server বন্ধ করার ভদ্র উপায়।</p>
 
-  <div class="codewrap"><pre><code>// ন্যূনতম echo server — error handling ইচ্ছা করে বাদ
-int server_fd = socket(AF_INET, SOCK_STREAM, 0);   // ১
+  <p>এই Part-এর আগের পাঁচ chapter-এ socket, TCP, buffer, blocking আর epoll দেখেছি। এবার সব একসাথে, হাতে-কলমে। C লাগবে না — Node-এর <code>net</code> module socket API-র প্রায় সরাসরি একটা JS রূপ, আর <code>http</code>, Express, Fastify সবাই এর উপরে বসানো।</p>
 
-struct sockaddr_in addr = {0};
-addr.sin_family = AF_INET;
-addr.sin_port   = htons(8080);
-bind(server_fd, (struct sockaddr*)&amp;addr, sizeof(addr)); // ২
+  <h3>JS-এর প্রতিটা call-এর নিচে</h3>
+  <p>Chapter 25-এ strace দিয়ে দেখেছি <code>listen()</code> ভেতরে <code>socket</code>, <code>bind</code>, <code>listen</code> ডাকে, আর নতুন connection এলে <code>accept4</code>। বাকিগুলোও একইভাবে মিলিয়ে নিয়েছি (Docker-এ strace, Node 22):</p>
+  <div class="table-wrap"><table>
+    <tr><th>তুমি লেখো</th><th>kernel-এর কাছে যায়</th><th>ফল</th></tr>
+    <tr><td><code>net.createServer().listen(8080)</code></td><td><code>socket</code>, <code>setsockopt(SO_REUSEADDR)</code>, <code>bind</code>, <code>listen(fd, 511)</code>, <code>epoll_ctl(ADD)</code></td><td>দরজা খোলা, kernel নিজে handshake নিতে শুরু করে (Chapter 26)</td></tr>
+    <tr><td><code>'connection'</code> event</td><td><code>accept4</code>, তারপর <code>epoll_ctl(ADD)</code></td><td>accept queue থেকে একটা connection, নতুন fd</td></tr>
+    <tr><td><code>net.connect(port, host)</code></td><td><code>socket</code>, <code>connect</code></td><td>SYN রওনা; ready হলে <code>'connect'</code></td></tr>
+    <tr><td><code>'data'</code> event</td><td><code>read</code></td><td>receive buffer থেকে copy (Chapter 27)</td></tr>
+    <tr><td><code>socket.write(buf)</code></td><td><code>write</code> / <code>writev</code></td><td>send buffer-এ copy</td></tr>
+    <tr><td><code>socket.end()</code></td><td><code>shutdown(fd, SHUT_WR)</code></td><td>FIN: "আমার আর পাঠানোর নেই", পড়া চলতে পারে</td></tr>
+    <tr><td><code>socket.destroy()</code></td><td><code>close</code></td><td>fd ফেরত, দুই দিকই বন্ধ</td></tr>
+    <tr><td><code>socket.resetAndDestroy()</code></td><td><code>setsockopt(SO_LINGER, 0)</code>, <code>close</code></td><td>RST: ভদ্র বিদায় ছাড়াই connection ছিঁড়ে ফেলা</td></tr>
+    <tr><td><code>socket.setNoDelay(true)</code></td><td><code>setsockopt(TCP_NODELAY)</code></td><td>Nagle বন্ধ (Chapter 27)</td></tr>
+  </table></div>
+  <p>শেষের তিনটার প্রমাণ — একটা connection-এ server <code>write</code> করে <code>end()</code>, আরেকটায় client <code>resetAndDestroy()</code>:</p>
+  <div class="codewrap"><pre><code>[pid   129] write(20, "hi", 2)          = 2
+[pid   129] shutdown(20, SHUT_WR)       = 0
+[pid   129] setsockopt(21, SOL_SOCKET, SO_LINGER, {l_onoff=1, l_linger=0}, 8) = 0
+[pid   129] close(21)                   = 0</code></pre></div>
 
-listen(server_fd, 128);                            // ৩
+  <figure class="fig">
+    <svg viewBox="0 0 800 420" width="100%" role="img" aria-label="Each JavaScript socket call on the left crosses the user-kernel boundary to one or a few system calls on the right, and some of them put a packet on the wire: listen becomes socket, bind and listen; the connection event is accept4; connect sends SYN; write and the data event are write and read; end is shutdown and sends FIN; destroy is close; resetAndDestroy is close with linger zero and sends RST">
+      <defs>
+        <marker id="c30f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="140" y="28" text-anchor="middle" class="t-u t-s">your JS (user space)</text>
+      <text x="480" y="28" text-anchor="middle" class="t-k t-s">system call (kernel)</text>
+      <text x="700" y="28" text-anchor="middle" class="t-m t-s">on the wire</text>
+      <line x1="310" y1="14" x2="310" y2="408" class="ln-k dash"/>
+      <rect x="30" y="44" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="66" text-anchor="middle" class="mono">listen(8080)</text>
+      <line x1="250" y1="61" x2="366" y2="61" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="44" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="66" text-anchor="middle" class="mono">socket · bind · listen</text>
+      <rect x="30" y="89" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="111" text-anchor="middle" class="mono">'connection' event</text>
+      <line x1="250" y1="106" x2="366" y2="106" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="89" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="111" text-anchor="middle" class="mono">accept4</text>
+      <text x="610" y="111" class="t-m t-s">(handshake already done)</text>
+      <rect x="30" y="134" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="156" text-anchor="middle" class="mono">net.connect()</text>
+      <line x1="250" y1="151" x2="366" y2="151" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="134" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="156" text-anchor="middle" class="mono">socket · connect</text>
+      <text x="610" y="156" class="t-m t-s">SYN →</text>
+      <rect x="30" y="179" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="201" text-anchor="middle" class="mono">socket.write(buf)</text>
+      <line x1="250" y1="196" x2="366" y2="196" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="179" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="201" text-anchor="middle" class="mono">write / writev</text>
+      <text x="610" y="201" class="t-m t-s">data →</text>
+      <rect x="30" y="224" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="246" text-anchor="middle" class="mono">'data' event</text>
+      <line x1="250" y1="241" x2="366" y2="241" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="224" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="246" text-anchor="middle" class="mono">read</text>
+      <text x="610" y="246" class="t-m t-s">← data</text>
+      <rect x="30" y="269" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="291" text-anchor="middle" class="mono">socket.end()</text>
+      <line x1="250" y1="286" x2="366" y2="286" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="269" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="291" text-anchor="middle" class="mono">shutdown(SHUT_WR)</text>
+      <text x="610" y="291" class="t-m t-s">FIN →</text>
+      <rect x="30" y="314" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="336" text-anchor="middle" class="mono">socket.destroy()</text>
+      <line x1="250" y1="331" x2="366" y2="331" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="314" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="336" text-anchor="middle" class="mono">close</text>
+      <text x="610" y="336" class="t-m t-s">FIN (or RST) →</text>
+      <rect x="30" y="359" width="220" height="34" rx="6" class="b-u"/>
+      <text x="140" y="381" text-anchor="middle" class="mono">resetAndDestroy()</text>
+      <line x1="250" y1="376" x2="366" y2="376" class="ln-k" marker-end="url(#c30f1-k)"/>
+      <rect x="370" y="359" width="220" height="34" rx="6" class="b-k"/>
+      <text x="480" y="381" text-anchor="middle" class="mono">SO_LINGER 0 · close</text>
+      <text x="610" y="381" class="t-m t-s">RST →</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">বাঁয়ে তোমার লেখা JS, dashed সীমানার ডানে kernel-এর system call, আর শেষ column-এ সেই call-এর ফলে network-এ কী যায়। প্রতিটা JS call একটা-দুইটা system call-এর পাতলা মোড়ক; <code>end()</code> ভদ্র বিদায় (FIN), <code>resetAndDestroy()</code> হঠাৎ ছেঁড়া (RST)।</p>
 
-while (1) {
-    int client_fd = accept(server_fd, NULL, NULL); // ৪
-    char buf[1024];
-    int n = read(client_fd, buf, sizeof(buf));     // ৫
-    write(client_fd, buf, n);                      // ৬
-    close(client_fd);                              // ৭
+  <h3>HTTP আসলে কিছু লেখা byte</h3>
+  <p>HTTP/1.1 একটা text protocol: TCP-র byte-এর স্রোতের উপর কয়েকটা লাইন, প্রতিটা <code>\r\n</code>-এ শেষ। প্রথম লাইনে method আর path, তারপর header, তারপর একটা খালি লাইন, তারপর body। Framework ছাড়া, শুধু <code>net</code> দিয়ে একটা HTTP server:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — mini-http.js</div>
+    <div class="codewrap"><pre><code>// mini-http.js — express বা http module ছাড়া, শুধু net দিয়ে একটা HTTP server
+const net = require('net');
+
+net.createServer(sock =&gt; {
+  let buf = '';
+  sock.on('data', chunk =&gt; {
+    buf += chunk;
+    const end = buf.indexOf('\r\n\r\n');        // HTTP header শেষ হয় একটা খালি লাইনে
+    if (end === -1) return;                       // পুরো header এখনো আসেনি (Chapter 27-এর framing)
+    const [requestLine, ...headers] = buf.slice(0, end).split('\r\n');
+    console.log('request line:', JSON.stringify(requestLine));
+    console.log('headers     :', headers.length, 'lines, e.g.', JSON.stringify(headers[0]));
+    const body = JSON.stringify({ hello: 'from raw TCP', path: requestLine.split(' ')[1] }) + '\n';
+    sock.end(
+      'HTTP/1.1 200 OK\r\n' +
+      'Content-Type: application/json\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +   // body কোথায় শেষ — framing
+      'Connection: close\r\n' +
+      '\r\n' + body
+    );
+  });
+}).listen(8080, '127.0.0.1', () =&gt; console.log('listening on 8080'));</code></pre></div>
+    <p>এক terminal-এ <code>node mini-http.js</code>, আরেকটায় <code>curl -s -i http://127.0.0.1:8080/users/42</code>:</p>
+    <div class="codewrap"><pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 44
+Connection: close
+
+{"hello":"from raw TCP","path":"/users/42"}</code></pre></div>
+    <p>Server-এর দিকে: <code>request line: "GET /users/42 HTTP/1.1"</code> আর <code>headers : 3 lines, e.g. "Host: 127.0.0.1:8080"</code>। এমনকি request নিজে হাতে লিখেও পাঠানো যায় — <code>nc</code> (netcat) শুধু stdin-এর byte একটা TCP connection-এ ঢেলে দেয়:</p>
+    <div class="codewrap"><pre><code>printf 'GET /by-hand HTTP/1.1\r\nHost: me\r\n\r\n' | nc 127.0.0.1 8080</code></pre></div>
+    <p>উত্তর আসে <code>{"hello":"from raw TCP","path":"/by-hand"}</code> সহ একই header।</p>
+  </div>
+  <p>curl সন্তুষ্ট, কারণ HTTP-র চাহিদা এটুকুই: ঠিক ক্রমে ঠিক byte। বাকি সব — URL-এর query ভাঙা, header-এর case, chunked body, keep-alive, <code>Content-Length</code> না মিললে কী করা — Node-এর <code>http</code> module-এর কাজ, আর তার উপরে Express-এর routing। কিন্তু নিচে যা আছে তা এই: একটা socket, কিছু byte, আর framing।</p>
+
+  <h3>চেনা error গুলোর আসল মানে</h3>
+  <p>Network error-এর নামগুলো kernel-এর দেওয়া, আর প্রতিটা আগের chapter-গুলোর কোনো একটা ঘটনার নাম। পাঁচটা নিজেরাই ঘটাই:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — errors.js</div>
+    <div class="codewrap"><pre><code>// errors.js — চেনা network error গুলো, একটা একটা করে ঘটিয়ে
+const net = require('net');
+const once = (emitter, ev) =&gt; new Promise(r =&gt; emitter.once(ev, r));
+const log = (name, e) =&gt; console.log(name.padEnd(28), e ? e.code : 'no error');
+
+(async () =&gt; {
+  // ১) একই port দুইবার
+  const a = net.createServer().listen(8080, '127.0.0.1');
+  await once(a, 'listening');
+  const b = net.createServer().listen(8080, '127.0.0.1');
+  log('listen twice on 8080:', await once(b, 'error'));
+
+  // ২) কেউ শুনছে না এমন port
+  log('connect to closed port:', await once(net.connect(8081, '127.0.0.1'), 'error'));
+
+  // ৩) server connection "ছিঁড়ে" দেয় (RST), client পড়ছিল
+  const rst = net.createServer(s =&gt; s.resetAndDestroy()).listen(8082, '127.0.0.1');
+  await once(rst, 'listening');
+  log('peer sends RST:', await once(net.connect(8082, '127.0.0.1'), 'error'));
+
+  // ৪) ওপাশ বন্ধ হয়ে যাওয়ার পরেও লিখে যাওয়া
+  const bye = net.createServer(s =&gt; s.destroy()).listen(8083, '127.0.0.1');
+  await once(bye, 'listening');
+  const c = net.connect({ port: 8083, host: '127.0.0.1', allowHalfOpen: true });
+  c.on('connect', () =&gt; { const t = setInterval(() =&gt; c.write('x'), 10); c.on('close', () =&gt; clearInterval(t)); });
+  log('write after peer closed:', await once(c, 'error'));
+
+  // ৫) কোনো উত্তরই আসে না (packet কোথাও হারিয়ে যায়)
+  const t0 = Date.now();
+  const e = await once(net.connect(81, '10.255.255.1'), 'error');
+  log(`nobody answers (${((Date.now() - t0) / 1000).toFixed(1)} s):`, e);
+  process.exit(0);
+})();</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm --sysctl net.ipv4.tcp_syn_retries=1 -v "$PWD":/w:ro node:22-bookworm-slim node /w/errors.js</code></pre></div>
+    <div class="codewrap"><pre><code>listen twice on 8080:        EADDRINUSE
+connect to closed port:      ECONNREFUSED
+peer sends RST:              ECONNRESET
+write after peer closed:     EPIPE
+nobody answers (3.1 s):      ETIMEDOUT</code></pre></div>
+  </div>
+  <ul>
+    <li><strong><code>EADDRINUSE</code></strong> — <code>bind()</code> ব্যর্থ: port-টা অন্য কোনো socket-এর দখলে। প্রায়ই আগের process এখনো চলছে (<code>lsof -iTCP:8080</code> দিয়ে খোঁজো)।</li>
+    <li><strong><code>ECONNREFUSED</code></strong> — তোমার SYN-এর জবাবে ওপাশের kernel RST পাঠিয়েছে: "এই port-এ কেউ শুনছে না।" মানে machine পর্যন্ত পৌঁছেছ, program নেই।</li>
+    <li><strong><code>ECONNRESET</code></strong> — চালু connection-এ ওপাশ থেকে RST এসেছে: ওপাশের process crash করেছে, <code>kill -9</code> হয়েছে, বা কোনো load balancer/proxy idle connection কেটে দিয়েছে। তোমার code-এর bug হওয়া জরুরি না — ওপাশের দিকে খোঁজো।</li>
+    <li><strong><code>EPIPE</code></strong> — এমন connection-এ লিখছ যেটা ওপাশ ইতিমধ্যে বন্ধ করেছে। প্রথম লেখার জবাবে ওপাশ RST দেয়; তার পরের লেখায় kernel বলে "পাইপ ভাঙা"।</li>
+    <li><strong><code>ETIMEDOUT</code></strong> — SYN পাঠিয়ে কোনো জবাবই আসেনি (firewall নীরবে ফেলে দিচ্ছে, বা ঠিকানায় কোনো machine নেই); kernel নির্দিষ্ট কয়েকবার আবার পাঠিয়ে হাল ছেড়েছে। কতবার, সেটা <code>net.ipv4.tcp_syn_retries</code> — Docker VM-এ default ৬, যাতে প্রায় ২ মিনিট লাগে; তাই পরীক্ষায় container-এর জন্য ১ করে দিয়েছি, ৩.১ সেকেন্ডে শেষ। Production-এ connect-এ নিজের timeout দাও; ২ মিনিট অপেক্ষা কারও কাজে লাগে না।</li>
+  </ul>
+
+  <h3>fd-র সীমা: EMFILE</h3>
+  <p>প্রতিটা socket একটা fd, আর প্রতিটা process-এর খোলা fd-র একটা সীমা আছে — <code>ulimit -n</code>। Server-এর দিকে প্রতিটা connection একটা fd, client-এর দিকেও একটা। সীমা ছুঁলে কী হয়, ইচ্ছা করে ছোট সীমা বসিয়ে দেখি:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — emfile.js</div>
+    <div class="codewrap"><pre><code>// emfile.js — প্রতিটা connection একটা fd; fd-র সীমা ছুঁলে কী হয়
+const net = require('net');
+const fs = require('fs');
+console.log('fds already open at start:', fs.readdirSync('/proc/self/fd').length);
+for (let i = 1; i &lt;= 100; i++) {
+  net.connect(8080, '127.0.0.1').on('error', e =&gt; {
+    console.log(`connection #${i}: ${e.code}`);
+    process.exit(0);
+  });
 }</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+  node -e "require(\"net\").createServer(() =&gt; {}).listen(8080)" &amp; sleep 0.5
+  ulimit -n 64; node /w/emfile.js'</code></pre></div>
+    <div class="codewrap"><pre><code>fds already open at start: 18
+connection #47: EMFILE</code></pre></div>
+  </div>
+  <p>Node নিজেই শুরুতে ১৭টা fd খোলা রাখে (stdin/stdout/stderr, epoll, eventfd, pipe…; ১৮-র একটা <code>readdirSync</code>-এর নিজের), তাই ৬৪-র সীমায় ৪৬টা connection-এর পরে ৪৭তমটায় <code>EMFILE</code> — "too many open files"। Docker-এ default সীমা <code>1048576</code>, কিন্তু সব জায়গায় এত না: আমার Mac-এ <code>launchctl limit maxfiles</code> দেখায় soft সীমা ২৫৬। Production-এ <code>EMFILE</code> প্রায়ই আসে fd leak থেকে: বন্ধ না করা socket (Chapter 26-এর CLOSE-WAIT), বন্ধ না করা file। <code>ls /proc/&lt;pid&gt;/fd | wc -l</code> সময়ের সাথে শুধু বাড়তে থাকলে leak খোঁজো।</p>
 
-  <p>লাইন ধরে ধরে — OS-এর চোখে কী ঘটলো:</p>
-  <ol>
-    <li><strong>socket():</strong> System call → kernel একটা socket object বানালো, fd দিলো। <code>SOCK_STREAM</code> মানে TCP।</li>
-    <li><strong>bind():</strong> "Port 8080 আমার" — kernel-এর port table-এ দাবি নথিভুক্ত। অন্য কেউ আগেই নিলে এখানেই <code>EADDRINUSE</code> — তোমার চেনা সেই "port already in use"।</li>
-    <li><strong>listen(fd, 128):</strong> Socket টা listening mode-এ; 128 হলো accept queue-র backlog (Chapter 26!)। এই মুহূর্ত থেকে kernel নিজে নিজে handshake করে connection জমাতে থাকবে।</li>
-    <li><strong>accept():</strong> Accept queue খালি থাকলে process এখানে block — Waiting state। Connection এলে জাগে, হাতে পায় <em>নতুন</em> fd।</li>
-    <li><strong>read():</strong> Receive buffer-এ data না থাকলে block; থাকলে copy। (এই যে ৪ আর ৫-এ blocking — এটাই এই server-এর সীমা: এক সময়ে এক client। Chapter 28-29 এর সমাধান তো এখন জানোই।)</li>
-    <li><strong>write():</strong> Send buffer-এ copy → kernel পাঠাবে।</li>
-    <li><strong>close():</strong> fd ছাড়ো → kernel TCP-র বিদায়-নৃত্য (FIN/ACK) চালায়।</li>
-  </ol>
+  <h3>Graceful shutdown: ভদ্রভাবে বন্ধ</h3>
+  <p>Deploy-এর সময় পুরনো process বন্ধ হয়। হঠাৎ <code>process.exit()</code> করলে চলমান request গুলো মাঝপথে কাটা পড়ে — client পায় <code>ECONNRESET</code>। ভদ্র উপায় (<strong>graceful shutdown</strong>): নতুন connection নেওয়া বন্ধ করো, চলমানগুলো শেষ হতে দাও, তারপর বেরোও। <code>server.close()</code> ঠিক এটাই করে — listening socket বন্ধ করে, কিন্তু accepted socket গুলো ছোঁয় না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — graceful.js</div>
+    <div class="codewrap"><pre><code>// graceful.js — server.close(): নতুন দরজা বন্ধ, কিন্তু চলমান কাজ শেষ হতে দাও
+const net = require('net');
+const t0 = Date.now();
+const log = msg =&gt; console.log(`${String(Date.now() - t0).padStart(5)} ms  ${msg}`);
 
-  <div class="box concept">
-    <div class="box-title">আসল শিক্ষা</div>
-    <p>মাত্র ৭টা system call-এ একটা network server — কারণ ভারী কাজের সবটাই kernel-এ: handshake, reliability, buffering, retransmission। Application-এর ভূমিকা আসলে <strong>orchestration</strong> — kernel-এর তৈরি জিনিসগুলো চাওয়া, আর bytes-এর অর্থ বোঝা (HTTP parse করা ইত্যাদি)। Express দিয়ে যে server লেখো, সেটা এই ৭ call-এর উপরে সাজানো অনেকগুলো সুবিধার স্তর মাত্র।</p>
+const server = net.createServer(sock =&gt; {
+  log('server: request in, working for 1 s...');
+  setTimeout(() =&gt; sock.end('done\n'), 1000);      // একটা ধীর request
+});
+server.listen(8080, '127.0.0.1', () =&gt; {
+  const a = net.connect(8080, '127.0.0.1');
+  a.on('data', d =&gt; log(`client A got: ${d.toString().trim()}`));
+
+  setTimeout(() =&gt; {
+    log('SIGTERM-এর মতো: server.close()');
+    server.close(() =&gt; log('server: all connections finished, "close" event'));
+    net.connect(8080, '127.0.0.1').on('error', e =&gt; log(`client B (new): ${e.code}`));
+  }, 200);
+});</code></pre></div>
+    <div class="codewrap"><pre><code>    5 ms  server: request in, working for 1 s...
+  207 ms  SIGTERM-এর মতো: server.close()
+  210 ms  client B (new): ECONNREFUSED
+ 1009 ms  client A got: done
+ 1010 ms  server: all connections finished, "close" event</code></pre></div>
+  </div>
+  <p><code>close()</code>-এর ৩ ms পরে নতুন client B <code>ECONNREFUSED</code> — দরজা বন্ধ। কিন্তু আগে থেকে চলা A-র request পুরো সময় নিয়ে শেষ হয়েছে, আর তারপরেই server-এর <code>'close'</code> event। বাস্তবে এটা বসে <code>SIGTERM</code> signal-এর handler-এ: Kubernetes pod বন্ধ করার সময় আগে <code>SIGTERM</code> পাঠায়, আর default ৩০ সেকেন্ড পরে <code>SIGKILL</code>। তাই <code>process.on('SIGTERM', () =&gt; server.close(() =&gt; process.exit(0)))</code>। একটা ফাঁদ: HTTP keep-alive-এর অলস connection গুলোও "চলমান", তাই <code>close()</code> তাদের জন্যও অপেক্ষা করে — <code>http</code> server-এ <code>server.closeIdleConnections()</code> সেগুলো ছেড়ে দেয়।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>ECONNRESET</code> এসেছে মানে আমার code-এ bug।" <code>ECONNRESET</code> মানে ওপাশের kernel একটা RST পাঠিয়েছে — errors.js-এ server নিজে <code>resetAndDestroy()</code> করে সেটা ঘটিয়েছে। বাস্তবে উৎস প্রায়ই ওপাশে: ওপাশের process crash বা kill, বা মাঝের load balancer idle connection কেটে দেওয়া। Error-এর নামটা kernel-এর ঘটনার নাম — কোন ঘটনা, সেটা বুঝলেই খোঁজার দিক ঠিক হয়।</p>
   </div>
 
-  <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p>কোনো C লাগবে না — দুই terminal-এ: <code>nc -l 8080</code> (server) আর <code>nc localhost 8080</code> (client), টাইপ করো — chat! তারপর তৃতীয় terminal-এ <code>ss -t | grep 8080</code> (macOS: <code>netstat -an | grep 8080</code>) — নিজের বানানো connection-টার state দেখো। Linux-এ <code>strace nc -l 8081</code> চালালে উপরের socket→bind→listen→accept ধারাটা লাইভ দেখবে।</p>
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Node-এর socket API kernel-এর system call-এর পাতলা মোড়ক: <code>listen</code> = socket+bind+listen, <code>'connection'</code> = accept, <code>write</code>/<code>'data'</code> = write/read, <code>end</code> = FIN, <code>resetAndDestroy</code> = RST। HTTP এর উপরে কিছু লেখা byte আর framing। প্রতিটা network error একটা kernel-ঘটনার নাম — কে কাকে RST পাঠাল, কে জবাবই দিল না, কার fd ফুরাল। আর server বন্ধ মানে আগে দরজা বন্ধ (<code>close</code>), তারপর ভেতরের কাজ শেষ হওয়ার অপেক্ষা।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>৭টা call-এর প্রতিটায় kernel-এ কী তৈরি/পরিবর্তন হয়?</li>
-      <li>এই server এক সময়ে এক client কেন — কোন দুই লাইনে আটকায়?</li>
-      <li>"Application orchestrates, kernel does the heavy lifting" — নিজের ভাষায়?</li>
+      <li><code>socket.end()</code> আর <code>socket.resetAndDestroy()</code> kernel-এ কী ডাকে, আর ওপাশ কী পায়? <code>'connection'</code> event-এর মুহূর্তে handshake কেন আগেই শেষ?</li>
+      <li>mini-http.js-এ server কীভাবে জানে HTTP header শেষ হয়েছে? Response-এ <code>Content-Length</code> না দিলে client-এর কী সমস্যা হতো?</li>
+      <li><code>ECONNREFUSED</code> আর <code>ETIMEDOUT</code> — দুটোই "connect হলো না", কিন্তু network-এ আলাদা কী ঘটেছে? <code>ETIMEDOUT</code> পেতে default-এ প্রায় ২ মিনিট লাগে কেন?</li>
+      <li>emfile.js-এ ৬৪-র সীমায় ৪৭তম connection-এ <code>EMFILE</code> কেন? Production-এ <code>EMFILE</code> দেখলে প্রথমে কী সন্দেহ করবে, কীভাবে যাচাই করবে?</li>
+      <li>graceful.js-এ <code>server.close()</code>-এর পরে client B refused হলো কিন্তু client A উত্তর পেল কেন? Kubernetes-এ এটা কোথায় বসাবে, আর keep-alive connection কী ঝামেলা করে?</li>
     </ul>
   </div>

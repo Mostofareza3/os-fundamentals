@@ -1,38 +1,260 @@
   <p class="part-label">PART 6 · STORAGE</p>
   <h2>Chapter 22 — File Systems</h2>
-  <p class="chap-sub">Disk তো শুধু নাম্বার-দেওয়া block-এর সমুদ্র — "file" জিনিসটা বানায় কে?</p>
+  <p class="chap-sub">Disk চেনে শুধু নম্বর দেওয়া block; "file", "folder", "নাম" — এসব বানায় filesystem। Inode, directory, link, মুছে ফেলার আসল মানে, ছোট file-এর লুকানো দাম, আর crash-এর পরেও গোছানো থাকার কৌশল।</p>
 
-  <h3>Problem আর idea</h3>
-  <p>Storage device-এর ভাষা: "block #48211 পড়ো/লেখো।" আমাদের ভাষা: "<code>/home/reza/notes.md</code> খোলো।" মাঝের অনুবাদক-টাই <strong>file system</strong> — disk-এর block গুলোর উপর সে বানায় নাম, hierarchy, permission, size — পুরো একটা সাজানো জগৎ।</p>
+  <p>Chapter 20-এ দেখেছি SSD নিজেকে দেখায় 4 KB-র নম্বর দেওয়া block-এর একটা লম্বা সারি হিসেবে (LBA)। Device শুধু বোঝে "block ২০৬৬ পড়ো"। অথচ তুমি বলো <code>fs.readFile('/home/reza/notes.md')</code>। নাম, folder-এর ভেতরে folder, কে পড়তে পারবে, কবে বদলেছে, file কত বড় — এর কিছুই disk জানে না। এই সব হিসাব disk-এরই কিছু block-এ একটা নির্দিষ্ট নকশায় সাজিয়ে রাখার নিয়মের নাম <strong>filesystem</strong>। Chapter 21-এর স্তরে এটা VFS-এর ঠিক নিচে: "এই file-এর byte ০–১৪" কথাটাকে "disk-এর block অমুক"-এ অনুবাদ করে।</p>
 
-  <h3>Core building blocks (ext4-এর ছবিতে)</h3>
-  <ul>
-    <li><strong>File = data blocks + metadata।</strong> Metadata থাকে <strong>inode</strong>-এ: size, owner, permission, timestamps, আর সবচেয়ে জরুরি — data কোন কোন block-এ আছে তার map। মজার fact: <strong>inode-এ file-এর নাম নেই।</strong></li>
-    <li><strong>Directory আসলে একটা বিশেষ file</strong> — যার content হলো একটা তালিকা: নাম → inode number। "File-এর নাম" আসলে directory-র সম্পত্তি। এজন্যই hard link সম্ভব — দুই নাম, এক inode।</li>
-    <li><strong>Path resolution:</strong> <code>/home/reza/notes.md</code> খুলতে kernel হাঁটে: root-এর inode → তার entry-তে "home" → সেই inode → entry "reza" → inode → entry "notes.md" → অবশেষে file-এর inode। প্রতিটা ধাপে permission check।</li>
-    <li><strong>Allocation:</strong> নতুন data-র জন্য কোন free block দেবে সেটা filesystem-এর কৌশল — ভালো filesystem চেষ্টা করে এক file-এর block গুলো কাছাকাছি রাখতে (sequential read-এর সুবিধা, Chapter 20)।</li>
-  </ul>
-  <pre class="diagram">directory entry          inode #5021              disk blocks
-"notes.md" → 5021   →   size: 8KB           →    [block 300][block 301]
-                        <span class="dim">(ext4 আসলে block-এর তালিকা না রেখে</span>
-                        <span class="dim"> extent রাখে — "block 300 থেকে ২টা")</span>
-                        owner: reza
-                        perms: rw-r--r--
-                        blocks: 300, 301</pre>
-
-  <p>ext4 আধুনিক Linux-এর default — এতে আছে <em>journaling</em>: metadata বদলানোর আগে একটা log-এ intention লিখে রাখা, যাতে crash-এর পরে filesystem অসঙ্গত (corrupt) না থাকে। আর FAT? সেই সাদাসিধে পুরনো filesystem — permission নেই, journaling নেই — আজও pendrive/SD card-এ বেঁচে আছে কারণ সবাই এটা পড়তে পারে।</p>
-  <p>শেষ টুকরো — <strong>VFS</strong> (Virtual File System): kernel-এর ভিতরের সেই abstraction layer যার কারণে ext4, FAT, নেটওয়ার্ক filesystem — সবাইকে application একই <code>open/read/write</code> দিয়ে দেখে। Abstraction on abstraction — OS design-এর প্রিয় খেলা।</p>
-
+  <h3>Inode: file-এর সব তথ্য, নাম ছাড়া</h3>
+  <p>Linux-এর ext4 (আর বেশিরভাগ Unix filesystem) প্রতিটা file-এর জন্য একটা ছোট record রাখে — <strong>inode</strong> (index node)। প্রতিটা inode-এর একটা নম্বর আছে, আর তাতে থাকে: file-এর ধরন (সাধারণ file, folder, link), size, মালিক আর permission, সময়ের হিসাব, কয়টা নাম এটাকে দেখায় (link count), আর সবচেয়ে জরুরি — file-এর data disk-এর কোন কোন block-এ আছে তার মানচিত্র। যেটা নেই: <strong>file-এর নাম</strong>। সেটা কোথায়, একটু পরে।</p>
+  <p>ext4-এর ভেতরে সরাসরি উঁকি দেওয়া যায়। Docker-এ একটা ছোট ext4 disk image বানাব (একটা সাধারণ file, যার ভেতরে একটা পুরো filesystem), তারপর ext4-এর নিজস্ব debugger <code>debugfs</code> দিয়ে পড়ব — mount না করেই:</p>
   <div class="box lab">
-    <div class="box-title">EXPERIMENT</div>
-    <p><code>ls -li</code> চালাও — প্রথম column-টাই inode number। তারপর <code>stat &lt;filename&gt;</code> — এক file-এর পুরো inode-এর গল্প: size, blocks, links, timestamps। <code>df -T .</code> দিয়ে দেখো তোমার filesystem-টা আসলে কী (Linux-এ ext4, macOS-এ apfs)।</p>
+    <div class="box-title">EXPERIMENT (Linux / Docker) — ext4-এর ভেতরে</div>
+    <div class="codewrap"><pre><code>docker run --rm -it debian:bookworm-slim bash
+
+# দুইটা file: একটা ২৪ byte-এর note, একটা ৩ লাখ byte-এর "photo"
+mkdir /tmp/src
+printf "# notes\nhello from ext4\n" &gt; /tmp/src/notes.md
+head -c 300000 /dev/urandom &gt; /tmp/src/photo.jpg
+
+# 64 MB-র একটা ext4 image, 4 KB block, ভেতরে ওই দুইটা file
+mkfs.ext4 -q -b 4096 -d /tmp/src /tmp/disk.img 64M
+
+debugfs -R "stat /photo.jpg" /tmp/disk.img 2&gt;/dev/null | grep -E "Inode:|Size:|Links|EXTENTS|^\("
+debugfs -R "stat /notes.md"  /tmp/disk.img 2&gt;/dev/null | grep -A1 EXTENTS</code></pre></div>
+    <div class="codewrap"><pre><code>Inode: 13   Type: regular    Mode:  0644   Flags: 0x80000
+User:     0   Group:     0   Project:     0   Size: 300000
+Links: 1   Blockcount: 592
+EXTENTS:
+(0-73):2066-2139
+EXTENTS:
+(0):2065</code></pre></div>
+  </div>
+  <p>photo.jpg হলো inode ১৩। Size ৩,০০,০০০ byte। আর মানচিত্রটা: <code>(0-73):2066-2139</code> — file-এর block ০ থেকে ৭৩ disk-এর block ২০৬৬ থেকে ২১৩৯-এ, পরপর। ext4 প্রতিটা block আলাদা করে না লিখে এভাবে টানা অংশ লেখে: "শুরু এখানে, এতগুলো" — একে বলে <strong>extent</strong>। File যত টানা জায়গায় বসে, মানচিত্র তত ছোট, আর পড়াও sequential (Chapter 20-এর শিক্ষা)। আর notes.md: মাত্র ২৪ byte, কিন্তু সে পুরো একটা block (২০৬৫) দখল করেছে — block-ই সবচেয়ে ছোট একক। এই কথাটা একটু পরে বড় হয়ে ফিরবে।</p>
+  <p>তোমার Mac-এও inode নম্বর দেখা যায় (APFS-এর ভেতরের নকশা আলাদা, কিন্তু প্রতিটা file-এর একটা স্থায়ী নম্বর সেও দেয়): <code>ls -li</code>-এর প্রথম column, বা <code>stat</code>।</p>
+
+  <h3>Directory: নাম থেকে inode number-এর তালিকা</h3>
+  <p>নাম তাহলে কোথায়? <strong>Directory</strong> (folder) নিজেও একটা file, যার data হলো একটা তালিকা: "নাম → inode নম্বর"। একই image-এর root folder:</p>
+  <div class="codewrap"><pre><code>debugfs -R "ls -l /" /tmp/disk.img 2&gt;/dev/null</code></pre></div>
+  <div class="codewrap"><pre><code>      2   40755 (2)      0      0    4096 24-Sep-2026 14:01 .
+      2   40755 (2)      0      0    4096 24-Sep-2026 14:01 ..
+     11   40700 (2)      0      0   16384 24-Sep-2026 14:01 lost+found
+     12  100644 (1)      0      0      24 24-Sep-2026 14:01 notes.md
+     13  100644 (1)      0      0   300000 24-Sep-2026 14:01 photo.jpg</code></pre></div>
+  <p>প্রথম column inode নম্বর, শেষ column নাম। Root folder নিজে inode ২ (<code>.</code> মানে "আমি নিজে", <code>..</code> মানে "আমার parent" — root-এর parent সে নিজেই)। "photo.jpg" নামটা আছে root folder-এর data-য়, আর সেটা শুধু বলে "inode ১৩"।</p>
+  <p>তাহলে <code>/home/reza/notes.md</code> খুলতে kernel কী করে? এক ধাপ এক ধাপ করে হাঁটে — একে বলে <strong>path resolution</strong>: root-এর inode (সবসময় জানা, ২) → তার তালিকায় "home" খোঁজো → সেই inode → তার তালিকায় "reza" → সেই inode → তালিকায় "notes.md" → অবশেষে file-এর inode। প্রতিটা ধাপে permission দেখা হয়। Folder-এর বেলায় "x" permission-এর মানে "এর ভেতর দিয়ে হেঁটে যাওয়া যাবে" — এটা না থাকলে ভেতরের file নিজে সবার জন্য খোলা হলেও পৌঁছানো যায় না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — হাঁটার অনুমতি</div>
+    <div class="codewrap"><pre><code>docker run --rm --user 1000 node:22-bookworm-slim sh -c '
+  cd /tmp &amp;&amp; mkdir secret &amp;&amp; echo "top secret" &gt; secret/plan.txt
+  chmod 644 secret/plan.txt; ls -l secret/plan.txt
+  chmod u-x secret;          ls -ld secret
+  cat secret/plan.txt
+  chmod u+x secret;          cat secret/plan.txt'</code></pre></div>
+    <div class="codewrap"><pre><code>-rw-r--r-- 1 node node 11 Sep 24 14:02 secret/plan.txt
+drw------- 2 node node 4096 Sep 24 14:02 secret
+cat: secret/plan.txt: Permission denied
+top secret</code></pre></div>
+  </div>
+  <p><code>--user 1000</code> দিয়েছি যাতে সাধারণ user হিসেবে চলে (root permission-এর বাধা মানে না)। plan.txt নিজে সবার পড়ার জন্য খোলা (<code>rw-r--r--</code>), তবু folder থেকে <code>x</code> সরাতেই <code>Permission denied</code> — kernel path-এ হাঁটতে গিয়ে <code>secret</code>-এর ধাপেই থেমে গেছে। <code>x</code> ফেরত দিতেই পড়া গেল।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 310" width="100%" role="img" aria-label="Path resolution for /photo.jpg in the ext4 image: the root directory, inode 2, holds a list of names and inode numbers; photo.jpg maps to inode 13; inode 13 holds size, permissions, link count and the extent 0-73 to blocks 2066-2139; those disk blocks hold the file's bytes">
+      <defs>
+        <marker id="c22f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c22f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="30" class="t-h t-s">① directory "/" (inode 2): its data is a list</text>
+      <rect x="24" y="44" width="230" height="168" rx="8" class="b-k"/>
+      <text x="40" y="70" class="t-m t-s">name</text>
+      <text x="238" y="70" text-anchor="end" class="t-m t-s">inode</text>
+      <text x="40" y="96" class="mono">.</text><text x="238" y="96" text-anchor="end" class="mono">2</text>
+      <text x="40" y="120" class="mono">lost+found</text><text x="238" y="120" text-anchor="end" class="mono">11</text>
+      <text x="40" y="144" class="mono">notes.md</text><text x="238" y="144" text-anchor="end" class="mono">12</text>
+      <rect x="32" y="154" width="214" height="26" rx="4" class="b-u"/>
+      <text x="40" y="172" class="mono">photo.jpg</text><text x="238" y="172" text-anchor="end" class="mono">13</text>
+
+      <line x1="246" y1="167" x2="300" y2="120" class="ln-u" marker-end="url(#c22f1-u)"/>
+
+      <text x="304" y="30" class="t-h t-s">② inode 13 (no name inside)</text>
+      <rect x="304" y="44" width="230" height="168" rx="8" class="b"/>
+      <text x="320" y="72" class="mono">type    regular file</text>
+      <text x="320" y="96" class="mono">size    300000</text>
+      <text x="320" y="120" class="mono">mode    rw-r--r--</text>
+      <text x="320" y="144" class="mono">links   1</text>
+      <rect x="312" y="154" width="214" height="44" rx="4" class="b-ok"/>
+      <text x="320" y="172" class="mono">extent  (0-73):</text>
+      <text x="320" y="190" class="mono">        2066-2139</text>
+
+      <line x1="526" y1="176" x2="582" y2="176" class="ln" marker-end="url(#c22f1-a)"/>
+
+      <text x="584" y="30" class="t-h t-s">③ disk blocks</text>
+      <rect x="584" y="130" width="40" height="92" rx="3" class="b-m"/>
+      <text x="604" y="240" text-anchor="middle" class="mono">2065</text>
+      <rect x="628" y="130" width="148" height="92" rx="3" class="b-ok"/>
+      <text x="702" y="172" text-anchor="middle" class="t-s">74 blocks</text>
+      <text x="702" y="192" text-anchor="middle" class="t-m t-s">back to back</text>
+      <text x="632" y="240" class="mono">2066</text>
+      <text x="776" y="240" text-anchor="end" class="mono">2139</text>
+      <text x="584" y="112" class="t-m t-s">(2065 = notes.md)</text>
+
+      <text x="24" y="270" class="t-s">/home/reza/notes.md: repeat ① for "/", "home", "reza" — one lookup and one permission check per step</text>
+      <text x="24" y="294" class="t-m t-s">numbers are from the debugfs output above</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption"><code>/photo.jpg</code> খোলার পুরো পথ, ওপরের <code>debugfs</code>-এর আসল সংখ্যা দিয়ে। নাম থাকে folder-এর তালিকায় (①), file-এর সব তথ্য থাকে inode-এ (②), আর inode-এর extent বলে data disk-এর কোথায় (③)। লম্বা path মানে ① ধাপটা প্রতিটা folder-এর জন্য আবার।</p>
+
+  <h3>Hard link, symlink, আর মুছে ফেলা আসলে কী</h3>
+  <p>নাম যেহেতু শুধু একটা তালিকার লাইন, একই inode-এর জন্য দুইটা লাইন থাকলে কী? কোনো সমস্যা নেই — এটাই <strong>hard link</strong>: একই file, দুইটা নাম। আর <strong>symbolic link</strong> (symlink) সম্পূর্ণ আলাদা জিনিস: নিজের inode-ওয়ালা একটা ছোট্ট file, যার ভেতরে শুধু আরেকটা path লেখা থাকে। Kernel symlink পেলে সেই path ধরে আবার হাঁটে।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — hard link আর symlink (macOS বা Linux)</div>
+    <div class="codewrap"><pre><code>echo "hello" &gt; notes.md
+ln notes.md hard.md          # hard link: একই inode-এ দ্বিতীয় নাম
+ln -s notes.md soft.md       # symlink: "notes.md" লেখা একটা নতুন file
+ls -li notes.md hard.md soft.md
+rm notes.md
+cat hard.md; cat soft.md</code></pre></div>
+    <div class="codewrap"><pre><code>120356818 -rw-r--r--@ 2 mostofareza  wheel  6 Sep 24 20:00 hard.md
+120356818 -rw-r--r--@ 2 mostofareza  wheel  6 Sep 24 20:00 notes.md
+120356821 lrwxr-xr-x@ 1 mostofareza  wheel  8 Sep 24 20:00 soft.md -&gt; notes.md
+hello
+cat: soft.md: No such file or directory</code></pre></div>
+  </div>
+  <p>hard.md আর notes.md-এর inode নম্বর হুবহু এক (১২০৩৫৬৮১৮), আর তৃতীয় column-এর <code>2</code> হলো link count — দুইটা নাম এই inode-কে দেখায়। soft.md-এর inode আলাদা, size ৮ byte — "notes.md" লেখাটার দৈর্ঘ্য। তারপর <code>rm notes.md</code>: hard.md দিয়ে file দিব্যি পড়া গেল, কিন্তু symlink ভেঙে গেল, কারণ সে যে নাম ধরে হাঁটে সেটা আর নেই।</p>
+  <p>এর মানে <code>rm</code> file মোছে না — একটা নাম মোছে। System call-টার নামও তাই <code>unlink</code>। Kernel inode আর তার block গুলো আসলে তখনই ছাড়ে যখন দুইটা শর্তই পূরণ হয়: link count শূন্য, <em>এবং</em> কোনো process-এর কাছে file-টা আর খোলা নেই। দ্বিতীয় শর্তটা production-এর একটা ক্লাসিক ধাঁধার জন্ম দেয় — disk ভরা, অথচ কোনো বড় file খুঁজে পাওয়া যাচ্ছে না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — deleted.js</div>
+    <div class="codewrap"><pre><code>// deleted.js — file মুছে ফেলা হয়েছে, কিন্তু fd এখনো খোলা
+const fs = require('fs');
+const { execSync } = require('child_process');
+const df = () =&gt; execSync("df -m / | tail -1 | awk '{print $3}'").toString().trim() + ' MB used';
+
+console.log('start        :', df());
+const fd = fs.openSync('big.log', 'w');
+fs.writeSync(fd, Buffer.alloc(500 * 1024 * 1024, 1));   // 500 MB-র একটা "log"
+fs.fsyncSync(fd);
+console.log('after write  :', df());
+fs.unlinkSync('big.log');                                // rm big.log
+console.log('after unlink :', df(), '| file exists?', fs.existsSync('big.log'));
+console.log(execSync(`ls -l /proc/${process.pid}/fd | grep deleted`).toString().trim());
+fs.closeSync(fd);
+console.log('after close  :', df());</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim node /w/deleted.js</code></pre></div>
+    <div class="codewrap"><pre><code>start        : 22585 MB used
+after write  : 23085 MB used
+after unlink : 23085 MB used | file exists? false
+l-wx------ 1 root root 64 Sep 24 14:01 18 -&gt; /root/big.log (deleted)
+after close  : 22585 MB used</code></pre></div>
+  </div>
+  <p>File মুছে ফেলার পরেও disk-এর ৫০০ MB দখলে, কারণ fd 18 এখনো খোলা; <code>/proc/&lt;pid&gt;/fd</code>-এ সেটা <code>(deleted)</code> চিহ্ন নিয়ে দেখা যায়। fd বন্ধ করতেই জায়গা ফেরত। বাস্তবে এটা ঘটে যখন কেউ disk খালি করতে একটা চলমান server-এর বিশাল log file <code>rm</code> করে দেয় — server তখনো সেই fd-তে লিখছে, <code>du</code> (যে নাম ধরে ধরে গোনে) কিছু পায় না, <code>df</code> (যে filesystem-এর মোট হিসাব দেখে) বলে ভরা। সমাধান: process restart, বা file মোছার বদলে খালি করা (<code>: &gt; app.log</code>, যেটা নাম রেখে size শূন্য করে)।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="A directory with three entries: notes.md and hard.md both point to inode 120356818, which has link count 2 and holds the data hello; soft.md points to its own inode 120356821 whose content is the path notes.md, which is looked up by name again">
+      <defs>
+        <marker id="c22f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c22f2-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="24" y="26" class="t-h t-s">directory entries</text>
+      <rect x="24" y="44" width="200" height="40" rx="6" class="b-k"/>
+      <text x="40" y="69" class="mono">notes.md → 120356818</text>
+      <rect x="24" y="100" width="200" height="40" rx="6" class="b-k"/>
+      <text x="40" y="125" class="mono">hard.md  → 120356818</text>
+      <rect x="24" y="170" width="200" height="40" rx="6" class="b-k"/>
+      <text x="40" y="195" class="mono">soft.md  → 120356821</text>
+
+      <text x="360" y="26" class="t-h t-s">inodes</text>
+      <rect x="360" y="44" width="220" height="96" rx="8" class="b-ok"/>
+      <text x="376" y="68" class="mono">inode 120356818</text>
+      <text x="376" y="90" class="t-s">regular file, links: 2</text>
+      <text x="376" y="112" class="t-m t-s">data: "hello"</text>
+      <rect x="360" y="160" width="220" height="70" rx="8" class="b"/>
+      <text x="376" y="184" class="mono">inode 120356821</text>
+      <text x="376" y="206" class="t-s">symlink, data: "notes.md"</text>
+
+      <line x1="224" y1="64" x2="358" y2="80" class="ln-u" marker-end="url(#c22f2-u)"/>
+      <line x1="224" y1="120" x2="358" y2="104" class="ln-u" marker-end="url(#c22f2-u)"/>
+      <line x1="224" y1="190" x2="358" y2="192" class="ln-u" marker-end="url(#c22f2-u)"/>
+      <path d="M580 195 H640 V38 H124 V42" class="ln dash" marker-end="url(#c22f2-a)"/>
+      <text x="652" y="120" class="t-s">looks up</text>
+      <text x="652" y="138" class="t-s">the NAME</text>
+      <text x="652" y="156" class="t-s">"notes.md"</text>
+      <text x="652" y="174" class="t-m t-s">again</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">Hard link মানে একই inode-এ দ্বিতীয় নাম — তাই link count ২, আর একটা নাম মুছলেও অন্যটা দিয়ে file পাওয়া যায়। Symlink-এর নিজের inode, আর তার data একটা path; kernel সেই <em>নাম</em> ধরে আবার খোঁজে (dashed তীর) — নামটা মুছলে symlink ভেঙে যায়।</p>
+
+  <h3>ছোট file-এর দাম: block আর inode</h3>
+  <p>notes.md-এর ২৪ byte একটা পুরো 4 KB block নিয়েছিল। এক-দুইটা file-এ কিছু যায় আসে না, কিন্তু <code>node_modules</code>-এর কথা ভাবো — লাখখানেক ছোট file খুব সাধারণ ঘটনা:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — smallfiles.js</div>
+    <div class="codewrap"><pre><code>// smallfiles.js — ১,০০,০০০টা ১০ byte-এর file
+const fs = require('fs');
+fs.mkdirSync('many', { recursive: true });
+for (let i = 0; i &lt; 100000; i++) fs.writeFileSync(`many/f${i}.txt`, '0123456789');</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim sh -c '
+  df -i / | tail -1
+  node /w/smallfiles.js
+  df -i / | tail -1
+  du -sh many; du -sh --apparent-size many
+  stat -c "%s bytes, %b blocks of %B" many/f1.txt'</code></pre></div>
+    <div class="codewrap"><pre><code>overlay        67108864 865607 66243257    2% /
+overlay        67108864 965607 66143257    2% /
+394M	many
+3.8M	many
+10 bytes, 8 blocks of 512</code></pre></div>
+  </div>
+  <p>Data মোট ~১ MB (folder-এর নিজের তালিকা সহ ৩.৮ MB — <code>--apparent-size</code> মানে file-গুলোর আসল দৈর্ঘ্যের যোগফল), কিন্তু disk-এ খরচ ৩৯৪ MB — একশো গুণ। প্রতিটা ১০ byte-এর file ৮টা ৫১২-byte-এর একক, মানে 4 KB নিয়েছে। আর <code>df -i</code>-এর তৃতীয় column (ব্যবহৃত inode) ঠিক ১,০০,০০০ বেড়েছে। ext4 filesystem বানানোর সময়ই ঠিক করে ফেলে মোট কয়টা inode থাকবে (এখানে ৬.৭ কোটি); অসংখ্য ছোট file-এ inode আগে ফুরিয়ে যেতে পারে — তখন <code>df -h</code> বলে জায়গা আছে, অথচ নতুন file বানাতে গেলে <code>No space left on device</code>। একই script আমার Mac-এর APFS-এও <code>du</code>-তে ৩৯১ MB দেখিয়েছে। (কাজ শেষে <code>rm -rf many</code>।)</p>
+
+  <h3>Crash-এর পরে: journaling</h3>
+  <p>একটা নতুন file বানাতে filesystem-কে disk-এর কয়েকটা আলাদা জায়গায় লিখতে হয়: কোন inode খালি তার হিসাব, inode নিজে, folder-এর তালিকায় নতুন লাইন, কোন block খালি তার হিসাব, আর data block। এগুলো একসাথে হয় না — একটার পর একটা। মাঝখানে power গেলে? হয়তো inode "ব্যবহৃত" দাগানো হয়েছে কিন্তু কোনো folder-এ তার নাম নেই (জায়গা চিরতরে হারানো), বা নাম আছে কিন্তু inode-টা আবর্জনা। Filesystem-এর নিজের হিসাব অসঙ্গত হয়ে যায়। পুরনো সমাধান ছিল boot-এর সময় পুরো disk স্ক্যান করে গরমিল খোঁজা (<code>fsck</code>) — বড় disk-এ ঘণ্টার পর ঘণ্টা।</p>
+  <p>ext4-এর সমাধান <strong>journal</strong>: disk-এর একটা আলাদা জায়গা, একটা ডায়েরির মতো। কোনো পরিবর্তন আসল জায়গায় লেখার আগে filesystem পুরো পরিকল্পনাটা journal-এ লেখে, শেষে একটা "commit" দাগ দেয়, তারপর আসল জায়গাগুলোয় লেখে। Crash-এর পরে শুধু journal পড়লেই চলে: commit দাগ আছে এমন পরিকল্পনা আবার চালাও, দাগ নেই এমনগুলো ফেলে দাও। পুরো disk স্ক্যান লাগে না। আমাদের image-এও journal আছে:</p>
+  <div class="codewrap"><pre><code>dumpe2fs -h /tmp/disk.img 2&gt;/dev/null | grep -E "features|Total journal size"</code></pre></div>
+  <div class="codewrap"><pre><code>Filesystem features:      has_journal ext_attr resize_inode dir_index filetype extent 64bit flex_bg ...
+Total journal size:       4096k</code></pre></div>
+  <p>একটা জরুরি সীমা: ext4-এর default mode-এ journal শুধু filesystem-এর নিজের হিসাব (metadata — inode, folder, খালি-block-এর তালিকা) রক্ষা করে, তোমার file-এর ভেতরের data না। Crash-এর পরে filesystem গোছানো থাকবে, কিন্তু তোমার শেষ কয়েকটা write হারাতে পারে — তার জন্য Chapter 21-এর fsync আর temp file + rename এখনো লাগবে।</p>
+  <p>Mac-এর APFS অন্য পথ নেয়: <strong>copy-on-write</strong> — কোনো block কখনো জায়গায় বসে বদলায় না; বদলানো অংশ নতুন জায়গায় লেখা হয়, তারপর এক ধাপে পুরনোর বদলে নতুনটাকে দেখানো হয়। এর একটা মজার ফাউ হলো <strong>clone</strong>: file copy করার সময় data copy না করে দুইটা file-কে একই block দেখাও; পরে কেউ বদলালে শুধু বদলানো block-এর নতুন কপি হয়।</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (macOS) — clone বনাম copy</div>
+    <div class="codewrap"><pre><code># Chapter 20-এর 2 GB test.bin (বা যেকোনো বড় file)
+df -m . | tail -1 | awk '{print $3}'
+/usr/bin/time -p cp -c test.bin clone.bin    # -c = clone
+df -m . | tail -1 | awk '{print $3}'
+/usr/bin/time -p cp test.bin copy.bin
+df -m . | tail -1 | awk '{print $3}'
+rm clone.bin copy.bin</code></pre></div>
+    <p>আমার output: শুরুতে ৩,৩৫,৪০৬ MB ব্যবহৃত; clone-এ <code>real 0.00</code>, ব্যবহৃত জায়গা এক MB-ও বাড়েনি; সাধারণ copy-তে <code>real 0.72</code> (আরেকবার ১.৯৪), আর ব্যবহার বেড়েছে ঠিক ২,০৪৮ MB। (Node-এর <code>fs.copyFileSync</code> আমার Mac-এ clone করেনি — <code>COPYFILE_FICLONE_FORCE</code> দিলে <code>ENOSYS</code> দেয়।)</p>
+  </div>
+
+  <h3>VFS: একই read(), অনেক রকম filesystem</h3>
+  <p>Chapter 21-এর সবচেয়ে উপরের kernel স্তর ছিল VFS। এখন বোঝা যায় কেন লাগে: একটা Linux machine-এ একসাথে অনেক রকম filesystem চলে, আর কিছু কিছু কোনো disk-এই থাকে না:</p>
+  <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim sh -c '
+  stat -f -c "%-10n %T" / /proc /dev/shm /sys
+  ls -l /proc/uptime; cat /proc/uptime'</code></pre></div>
+  <div class="codewrap"><pre><code>/          overlayfs
+/proc      proc
+/dev/shm   tmpfs
+/sys       sysfs
+-r--r--r-- 1 root root 0 Sep 24 14:02 /proc/uptime
+84450.59 1010619.05</code></pre></div>
+  <p><code>/proc/uptime</code>-এর size শূন্য, অথচ পড়লে লেখা আসে। কারণ <code>proc</code> একটা নকল filesystem: কেউ read করলে kernel সেই মুহূর্তে উত্তর বানিয়ে দেয় (এখানে VM কত সেকেন্ড ধরে চলছে)। বইয়ে এতদিন যত <code>/proc/&lt;pid&gt;/maps</code>, <code>/proc/meminfo</code> পড়েছ — সব এভাবেই। <code>tmpfs</code> পুরোটাই RAM-এ থাকে; <code>overlayfs</code> কয়েকটা folder-কে স্তরে স্তরে জুড়ে একটা দেখায় — Docker image-এর স্তর এভাবেই কাজ করে (Chapter 36)।</p>
+  <p>VFS এদের সবার জন্য একটা সাধারণ চুক্তি ঠিক করে দেয় — open, read, write, lookup-এর মতো কাজের একটা তালিকা — আর প্রতিটা filesystem নিজের মতো করে সেগুলো বানায়। TypeScript-এর একটা <code>interface</code> আর তার কয়েকটা আলাদা <code>class</code> implementation-এর মতো: তোমার code শুধু interface চেনে, পেছনে ext4 না proc না tmpfs, জানার দরকার নেই।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>rm</code> করলেই disk-এর জায়গা খালি।" <code>rm</code> শুধু folder-এর তালিকা থেকে একটা নাম সরায়। জায়গা ফেরত আসে যখন inode-এর আর কোনো নাম নেই <em>এবং</em> কোনো process সেটা খুলে রাখেনি — deleted.js-এ fd বন্ধ না হওয়া পর্যন্ত ৫০০ MB আটকে ছিল। Hard link থাকলেও একই কথা: শেষ নামটা না যাওয়া পর্যন্ত file বেঁচে থাকে।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Filesystem হলো block-এর সমুদ্রের উপর বসানো একটা database। Inode = একটা file-এর record (নাম ছাড়া সবকিছু, আর data কোথায় তার extent)। Directory = নাম → inode নম্বরের একটা তালিকা, আর path খোলা মানে এই তালিকা ধরে ধাপে ধাপে হাঁটা। নাম, inode আর block তিনটা আলাদা জিনিস বলেই hard link, "মুছেও জায়গা ফেরত না আসা", আর এক ধাপের rename সম্ভব। Journal (বা copy-on-write) নিশ্চিত করে যে crash-এর পরেও এই database-এর নিজের হিসাব ঠিক থাকে — তোমার data-র দায়িত্ব তবু তোমার।</p>
   </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>inode-এ কী থাকে, আর কী থাকে <em>না</em>?</li>
-      <li>Directory-কে "special file" বলা হয় কেন?</li>
-      <li>VFS কী সমস্যা solve করে?</li>
+      <li>Inode-এ কী কী থাকে, আর কী থাকে না? <code>debugfs</code>-এর <code>(0-73):2066-2139</code> লাইনটার মানে কী, আর extent কেন একেকটা block-এর তালিকার চেয়ে ভালো?</li>
+      <li><code>/home/reza/notes.md</code> খুলতে kernel ধাপে ধাপে কী করে? Folder-এর <code>x</code> permission সরালে ভেতরের খোলা file-ও পড়া যায় না কেন?</li>
+      <li>Hard link আর symlink-এর পার্থক্য কী? <code>rm notes.md</code>-এর পর hard.md কাজ করল কিন্তু soft.md ভাঙল কেন?</li>
+      <li>deleted.js-এ file মুছে ফেলার পরেও ৫০০ MB ফেরত এল না কেন? Production-এ <code>df</code> বলছে ভরা কিন্তু <code>du</code> কিছু পাচ্ছে না — কী খুঁজবে, আর সমাধান কী?</li>
+      <li>১,০০,০০০টা ১০ byte-এর file disk-এ ৩৯৪ MB নিল কেন? Crash-এর পরে filesystem অসঙ্গত হওয়া ঠেকাতে journal কী করে — আর কী রক্ষা করে না?</li>
     </ul>
   </div>

@@ -1,39 +1,236 @@
   <p class="part-label">PART 7 · NETWORKING AND SOCKETS</p>
-  <h2>Chapter 25 — Socket কী?</h2>
-  <p class="chap-sub">Network-কে OS যেভাবে file বানিয়ে দেয়।</p>
+  <h2>Chapter 25 — What Is a Socket?</h2>
+  <p class="chap-sub">Network card শুধু packet চেনে; তুমি চাও "ওই server-এর সাথে একটা লাইন, যেখানে byte লিখব আর পড়ব"। মাঝের এই জিনিসটা kernel বানায় — socket। IP, port, চার-মানের পরিচয়, server-এর চার ধাপ, TCP বনাম UDP, আর একই machine-এর ভেতরের socket।</p>
 
-  <h3>Abstraction-টা</h3>
-  <p>Network hardware-এর জগৎ raw packet-এর জগৎ। কিন্তু তুমি চাও "ওই server-এর সাথে একটা connection, যেখানে আমি bytes লিখবো আর পড়বো।" এই চাওয়াটার OS-দেওয়া রূপ হলো <strong>socket</strong> — network communication-এর একটা endpoint, kernel-এর তৈরি ও রক্ষণাবেক্ষণ করা একটা object।</p>
-  <p>সবচেয়ে সুন্দর অংশ: socket-ও পাও একটা <strong>file descriptor</strong> হিসেবে — file-এর মতোই (Chapter 21)! একই <code>read()</code>/<code>write()</code> চালে, একই fd table-এ বসে। Unix-এর সেই বিখ্যাত দর্শন — "everything is a file (descriptor)" — এখানে পুরো জৌলুসে।</p>
+  <p>Chapter 2-এ দেখেছি network card (<strong>NIC</strong>) একটা device, যার driver kernel-এ। তারের ওপারে data যায় ছোট ছোট টুকরোয় — <strong>packet</strong>: কয়েকশো থেকে দেড় হাজারের মতো byte, মাথায় একটা ঠিকানার লেবেল। এখন ভাবো kernel তোমাকে শুধু এটুকুই দিত: "NIC থেকে যা packet আসে নাও, যা পাঠাবে packet বানিয়ে দাও।" তাহলে প্রতিটা app-কে নিজে packet বানাতে হতো, হারানো packet আবার পাঠাতে হতো, উল্টাপাল্টা ক্রমে আসা packet সাজাতে হতো — আর সবচেয়ে বড় সমস্যা, machine-এ চলা Chrome, Slack, তোমার Node server — কোন packet কার, সেটা ঠিক করত কে? File-এর বেলায় যেমন kernel disk-এর block লুকিয়ে "file" দেয় (Chapter 21), network-এর বেলায় সে packet লুকিয়ে দেয় <strong>socket</strong>।</p>
 
-  <h3>ঠিকানা: IP + port</h3>
-  <p>একটা TCP connection-কে uniquely চেনা যায় চারটা জিনিসে: <code>(client IP, client port, server IP, server port)</code>। <strong>IP</strong> machine চেনায়, <strong>port</strong> সেই machine-এর ভিতরে কোন application চেনায়। Server একটা well-known port-এ বসে থাকে (443, 5432...); client-এর port টা OS নিজেই একটা খালি নাম্বার থেকে দিয়ে দেয় (ephemeral port)। এই চার-টুপল আলাদা হলেই connection আলাদা — এজন্যই এক server port-এ হাজারো client একসাথে ঝুলতে পারে।</p>
+  <h3>ঠিকানা: IP, port আর চার-মানের পরিচয়</h3>
+  <p>কয়েকটা শব্দ আগে ঠিক করে নিই:</p>
+  <ul>
+    <li><strong>IP address:</strong> network-এ একটা machine-এর (আসলে তার একটা network interface-এর) ঠিকানা, যেমন <code>93.184.215.14</code>। <code>127.0.0.1</code> একটা বিশেষ ঠিকানা — <strong>loopback</strong>, মানে "এই machine নিজেই"; packet কোনো তারে যায় না, kernel-এর ভেতরেই ঘুরে আসে।</li>
+    <li><strong>Port:</strong> একই machine-এর ভেতরে কোন program, সেটা বোঝানোর একটা ১৬-bit সংখ্যা (০ থেকে ৬৫,৫৩৫)। Server সাধারণত একটা চেনা port-এ বসে থাকে — HTTPS 443, Postgres 5432, তোমার dev server 3000।</li>
+    <li><strong>TCP</strong> আর <strong>UDP:</strong> packet-এর উপর বসানো দুইটা নিয়ম (<strong>protocol</strong>)। TCP দেয় একটা নির্ভরযোগ্য, ক্রম-ঠিক-রাখা byte-এর স্রোত — Chapter 26-এ তার ভেতরটা। UDP দেয় আলাদা আলাদা বার্তা, কোনো নিশ্চয়তা ছাড়া।</li>
+  </ul>
+  <p>একটা TCP connection-কে kernel চেনে চারটা মান দিয়ে: <strong>(client IP, client port, server IP, server port)</strong> — একে বলে <strong>four-tuple</strong>। Client-এর port তুমি সাধারণত বাছো না; <code>connect()</code>-এর সময় kernel একটা খালি নম্বর নিজেই দিয়ে দেয় — <strong>ephemeral port</strong>। কোন range থেকে দেবে, দেখা যায়:</p>
+  <div class="codewrap"><pre><code>sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last   # macOS
+cat /proc/sys/net/ipv4/ip_local_port_range                     # Linux</code></pre></div>
+  <p>আমার Mac-এ ৪৯১৫২ থেকে ৬৫৫৩৫; Docker-এর Linux-এ ৩২৭৬৮ থেকে ৬০৯৯৯। চারটা মানের যেকোনো একটা আলাদা হলেই connection আলাদা — তাই একই server port 8080-এ হাজারো client একসাথে থাকতে পারে, কারণ প্রত্যেকের (client IP, client port) জোড়া আলাদা।</p>
 
-  <pre class="diagram"><span class="u">Client app</span>                              <span class="u">Server app</span>
-   │ write("GET /")                          ↑ read() → "GET /"
-   ↓                                         │
-<span class="u">socket fd</span>                               <span class="u">socket fd</span>
-   ↓                                         ↑
-<span class="k">Client kernel (TCP/IP stack)</span>            <span class="k">Server kernel (TCP/IP stack)</span>
-   ↓                                         ↑
-   └───────── network (packets) ─────────────┘</pre>
-  <p class="diagram-caption">দুই পাশের application শুধু নিজ নিজ socket দেখে; packet-এর ঝামেলা পুরোটা দুই kernel-এর।</p>
+  <h3>Socket: kernel-এর object, তোমার হাতে fd</h3>
+  <p>Socket হলো kernel-এর ভেতরের একটা object — একটা connection-এর এক প্রান্ত। এর মধ্যে থাকে four-tuple, connection-এর অবস্থা, আর পাঠানো ও আসা data জমিয়ে রাখার buffer (Chapter 27)। তুমি এটা পাও একটা <strong>file descriptor</strong> হিসেবে — file-এর মতোই (Chapter 21)। একই fd table-এ বসে, <code>read()</code>/<code>write()</code> দিয়েই কাজ চলে। Unix-এর পুরনো দর্শন "everything is a file" এখানে সবচেয়ে কাজের: যে code একটা fd থেকে পড়তে জানে, সে file, pipe, socket — সবখান থেকে পড়তে পারে।</p>
+  <p>একটা server আর তিনটা client একই Node process-এ চালিয়ে kernel-এর চোখে কী কী আছে দেখি। <code>ss</code> হলো Linux-এর socket দেখার tool (iproute2 package-এ):</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — sockets.js</div>
+    <div class="codewrap"><pre><code>// sockets.js — একটা server, তিনটা client (সবাই এক process-এ, দেখার সুবিধার জন্য)
+const net = require('net');
+const fs = require('fs');
+const { execSync } = require('child_process');
 
-  <h3>Server side-এর জীবনচক্র</h3>
-  <p>Server-এ socket-এর ব্যবহারটা একটু আলাদা ছন্দে চলে — নামগুলো চিনে রাখো, সামনে লাগবে:</p>
+const server = net.createServer(() =&gt; {});
+server.listen(8080, '127.0.0.1', () =&gt; {
+  let n = 0;
+  for (let i = 0; i &lt; 3; i++)
+    net.connect(8080, '127.0.0.1', () =&gt; { if (++n === 3) setTimeout(show, 100); });
+});
+
+function show() {
+  console.log(execSync("ss -tan '( sport = :8080 or dport = :8080 )'").toString());
+  for (const fd of fs.readdirSync('/proc/self/fd')) {        // এই process-এর খোলা fd গুলো
+    let target = '';
+    try { target = fs.readlinkSync(`/proc/self/fd/${fd}`); } catch {}
+    if (target.startsWith('socket:')) console.log(`fd ${fd} -&gt; ${target}`);
+  }
+  process.exit(0);
+}</code></pre></div>
+    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq iproute2 &gt;/dev/null
+  node /w/sockets.js'</code></pre></div>
+    <div class="codewrap"><pre><code>State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+LISTEN 0      511        127.0.0.1:8080       0.0.0.0:*
+ESTAB  0      0          127.0.0.1:8080     127.0.0.1:36666
+ESTAB  0      0          127.0.0.1:36666    127.0.0.1:8080
+ESTAB  0      0          127.0.0.1:8080     127.0.0.1:36660
+ESTAB  0      0          127.0.0.1:8080     127.0.0.1:36680
+ESTAB  0      0          127.0.0.1:36660    127.0.0.1:8080
+ESTAB  0      0          127.0.0.1:36680    127.0.0.1:8080
+
+fd 18 -&gt; socket:[2248425]
+fd 19 -&gt; socket:[2248426]
+fd 20 -&gt; socket:[2248427]
+fd 21 -&gt; socket:[2248428]
+fd 22 -&gt; socket:[2248429]
+fd 23 -&gt; socket:[2248430]
+fd 24 -&gt; socket:[2248431]</code></pre></div>
+  </div>
+  <p>তিনটা connection, অথচ সাতটা socket। একটা <code>LISTEN</code> — server-এর "দরজা", যেটা কোনো নির্দিষ্ট client-এর সাথে যুক্ত না (peer <code>*</code>)। তারপর প্রতিটা connection-এর দুই প্রান্ত: client-এর দিকে local port ৩৬৬৬০/৩৬৬৬৬/৩৬৬৮০ (kernel-এর দেওয়া ephemeral port), আর server-এর দিকে local port 8080 — তিনটাই 8080, শুধু peer আলাদা। আর fd table-এ ঠিক সাতটা fd, প্রতিটা <code>socket:[…]</code> — বন্ধনীর সংখ্যাটা kernel-এর ভেতরে ওই socket-এর নিজের নম্বর। Socket সত্যিই fd-ই।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 380" width="100%" role="img" aria-label="Two machines. On each, an application in user space holds a socket file descriptor; below the user-kernel boundary the kernel's TCP/IP stack and NIC driver turn bytes into packets. Packets cross the network between the two NICs. The connection is identified by the four-tuple client IP, client port, server IP, server port">
+      <defs>
+        <marker id="c25f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c25f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c25f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="170" y="26" text-anchor="middle" class="t-h t-s">client machine</text>
+      <text x="630" y="26" text-anchor="middle" class="t-h t-s">server machine</text>
+
+      <rect x="60" y="40" width="220" height="44" rx="8" class="b-u"/>
+      <text x="170" y="67" text-anchor="middle" class="mono">write(fd, "GET /")</text>
+      <rect x="520" y="40" width="220" height="44" rx="8" class="b-u"/>
+      <text x="630" y="67" text-anchor="middle" class="mono">read(fd) → "GET /"</text>
+      <rect x="100" y="100" width="140" height="34" rx="6" class="b-u"/>
+      <text x="170" y="122" text-anchor="middle" class="t-s">socket fd</text>
+      <rect x="560" y="100" width="140" height="34" rx="6" class="b-u"/>
+      <text x="630" y="122" text-anchor="middle" class="t-s">socket fd</text>
+      <line x1="170" y1="84" x2="170" y2="98" class="ln-u" marker-end="url(#c25f1-u)"/>
+      <line x1="630" y1="98" x2="630" y2="86" class="ln-u" marker-end="url(#c25f1-u)"/>
+
+      <line x1="20" y1="152" x2="780" y2="152" class="ln-k dash"/>
+      <text x="400" y="146" text-anchor="middle" class="t-k t-s">user ↑ / kernel ↓</text>
+
+      <rect x="60" y="166" width="220" height="70" rx="8" class="b-k"/>
+      <text x="170" y="192" text-anchor="middle" class="t-k t-s">TCP/IP stack</text>
+      <text x="170" y="214" text-anchor="middle" class="t-m t-s">bytes ↔ packets, retries, order</text>
+      <rect x="520" y="166" width="220" height="70" rx="8" class="b-k"/>
+      <text x="630" y="192" text-anchor="middle" class="t-k t-s">TCP/IP stack</text>
+      <text x="630" y="214" text-anchor="middle" class="t-m t-s">which socket is this for?</text>
+      <line x1="170" y1="134" x2="170" y2="162" class="ln-k" marker-end="url(#c25f1-k)"/>
+      <line x1="630" y1="162" x2="630" y2="136" class="ln-k" marker-end="url(#c25f1-k)"/>
+
+      <rect x="100" y="254" width="140" height="34" rx="6" class="b-k"/>
+      <text x="170" y="276" text-anchor="middle" class="t-s">NIC driver</text>
+      <rect x="560" y="254" width="140" height="34" rx="6" class="b-k"/>
+      <text x="630" y="276" text-anchor="middle" class="t-s">NIC driver</text>
+      <line x1="170" y1="236" x2="170" y2="250" class="ln-k" marker-end="url(#c25f1-k)"/>
+      <line x1="630" y1="250" x2="630" y2="238" class="ln-k" marker-end="url(#c25f1-k)"/>
+
+      <path d="M240 271 C 330 330, 470 330, 556 271" class="ln dash" marker-end="url(#c25f1-a)"/>
+      <rect x="330" y="300" width="22" height="14" rx="2" class="b"/>
+      <rect x="389" y="306" width="22" height="14" rx="2" class="b"/>
+      <rect x="448" y="300" width="22" height="14" rx="2" class="b"/>
+      <text x="400" y="290" text-anchor="middle" class="t-m t-s">network: independent packets</text>
+      <text x="400" y="352" text-anchor="middle" class="mono">(10.0.0.5, 49731, 93.184.215.14, 443)</text>
+      <text x="400" y="372" text-anchor="middle" class="t-m t-s">the four-tuple that names this connection</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">দুই পাশের app শুধু নিজের socket fd দেখে আর byte লেখে বা পড়ে। Byte-কে packet বানানো, হারালে আবার পাঠানো, ক্রম ঠিক রাখা, আর আসা packet কোন socket-এর তা four-tuple দেখে ঠিক করা — সবটা দুই kernel-এর কাজ, user/kernel সীমানার নিচে। নিচের four-tuple-এর সংখ্যা গুলো উদাহরণ।</p>
+
+  <h3>Server-এর চার ধাপ</h3>
+  <p>Client-এর কাজ সরল: socket বানাও, <code>connect()</code>। Server-এর ছন্দ আলাদা, চার ধাপে। Node-এর <code>net.createServer().listen()</code> ভেতরে ঠিক কী চায়, strace-এ দেখি:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT (Linux / Docker) — একটা server-এর system call</div>
+    <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-bookworm-slim bash
+apt-get update -qq &amp;&amp; apt-get install -y -qq strace
+
+cat &gt; tiny.js &lt;&lt;'EOF'
+const net = require('net');
+const s = net.createServer(c =&gt; { c.end('hi\n'); s.close(); });
+s.listen(8080, '127.0.0.1', () =&gt; net.connect(8080, '127.0.0.1').resume());
+EOF
+strace -f -e trace=socket,setsockopt,bind,listen,accept4 node tiny.js 2&gt;&amp;1 | grep -E "AF_INET|setsockopt|bind|listen|accept4"</code></pre></div>
+    <div class="codewrap"><pre><code>[pid   131] socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 18
+[pid   131] setsockopt(18, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+[pid   131] bind(18, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
+[pid   131] listen(18, 511)             = 0
+[pid   131] socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 19
+[pid   131] accept4(18, NULL, NULL, SOCK_CLOEXEC|SOCK_NONBLOCK) = 20</code></pre></div>
+  </div>
   <ol>
-    <li><code>socket()</code> — একটা socket বানাও</li>
-    <li><code>bind()</code> — "আমি port 8080-এর মালিক"</li>
-    <li><code>listen()</code> — "connection নিতে প্রস্তুত" (এটা <em>listening socket</em>)</li>
-    <li><code>accept()</code> — একেকটা আগত connection-এর জন্য <em>নতুন একটা socket</em> ফেরত দেয় — data আদান-প্রদান ওটাতেই</li>
+    <li><strong><code>socket()</code>:</strong> kernel একটা খালি socket object বানায়, fd 18 দেয়। <code>AF_INET</code> মানে IPv4, <code>SOCK_STREAM</code> মানে TCP। <code>SOCK_NONBLOCK</code> — Node সব socket non-blocking করে রাখে, কারণ সে এদের epoll দিয়ে সামলায় (Chapter 28–29)।</li>
+    <li><strong><code>bind()</code>:</strong> "127.0.0.1-এর port 8080 আমার।" অন্য কেউ আগে নিয়ে থাকলে এখানেই চেনা error <code>EADDRINUSE</code>। (আগের <code>setsockopt(SO_REUSEADDR)</code> একটা অনুমতি — server restart-এর পর আগের connection-এর শেষ চিহ্ন থাকলেও port আবার নেওয়া যাবে; Chapter 26।)</li>
+    <li><strong><code>listen(18, 511)</code>:</strong> socket-কে দরজা বানাও। এই মুহূর্ত থেকে kernel নিজে থেকে connection নিতে শুরু করে। ৫১১ হলো Node-এর default <strong>backlog</strong> — accept-এর অপেক্ষায় কতগুলো connection জমতে পারবে (Chapter 26); ওপরের <code>ss</code>-এর <code>LISTEN</code> লাইনের <code>Send-Q 511</code> এটাই।</li>
+    <li><strong><code>accept4()</code>:</strong> জমে থাকা একটা connection তুলে নাও — kernel তার জন্য <em>নতুন</em> একটা socket দেয়, fd 20। Data আদান-প্রদান চলে এই নতুন fd-তে; fd 18 দরজা হয়েই থাকে, পরের জনের জন্য। (মাঝের fd 19 আমাদের client-এর socket।)</li>
   </ol>
-  <p>খেয়াল করো: listening socket আর connection socket আলাদা জিনিস। <code>app.listen(8080)</code> লেখার সময় Node ভিতরে ঠিক এই চারটা ধাপই চালায়।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 250" width="100%" role="img" aria-label="One listening socket on 127.0.0.1 port 8080 hands out a new connected socket for each client through accept. Each connected socket has local port 8080 and a different peer port: 36660, 36666 and 36680">
+      <defs>
+        <marker id="c25f2-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="30" y="80" width="220" height="80" rx="10" class="b-k"/>
+      <text x="140" y="108" text-anchor="middle" class="t-k t-s">listening socket (LISTEN)</text>
+      <text x="140" y="130" text-anchor="middle" class="mono">127.0.0.1:8080</text>
+      <text x="140" y="150" text-anchor="middle" class="t-m t-s">peer: nobody — it's a door</text>
+
+      <rect x="440" y="24" width="330" height="50" rx="8" class="b-u"/>
+      <text x="456" y="46" class="t-u t-s">connected socket (ESTAB)</text>
+      <text x="456" y="64" class="mono">8080 ↔ 127.0.0.1:36660</text>
+      <rect x="440" y="96" width="330" height="50" rx="8" class="b-u"/>
+      <text x="456" y="118" class="t-u t-s">connected socket (ESTAB)</text>
+      <text x="456" y="136" class="mono">8080 ↔ 127.0.0.1:36666</text>
+      <rect x="440" y="168" width="330" height="50" rx="8" class="b-u"/>
+      <text x="456" y="190" class="t-u t-s">connected socket (ESTAB)</text>
+      <text x="456" y="208" class="mono">8080 ↔ 127.0.0.1:36680</text>
+
+      <line x1="250" y1="110" x2="436" y2="50" class="ln-k" marker-end="url(#c25f2-k)"/>
+      <line x1="250" y1="120" x2="436" y2="121" class="ln-k" marker-end="url(#c25f2-k)"/>
+      <line x1="250" y1="130" x2="436" y2="192" class="ln-k" marker-end="url(#c25f2-k)"/>
+      <text x="344" y="112" text-anchor="middle" class="t-k t-s">accept()</text>
+      <text x="30" y="200" class="t-m t-s">same local port 8080;</text>
+      <text x="30" y="218" class="t-m t-s">the peer port tells them apart</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা দরজা, অনেক ঘর। Listening socket কারো সাথে যুক্ত না; প্রতিটা <code>accept()</code> একজন client-এর জন্য নতুন একটা connected socket দেয়। সবার local port ৮০৮০, peer port আলাদা — ওপরের <code>ss</code>-এর আসল সংখ্যা।</p>
+
+  <h3>TCP বনাম UDP</h3>
+  <p>TCP-তে কথা বলার আগে একটা connection বানাতে হয় — দুই kernel আগে একমত হয় (Chapter 26)। UDP-তে কোনো connection নেই: প্রতিটা বার্তা (<strong>datagram</strong>) আলাদা packet হয়ে ঠিকানায় রওনা দেয়; পৌঁছাল কি না, কোন ক্রমে পৌঁছাল — UDP কিছুই দেখে না। পার্থক্যটা সবচেয়ে পরিষ্কার এমন একটা port-এ যেখানে কেউ শুনছে না:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — udp-vs-tcp.js</div>
+    <div class="codewrap"><pre><code>// udp-vs-tcp.js — port 9999-এ কেউ শুনছে না; দুই protocol কী বলে?
+const dgram = require('dgram');
+const net = require('net');
+
+const u = dgram.createSocket('udp4');
+u.send('hello', 9999, '127.0.0.1', err =&gt; {
+  console.log('UDP send:', err ? err.code : 'no error (sent into the void)');
+  u.close();
+  net.connect(9999, '127.0.0.1')
+     .on('error', e =&gt; console.log('TCP connect:', e.code));
+});</code></pre></div>
+    <div class="codewrap"><pre><code>UDP send: no error (sent into the void)
+TCP connect: ECONNREFUSED</code></pre></div>
+  </div>
+  <p>UDP-র send সফল — বার্তা বেরিয়ে গেছে, কেউ নিল কি না তার খবর রাখার কোনো ব্যবস্থাই নেই। TCP সাথে সাথে জানিয়ে দিয়েছে কেউ শুনছে না (<code>ECONNREFUSED</code>), কারণ connect-এর সময় অপর পাশের kernel-এর উত্তর লাগে। UDP সস্তা আর দেরিহীন, তাই সেখানে চলে যেখানে একটা হারানো বার্তা আবার পাঠানোর চেয়ে পরেরটা পাঠানোই ভালো, বা যেখানে app নিজের মতো করে নির্ভরযোগ্যতা বানাতে চায়: DNS lookup, video call, online game, আর HTTP/3 (যার নিচের QUIC protocol UDP-র উপর নিজস্ব নির্ভরযোগ্যতা বানায়)।</p>
+
+  <h3>একই machine-এ: Unix domain socket</h3>
+  <p>দুইটা process যদি একই machine-এ থাকে, তাহলে IP আর port-এর ঝামেলা কেন? <strong>Unix domain socket</strong>-এর ঠিকানা একটা file path; data কোনো network stack-এর ভেতর দিয়ে যায় না, kernel এক process-এর buffer থেকে আরেক process-এর buffer-এ সরাসরি দেয়। API হুবহু একই — Node-এ port-এর জায়গায় path দিলেই হলো:</p>
+  <div class="box lab">
+    <div class="box-title">EXPERIMENT — unixsock.js</div>
+    <div class="codewrap"><pre><code>// unixsock.js — একই machine-এর দুই process-এর জন্য socket: network না, একটা file path
+const net = require('net');
+const fs = require('fs');
+const path = '/tmp/demo.sock';
+try { fs.unlinkSync(path); } catch {}
+const server = net.createServer(c =&gt; c.end('hello over a unix socket\n'));
+server.listen(path, () =&gt; {
+  console.log(fs.statSync(path).isSocket() ? 'file type: socket' : 'not a socket');
+  net.connect(path).on('data', d =&gt; { process.stdout.write(d); server.close(); });
+});</code></pre></div>
+    <div class="codewrap"><pre><code>file type: socket
+hello over a unix socket</code></pre></div>
+  </div>
+  <p>তুমি এটা রোজ ব্যবহার করো, না জেনেই। <code>docker</code> command আসলে Docker daemon-এর সাথে HTTP-তে কথা বলে — কিন্তু TCP port-এ না, একটা Unix socket-এ:</p>
+  <div class="codewrap"><pre><code>ls -l /var/run/docker.sock
+curl -s --unix-socket /var/run/docker.sock http://localhost/version | head -c 120</code></pre></div>
+  <p>আমার Mac-এ প্রথমটা দেখায় <code>/var/run/docker.sock -&gt; /Users/mostofareza/.docker/run/docker.sock</code>, আর দ্বিতীয়টা ফেরত দেয় <code>{"Platform":{"Name":"Docker Desktop 4.46.0 (204649)"},"Components":[{"Name":"Engine","Version":"28.4.0",…</code> — সাধারণ HTTP request আর JSON উত্তর, শুধু পথটা একটা file। Postgres-এর local connection (<code>/var/run/postgresql/.s.PGSQL.5432</code>) একই কৌশল।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"একটা port মানে একটা connection — তাই এক port-এ একসাথে একজনই কথা বলতে পারে।" Port শুধু four-tuple-এর একটা অংশ। sockets.js-এ port 8080-এ তিনটা connection একসাথে, তিনটা আলাদা socket আর fd নিয়ে; kernel আসা packet-কে চারটা মান মিলিয়ে ঠিক socket-এ পাঠায়। একটা server port-এ লাখো connection সম্ভব — সীমা আসে memory আর fd-র সংখ্যা থেকে (Chapter 30), port থেকে না।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Socket হলো kernel-এর ভেতরে একটা connection-এর এক প্রান্ত, তোমার হাতে একটা fd। তুমি byte লেখো আর পড়ো; packet বানানো, পাঠানো, সাজানো, আর কোন packet কোন socket-এর তা four-tuple মিলিয়ে ঠিক করা — kernel-এর কাজ। Server-এ একটা listening socket দরজা হয়ে দাঁড়িয়ে থাকে, আর প্রতিটা <code>accept()</code> একজন client-এর জন্য নতুন socket দেয়। TCP connection বানিয়ে নির্ভরযোগ্য স্রোত দেয়, UDP শুধু বার্তা ছুড়ে দেয়; একই machine-এ Unix socket network ছাড়াই একই API দেয়।</p>
+  </div>
 
   <div class="box quiz">
     <div class="box-title">CAN I EXPLAIN THIS?</div>
     <ul>
-      <li>Socket-কে file descriptor বানানোর সুবিধা কী?</li>
-      <li>Connection-এর চার-টুপল কী, আর এক port-এ বহু client কীভাবে?</li>
-      <li>Listening socket আর accepted socket-এর পার্থক্য?</li>
+      <li>Kernel socket না দিয়ে শুধু raw packet দিলে প্রতিটা app-কে কী কী করতে হতো? কোন packet কোন process-এর, সেটা kernel কীভাবে ঠিক করে?</li>
+      <li>Four-tuple কী? Client-এর port কোথা থেকে আসে, আর এক port 8080-এ তিনটা connection কীভাবে সম্ভব হলো?</li>
+      <li>sockets.js-এ তিনটা connection-এ সাতটা socket কেন? Listening socket আর connected socket-এর পার্থক্য কী?</li>
+      <li>Server-এর strace-এ <code>socket</code>, <code>bind</code>, <code>listen(18, 511)</code>, <code>accept4</code> — প্রতিটা কী করে? <code>accept4</code> fd 18 না দিয়ে নতুন fd 20 দিল কেন?</li>
+      <li>কেউ না শুনলেও UDP send সফল হলো কিন্তু TCP connect <code>ECONNREFUSED</code> দিল কেন? Unix domain socket কোন ক্ষেত্রে ব্যবহার হয়, আর <code>docker</code> command এর সাথে কী সম্পর্ক?</li>
     </ul>
   </div>
