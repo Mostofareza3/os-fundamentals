@@ -1,21 +1,336 @@
   <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
   <h2>Chapter 37 — একটা Program চালালে কী কী ঘটে?</h2>
-  <p class="chap-sub">পুরো বইয়ের প্রথম মহাসংযোগ। Terminal-এ লিখলে <code>./app</code> আর Enter চাপলে —</p>
+  <p class="chap-sub">Shell-এ <code>node hello.js</code> লিখে Enter। এক লাইনের program, অথচ এর পেছনে দুটো process, আটটা task, প্রায় ৭০০টা system call আর আড়াই হাজার page fault। পুরো বইটা এই এক trace-এ, সময় ধরে ধরে।</p>
 
-  <ol>
-    <li><strong>Shell পড়লো তোমার লাইন</strong> — সে নিজেও এক সাধারণ process, stdin-এ <code>read()</code> করে বসে ছিল (Waiting-এ)। তোমার Enter-এ keyboard-এর interrupt → kernel → shell জাগলো। <em>[Ch 15, 31]</em></li>
-    <li><strong>Executable খোঁজা</strong> — PATH-এর directory-গুলোতে; প্রতিটা খোঁজ মানে filesystem-এ path resolution। <em>[Ch 22]</em></li>
-    <li><strong>fork()</strong> — shell নিজের copy বানালো; copy-on-write-এ প্রায় বিনা খরচে। <em>[Ch 15, 9]</em></li>
-    <li><strong>exec()</strong> — child-এর ভিতরে নতুন program: ELF header পড়া, নতুন virtual address space, code/data mmap (কিন্তু lazy!), stack-এ argv, dynamic linker-এর library জোড়া, PC → entry point। <em>[Ch 34, 33, 5]</em></li>
-    <li><strong>প্রথম instruction-এই page fault!</strong> — code-এর page টা তো এখনো disk-এ। Kernel: filesystem → block layer → driver → device → DMA → page cache → page table update → আবার চালাও। প্রথম কিছু মুহূর্ত এভাবে fault-এ fault-এ program-টা "টুকরো টুকরো জন্মায়"। <em>[Ch 9, 21, 11]</em></li>
-    <li><strong>এবার আসল দৌড়</strong> — fetch-decode-execute-এর কোটি কোটি চক্কর; কখনো cache hit-এর সুখ, কখনো miss-এর RAM-যাত্রা, TLB-র নীরব অনুবাদ প্রতি access-এ। <em>[Ch 12, 13, 9]</em></li>
-    <li><strong>Program কিছু চাইলো</strong> — file পড়া? <code>read()</code> syscall → kernel → (ভাগ্য ভালো হলে page cache hit) → data। Network? socket path। প্রতিটা চাওয়ায় নীল-থেকে-amber-থেকে-নীল সেই যাত্রা। <em>[Ch 21, 25-27, 31-32]</em></li>
-    <li><strong>মাঝে মাঝে সে-ও থামলো</strong> — I/O-র wait-এ Blocked, বা timer interrupt-এ scheduler-এর preemption; তার context save, অন্য কারো restore — machine-জুড়ে চলা হাজারো process-এর নাচের এক পা মাত্র সে। <em>[Ch 15, 17]</em></li>
-    <li><strong>Output</strong> — তোমার terminal-এ লেখাও আসলে <code>write()</code> — terminal-ও এক file descriptor! <em>[Ch 21, 25]</em></li>
-    <li><strong>exit()</strong> — শেষ syscall। Kernel memory ফেরত নিলো, fd গুলো বন্ধ করলো, exit code রেখে দিলো — shell (parent) <code>wait()</code> করে সেটা তুললো, prompt ফিরিয়ে দিলো। <em>[Ch 15]</em></li>
-  </ol>
+  <p>এতদিন একেকটা জিনিস আলাদা করে দেখেছি: fork আর wait (Chapter 15), virtual memory আর page fault (Chapter 9), thread (Chapter 16), file (Chapter 21), epoll (Chapter 29), kernel-এর দরজা (Chapter 31), loader (Chapter 34), cgroup (Chapter 36)। কিন্তু একটা program চালালে এরা সবাই কাজ করে, একটার পর একটা, কয়েক millisecond-এর মধ্যে। এই chapter-এ নতুন কোনো ধারণা নেই, আছে জোড়া দেওয়া। দুটো প্রশ্ন আলাদা রাখব। <em>কী</em> ঘটে, সেটা বলবে strace (Chapter 1): প্রতিটা system call, কোন task-এর, কখন। <em>কতক্ষণ</em> লাগে, সেটা মাপব strace ছাড়া, কারণ strace প্রতিটা syscall-এ program থামিয়ে দেখে, আর তাতে সবকিছু কয়েক গুণ ধীর হয়ে যায়।</p>
+
+  <h3>পুরো trace, এক file-এ</h3>
+  <p>Program-টা যত ছোট হতে পারে, <code>hello.js</code> নামে, এক লাইনের (২২ byte):</p>
+  <div class="codewrap"><pre><code>console.log('hello');</code></pre></div>
+  <p>আর trace করার script। <code>bash -c</code> দিয়ে চালাচ্ছি, যাতে terminal-এর মতোই একটা shell node-কে চালায়। শেষে <code>; echo</code> রেখেছি Chapter 15-এর মতো একই কারণে: node শেষ command হলে bash fork না করে নিজেই node হয়ে যেত। <code>-f</code> মানে child process আর thread-দেরও ধরো, <code>-ttt</code> মানে প্রতিটা লাইনে সময়। awk সেই সময়কে বদলে দেয় "shell-এর fork-এর পর কত ms"-এ:</p>
+  <div class="codewrap"><pre><code># timeline.sh — shell থেকে node hello.js, পুরোটা strace-এ; সময় ms-এ, shell-এর fork-এর মুহূর্ত = 0
+strace -f -ttt -o trace.txt bash -c 'node hello.js; echo "exit=$?"'
+awk 'NR == FNR { if (!t0 &amp;&amp; /clone\(/) t0 = $2; next }
+     { printf "%-3s %7.2f  %s\n", $1, ($2 - t0) * 1000, substr($0, index($0, $3)) }' trace.txt trace.txt &gt; timeline.txt
+echo "$(wc -l &lt; timeline.txt) lines, $(cut -d' ' -f1 timeline.txt | sort -u | wc -l) tasks"</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
+  bash timeline.sh'</code></pre></div>
+  <div class="codewrap"><pre><code>hello
+exit=0
+970 lines, 8 tasks</code></pre></div>
+  <p><code>timeline.txt</code> তোমার folder-এই তৈরি হয়েছে, কারণ container-এর <code>/w</code> আসলে তোমার <code>$PWD</code>। তাই এই chapter-এর বাকি <code>grep</code>-গুলো Mac-এর terminal-এই চালাতে পারো। প্রতিটা লাইনে তিনটা জিনিস: task-এর নম্বর (Linux-এর চোখে process আর thread দুটোই task, Chapter 16), fork থেকে কত ms, আর syscall। Negative সময় মানে fork-এর আগের অংশ: bash নিজে চালু হচ্ছে। ৯৭০ লাইনে ৮৪৮টা system call, তার ৬৯৬টা node-এর। আটটা task হলো bash, node, আর node-এর ছয়টা বাড়তি thread।</p>
+  <p>strace-এর নিচে পুরো কাজে লেগেছে ৭৪ ms। আসল সময় মাপতে strace বাদ দিয়ে দুটো ঘড়ি মেলাব। একটা shell-এর ঘড়ি, fork-এর ঠিক আগে। অন্যটা node-এর নিজের: <code>performance.timeOrigin</code> (node-এর ঘড়ি চালু হওয়ার মুহূর্ত) আর <code>performance.nodeTiming</code> (Chapter 34):</p>
+  <div class="codewrap"><pre><code>// clock.js — hello.js-ই, সাথে ঘড়ি: shell-এর fork-এর মুহূর্ত (T0) থেকে কখন কোন ধাপ, ms-এ
+const code = performance.now();               // node-এর ঘড়ি: process-এর জন্ম থেকে ms
+console.log('hello');
+const logged = performance.now();
+process.on('exit', () =&gt; {
+  const born = performance.timeOrigin - process.env.T0 / 1000;   // fork থেকে node-এর ঘড়ি চালু হওয়া
+  const t = performance.nodeTiming;
+  const rows = [['node clock starts', 0], ['V8 ready', t.v8Start], ['Node env ready', t.environment],
+                ['bootstrap done', t.bootstrapComplete], ['your first line', code],
+                ['hello written', logged], ['exit event', performance.now()]];
+  for (const [what, ms] of rows) console.error(`${what.padEnd(18)} ${(born + ms).toFixed(1).padStart(5)} ms`);
+});</code></pre></div>
+  <div class="codewrap"><pre><code># when.sh — strace ছাড়া: shell-এর fork-এর মুহূর্ত = 0, তারপর কোন ধাপ কখন
+node clock.js &gt; /dev/null 2&gt;&amp;1                # warm-up: প্রথমবারের বাড়তি খরচ বাদ দিতে
+t0=${EPOCHREALTIME/./}                        # bash-এর নিজের ঘড়ি, µs-এ (নতুন process লাগে না)
+T0=$t0 node clock.js &gt; /dev/null
+t1=${EPOCHREALTIME/./}
+awk -v d=$((t1 - t0)) 'BEGIN { printf "back in the shell  %5.1f ms\n", d / 1000 }'</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash when.sh</code></pre></div>
+  <div class="codewrap"><pre><code>node clock starts    0.9 ms
+V8 ready             2.1 ms
+Node env ready       6.9 ms
+bootstrap done       9.0 ms
+your first line     10.0 ms
+hello written       10.9 ms
+exit event          11.0 ms
+back in the shell   12.9 ms</code></pre></div>
+  <p><code>$EPOCHREALTIME</code> bash-এর নিজের variable। এটা পড়তে নতুন process লাগে না, তাই মাপে কিছু যোগ হয় না। <code>T0</code> environment variable দিয়ে fork-এর মুহূর্তটা node-কে জানিয়ে দিয়েছি; সেটা আর node-এর ঘড়ি চালু হওয়ার পার্থক্যই fork থেকে node জন্মানো পর্যন্ত সময়। strace-এর নিচে যা ৭৪ ms, আসলে তা ১৩ ms: strace কাজটা প্রায় ছয় গুণ ধীর করেছিল। তাই strace-এর সময় থেকে শুধু ক্রমটা নাও (কোনটা আগে, কোনটা পরে), আর সময়টা মাপো আলাদাভাবে। কয়েকবার চালালে সংখ্যা ১–২ ms এদিক-ওদিক হয়।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 322" width="100%" role="img" aria-label="Timeline of node hello.js, measured without strace, from the shell's fork at 0 ms to the shell getting control back at 12.9 ms. The bash lane is asleep in wait4 for the whole run. The node lane has seven segments: 1, fork, execve and ld.so, 0 to 0.9 ms; 2, V8 starts, to 2.1 ms; 3, Node environment, to 6.9 ms; 4, bootstrap, to 9.0 ms; 5, find, read and compile hello.js, to 10.0 ms; 6, console.log and write, to 10.9 ms; 7, empty event loop, teardown, exit_group and wait4, to 12.9 ms. Segments 5 and 6, your one line of code, take 1.9 ms">
+      <defs>
+        <marker id="c37f1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="80" y="29" text-anchor="end" class="t-s">bash</text>
+      <rect x="90" y="12" width="665" height="24" rx="6" class="b-m"/>
+      <text x="422" y="28" text-anchor="middle" class="t-m t-s">asleep in wait4() — Blocked (Ch 15)</text>
+
+      <line x1="100" y1="38" x2="100" y2="62" class="ln" marker-end="url(#c37f1-a)"/>
+      <text x="106" y="54" class="t-m t-s">fork</text>
+      <line x1="745" y1="64" x2="745" y2="40" class="ln" marker-end="url(#c37f1-a)"/>
+      <text x="739" y="54" text-anchor="end" class="t-m t-s">wakes bash</text>
+
+      <line x1="555" y1="62" x2="555" y2="58" class="ln"/>
+      <line x1="555" y1="58" x2="651" y2="58" class="ln"/>
+      <line x1="651" y1="58" x2="651" y2="62" class="ln"/>
+      <text x="603" y="52" text-anchor="middle" class="t-u t-s">your line: 1.9 ms</text>
+
+      <text x="80" y="91" text-anchor="end" class="t-s">node</text>
+      <rect x="90" y="66" width="45.4" height="40" rx="5" class="b-k"/>
+      <text x="112.7" y="91" text-anchor="middle" class="t-h">1</text>
+      <rect x="137.4" y="66" width="59.8" height="40" rx="5" class="b-u"/>
+      <text x="167.3" y="91" text-anchor="middle" class="t-h">2</text>
+      <rect x="199.2" y="66" width="245.4" height="40" rx="5" class="b-u"/>
+      <text x="321.9" y="91" text-anchor="middle" class="t-h">3 · Node environment</text>
+      <rect x="446.6" y="66" width="106.3" height="40" rx="5" class="b-u"/>
+      <text x="499.8" y="91" text-anchor="middle" class="t-h">4 · bootstrap</text>
+      <rect x="554.9" y="66" width="49.5" height="40" rx="5" class="b-u"/>
+      <text x="579.7" y="91" text-anchor="middle" class="t-h">5</text>
+      <rect x="606.4" y="66" width="44.4" height="40" rx="5" class="b-u"/>
+      <text x="628.6" y="91" text-anchor="middle" class="t-h">6</text>
+      <rect x="652.8" y="66" width="101.1" height="40" rx="5" class="b-k"/>
+      <text x="703.4" y="91" text-anchor="middle" class="t-h">7 · exit</text>
+
+      <line x1="90" y1="122" x2="760" y2="122" class="axis"/>
+      <line x1="90" y1="122" x2="90" y2="127" class="axis"/>
+      <text x="90" y="142" text-anchor="middle" class="t-m t-s">0</text>
+      <line x1="193.1" y1="122" x2="193.1" y2="127" class="axis"/>
+      <text x="193.1" y="142" text-anchor="middle" class="t-m t-s">2</text>
+      <line x1="296.2" y1="122" x2="296.2" y2="127" class="axis"/>
+      <text x="296.2" y="142" text-anchor="middle" class="t-m t-s">4</text>
+      <line x1="399.2" y1="122" x2="399.2" y2="127" class="axis"/>
+      <text x="399.2" y="142" text-anchor="middle" class="t-m t-s">6</text>
+      <line x1="502.3" y1="122" x2="502.3" y2="127" class="axis"/>
+      <text x="502.3" y="142" text-anchor="middle" class="t-m t-s">8</text>
+      <line x1="605.4" y1="122" x2="605.4" y2="127" class="axis"/>
+      <text x="605.4" y="142" text-anchor="middle" class="t-m t-s">10</text>
+      <line x1="708.5" y1="122" x2="708.5" y2="127" class="axis"/>
+      <text x="708.5" y="142" text-anchor="middle" class="t-m t-s">12 ms</text>
+
+      <text x="90" y="174" class="t-h t-s">1</text>
+      <text x="108" y="174" class="mono">0 – 0.9</text>
+      <text x="200" y="174" class="t-s">fork, execve, ld.so maps 6 libraries</text>
+      <text x="760" y="174" text-anchor="end" class="t-m t-s">Ch 15, 34</text>
+      <text x="90" y="196" class="t-h t-s">2</text>
+      <text x="108" y="196" class="mono">– 2.1</text>
+      <text x="200" y="196" class="t-s">V8, the JavaScript engine, starts</text>
+      <text x="760" y="196" text-anchor="end" class="t-m t-s">Ch 4</text>
+      <text x="90" y="218" class="t-h t-s">3</text>
+      <text x="108" y="218" class="mono">– 6.9</text>
+      <text x="200" y="218" class="t-s">heap from the snapshot, event loop (epoll), 6 threads, cgroup limit</text>
+      <text x="760" y="218" text-anchor="end" class="t-m t-s">Ch 16, 29, 36</text>
+      <text x="90" y="240" class="t-h t-s">4</text>
+      <text x="108" y="240" class="mono">– 9.0</text>
+      <text x="200" y="240" class="t-s">Node's own JavaScript boots (require, process, streams)</text>
+      <text x="760" y="240" text-anchor="end" class="t-m t-s">Ch 34</text>
+      <text x="90" y="262" class="t-h t-s">5</text>
+      <text x="108" y="262" class="mono">– 10.0</text>
+      <text x="200" y="262" class="t-s">find hello.js, look for package.json, read, compile</text>
+      <text x="760" y="262" text-anchor="end" class="t-m t-s">Ch 21, 22</text>
+      <text x="90" y="284" class="t-h t-s">6</text>
+      <text x="108" y="284" class="mono">– 10.9</text>
+      <text x="200" y="284" class="t-s">console.log → write(1, "hello\n")</text>
+      <text x="760" y="284" text-anchor="end" class="t-m t-s">Ch 21, 32</text>
+      <text x="90" y="306" class="t-h t-s">7</text>
+      <text x="108" y="306" class="mono">– 12.9</text>
+      <text x="200" y="306" class="t-s">empty event loop, teardown, exit_group, bash's wait4 returns</text>
+      <text x="760" y="306" text-anchor="end" class="t-m t-s">Ch 15, 29</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">when.sh-এর মাপ, strace ছাড়া। নীল অংশে node-এর নিজের কাজ। Amber অংশে kernel process বানায় (১) আর ভাঙে (৭)। পুরো সময়টা bash ঘুমিয়ে থাকে wait4-এ। তোমার লেখা লাইন (৫ আর ৬) ১৩ ms-এর মধ্যে ২ ms-এরও কম।</p>
+  <p>ছবির সবচেয়ে বড় কথা: তোমার লেখা এক লাইন চলেছে ২ ms-এরও কম সময়। বাকি ১১ ms গেছে process-এর জন্ম আর বিদায়ে। এবার trace ধরে ধাপগুলো একে একে দেখা যাক।</p>
+
+  <h3>Shell খোঁজে, fork করে, ঘুমায়</h3>
+  <div class="codewrap"><pre><code>grep -E 'stat.*bin/node"|clone\(child_stack=NULL|wait4|execve\("/usr/local' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre><code>127   -1.02  newfstatat(AT_FDCWD, "/usr/local/sbin/node", 0xffffd5779a18, 0) = -1 ENOENT (No such fi
+127   -0.96  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
+127   -0.88  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
+127   -0.50  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
+127    0.00  clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_ti
+127    0.58  wait4(-1,  &lt;unfinished ...&gt;
+128    0.84  execve("/usr/local/bin/node", ["node", "hello.js"], 0xaaab02e1f650 /* 8 vars */) = 0
+127   73.24  &lt;... wait4 resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 128
+127   73.67  wait4(-1, 0xffffd5778800, WNOHANG, NULL) = -1 ECHILD (No child processes)</code></pre></div>
+  <p>fork-এর আগে bash <code>node</code> খুঁজছে। <code>PATH</code>-এর প্রথম folder <code>/usr/local/sbin</code>-এ নেই (<code>ENOENT</code>), দ্বিতীয়টায় আছে। Chapter 34-এ <code>env</code> ঠিক এই কাজটাই করত, এখানে shell নিজে করছে। তারপর ০ ms-এ <code>clone</code>। Flag-এ <code>SIGCHLD</code> আছে, <code>CLONE_VM</code> নেই, অর্থাৎ এটা fork: নতুন একটা process, bash-এর copy, copy-on-write-এর কারণে প্রায় বিনা খরচে (Chapter 15, 9)।</p>
+  <p>Parent bash (task ১২৭) সঙ্গে সঙ্গে <code>wait4</code>-এ ঢোকে আর Blocked হয়ে যায়। তার পরের লাইন আসবে ৭৩ ms-এ, যখন child শেষ হবে। Child (১২৮) তখনো bash। ০.৮৪ ms-এ <code>execve</code> দিয়ে সে node হয়ে যায়: kernel পুরনো address space ফেলে দিয়ে node-এর ELF map করে, আর চালায় ld.so-কে (Chapter 34)। ld.so ১ থেকে ৫ ms-এর মধ্যে node-এর ছয়টা library খুঁজে map করে (<code>awk '$2 &gt; 0 &amp;&amp; /openat.*\.so/' timeline.txt</code> দিয়ে দেখতে পারো)। Relocation সেরে ৮.৬ ms-এ node-এর <code>main</code> শুরু হয়।</p>
+  <p><code>main</code>-এর প্রথম কাজগুলো সাবধানতার। <code>capget</code> দিয়ে দেখে তার কী কী capability আছে (Chapter 31)। <code>fstat</code> দিয়ে দেখে fd ০, ১, ২ খোলা আছে কি না। তারপর প্রতিটা signal-এর handler একবার করে পরীক্ষা করে: parent কোনোটা ignore করিয়ে রেখে গেলে সেটাকে default-এ ফেরায়। আর দুটো signal নিজে ইচ্ছে করে ignore করে, যার একটা <code>SIGPIPE</code> (নিচের grep-এর প্রথম লাইন)। Chapter 31-এর table-এ বলেছিলাম Node শুরুতেই এটা করে; এই সেই প্রমাণ। ফলে যে socket-এর ওপাশ বন্ধ, তাতে লিখলে process মরে না, শুধু <code>EPIPE</code> error আসে (Chapter 30)।</p>
+
+  <h3>Runtime দাঁড়ায়: event loop, thread, cgroup</h3>
+  <div class="codewrap"><pre><code>grep -E 'SIGPIPE|epoll_create1|io_uring_setup|CLONE_THREAD|memory.max' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre><code>128   10.47  rt_sigaction(SIGPIPE, {sa_handler=SIG_IGN, sa_mask=[], sa_flags=0}, NULL, 8) = 0
+128   23.76  epoll_create1(EPOLL_CLOEXEC) = 3
+128   24.07  io_uring_setup(256, {flags=0x10000 /* IORING_SETUP_??? */, sq_thread_cpu=0, sq_thread_i
+128   25.30  clone(child_stack=0xffff8220e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+129   26.29  epoll_create1(EPOLL_CLOEXEC) = 9
+129   26.39  io_uring_setup(256, {flags=0x10000 /* IORING_SETUP_??? */, sq_thread_cpu=0, sq_thread_i
+128   27.32  clone(child_stack=0xffff8180e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+128   28.08  clone(child_stack=0xffff80e0e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+128   28.80  clone(child_stack=0xffff7be0e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+128   29.63  clone(child_stack=0xffff7b40e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+128   31.40  epoll_create1(EPOLL_CLOEXEC) = 13
+128   31.49  io_uring_setup(256, {flags=0x10000 /* IORING_SETUP_??? */, sq_thread_cpu=0, sq_thread_i
+128   32.29  openat(AT_FDCWD, "/sys/fs/cgroup//memory.max", O_RDONLY|O_CLOEXEC) = 17
+128   51.93  clone(child_stack=0xffff819dd8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
+128   66.31  rt_sigaction(SIGPIPE, {sa_handler=SIG_IGN, sa_mask=[], sa_flags=0}, NULL, 8) = 0</code></pre></div>
+  <p>(শেষ লাইনটা বিদায়ের সময়ের, সেটা পরে।) Chapter 29-এর event loop এখানে জন্মায়: <code>epoll_create1</code>। Main thread দুটো epoll বানায়, fd ৩ আর ১৩। তোমার JS-এর event loop ১৩ নম্বরটা; কীভাবে চিনলাম, পরের অংশে দেখবে। প্রতিটার পরপরই <code>io_uring_setup</code>: libuv io_uring চালু করার চেষ্টা করে (Chapter 24)। Docker-এর seccomp নিয়ম সেটা আটকায় (<code>EPERM</code>, Chapter 36), আর libuv চুপচাপ epoll দিয়েই কাজ চালায়। তোমাকে কোনো error দেখায় না।</p>
+  <p>তারপর ছয়টা <code>clone</code>, এবার flag-এ <code>CLONE_VM|CLONE_THREAD</code>। মানে নতুন process না, একই address space-এ নতুন thread (Chapter 16)। কে কী:</p>
+  <ul>
+    <li><strong>১২৯</strong> — সবার আগে তৈরি, আর নিজের একটা epoll বানায় (fd ৯)। এর নাম <code>DelayedTaskScheduler</code>: V8-এর "এই কাজটা একটু পরে করো" ধরনের কাজের সময় রাখে।</li>
+    <li><strong>১৩০–১৩৩</strong> — V8-এর চারটা worker thread। Garbage collection-এর অনেকটা (Chapter 6) আর JIT compile (Chapter 4) এরা পেছনে চালায়, যাতে main thread না আটকায়।</li>
+    <li><strong>১৩৪</strong> — সবার শেষে, ৫২ ms-এ। এই thread সারাজীবন একটা <code>SIGUSR1</code>-এর অপেক্ষায় ঘুমায়। Signal handler-এর ভেতরে প্রায় কিছুই নিরাপদে করা যায় না (Chapter 31), তাই handler শুধু এই thread-কে জাগায়, আর সে debugger চালু করে। চেষ্টা করে দেখো:</li>
+  </ul>
+  <div class="codewrap"><pre><code>docker run --rm node:22-bookworm-slim bash -c '
+  node -e "setTimeout(() =&gt; {}, 1000)" &amp; sleep 0.3
+  kill -USR1 $!; wait'</code></pre></div>
+  <div class="codewrap"><pre><code>Debugger listening on ws://127.0.0.1:9229/6270015b-cadf-451f-a169-65171d32f583
+For help, see: https://nodejs.org/learn/getting-started/debugging</code></pre></div>
+  <p>Chapter 16-এর libuv-worker-দের এখানে দেখা যাচ্ছে না। hello.js কোনো file, DNS বা crypto-র কাজ চায়নি, তাই thread pool তৈরিই হয়নি; সেটা তৈরি হয় প্রথম দরকারের সময়।</p>
+  <p>৩২ ms-এ <code>/sys/fs/cgroup/memory.max</code> পড়া: Chapter 36-এর সেই ঘটনা। Node এখান থেকে দেখে কতটা memory পাওয়া যাবে, আর সেই হিসাবে V8-এর heap-এর সীমা ঠিক করে। তাই <code>--memory 256m</code>-এ heap-এর সীমা হয়েছিল ২৫৯ MB। এখানে container-এ কোনো সীমা দিইনি, তাই file-টায় লেখা <code>max</code>, আর Node পরের লাইনে <code>/proc/meminfo</code> থেকে পুরো RAM-এর হিসাবও নেয়।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 310" width="100%" role="img" aria-label="Where every task of the run sleeps. In user mode: bash, PID 127, forked node, PID 128, one address space holding seven threads: the main thread running your JavaScript and the event loop, DelayedTaskScheduler for V8's timed tasks, four V8 workers doing garbage collection and JIT in the background, and a signal watcher waiting for kill -USR1. Each one, when idle, sleeps in the kernel: bash in wait4 until the child exits, the main thread in epoll_pwait on epoll 13 for timers and sockets, DelayedTaskScheduler in epoll_pwait on epoll 9, the V8 workers on a futex until work arrives, the watcher on a futex until SIGUSR1">
+      <defs>
+        <marker id="c37f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text x="790" y="200" text-anchor="end" class="t-u t-s">user mode</text>
+      <line x1="10" y1="208" x2="790" y2="208" class="ln-k dash"/>
+      <text x="790" y="226" text-anchor="end" class="t-k t-s">kernel mode</text>
+
+      <rect x="16" y="44" width="120" height="76" rx="8" class="b-u"/>
+      <text x="76" y="72" text-anchor="middle" class="t-h">bash</text>
+      <text x="76" y="92" text-anchor="middle" class="mono">PID 127</text>
+      <line x1="136" y1="82" x2="166" y2="82" class="ln" marker-end="url(#c37f2-a)"/>
+      <text x="151" y="74" text-anchor="middle" class="t-m t-s">fork</text>
+
+      <rect x="170" y="14" width="614" height="178" rx="10" class="b-m"/>
+      <text x="184" y="33" class="t-m t-s">node · PID 128 · one address space, 7 threads</text>
+      <rect x="184" y="44" width="142" height="76" rx="8" class="b-u"/>
+      <text x="255" y="68" text-anchor="middle" class="t-h t-s">main thread</text>
+      <text x="255" y="88" text-anchor="middle" class="t-m t-s">your JS +</text>
+      <text x="255" y="104" text-anchor="middle" class="t-m t-s">the event loop</text>
+      <rect x="336" y="44" width="142" height="76" rx="8" class="b-u"/>
+      <text x="407" y="68" text-anchor="middle" class="t-h t-s">DelayedTask-</text>
+      <text x="407" y="84" text-anchor="middle" class="t-h t-s">Scheduler</text>
+      <text x="407" y="104" text-anchor="middle" class="t-m t-s">V8's timed tasks</text>
+      <rect x="488" y="44" width="142" height="76" rx="8" class="b-u"/>
+      <text x="559" y="68" text-anchor="middle" class="t-h t-s">V8 worker ×4</text>
+      <text x="559" y="88" text-anchor="middle" class="t-m t-s">GC and JIT</text>
+      <text x="559" y="104" text-anchor="middle" class="t-m t-s">in the background</text>
+      <rect x="640" y="44" width="134" height="76" rx="8" class="b-u"/>
+      <text x="707" y="68" text-anchor="middle" class="t-h t-s">signal watcher</text>
+      <text x="707" y="88" text-anchor="middle" class="t-m t-s">starts the debugger</text>
+      <text x="707" y="104" text-anchor="middle" class="t-m t-s">on SIGUSR1</text>
+
+      <line x1="76" y1="120" x2="76" y2="236" class="ln dash" marker-end="url(#c37f2-a)"/>
+      <line x1="255" y1="120" x2="255" y2="236" class="ln dash" marker-end="url(#c37f2-a)"/>
+      <line x1="407" y1="120" x2="407" y2="236" class="ln dash" marker-end="url(#c37f2-a)"/>
+      <line x1="559" y1="120" x2="559" y2="236" class="ln dash" marker-end="url(#c37f2-a)"/>
+      <line x1="707" y1="120" x2="707" y2="236" class="ln dash" marker-end="url(#c37f2-a)"/>
+
+      <rect x="16" y="240" width="120" height="56" rx="8" class="b-k"/>
+      <text x="76" y="264" text-anchor="middle" class="mono">wait4()</text>
+      <text x="76" y="284" text-anchor="middle" class="t-m t-s">until child exits</text>
+      <rect x="184" y="240" width="142" height="56" rx="8" class="b-k"/>
+      <text x="255" y="264" text-anchor="middle" class="mono">epoll_pwait(13)</text>
+      <text x="255" y="284" text-anchor="middle" class="t-m t-s">timers, sockets</text>
+      <rect x="336" y="240" width="142" height="56" rx="8" class="b-k"/>
+      <text x="407" y="264" text-anchor="middle" class="mono">epoll_pwait(9)</text>
+      <text x="407" y="284" text-anchor="middle" class="t-m t-s">next timed task</text>
+      <rect x="488" y="240" width="142" height="56" rx="8" class="b-k"/>
+      <text x="559" y="264" text-anchor="middle" class="mono">futex</text>
+      <text x="559" y="284" text-anchor="middle" class="t-m t-s">until work arrives</text>
+      <rect x="640" y="240" width="134" height="56" rx="8" class="b-k"/>
+      <text x="707" y="264" text-anchor="middle" class="mono">futex</text>
+      <text x="707" y="284" text-anchor="middle" class="t-m t-s">until SIGUSR1</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">trace-এর আটটা task, আর কাজ না থাকলে প্রত্যেকে kernel-এর কোথায় ঘুমায়। Dashed বাক্সটা একটা process: ভেতরের সাত thread একই memory ভাগ করে। কাজ এলে kernel ঠিক যাকে দরকার তাকেই জাগায়, বাকিরা S (sleeping) অবস্থায় থাকে, CPU খায় না (Chapter 15, 17)।</p>
+  <p>এরপর ছবির চার নম্বর ধাপ: Node-এর নিজের JS (require, process, stream…) দাঁড় করানো, V8-এর snapshot থেকে (Chapter 34)। এই অংশের syscall-গুলো প্রায় সবই memory-র: V8-এর heap-এর জন্য <code>mmap</code>, <code>mprotect</code>, <code>madvise</code>। বাকি কাজটা CPU-র, strace-এ তার কোনো লাইন নেই।</p>
+
+  <h3>তোমার এক লাইন</h3>
+  <div class="codewrap"><pre><code>grep -E '"/w/|FIONBIO|write\(1, "hello|epoll_pwait\(13' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre><code>128   56.52  statx(AT_FDCWD, "/w/hello.js", AT_STATX_SYNC_AS_STAT, STATX_ALL, {stx_mask=STATX_ALL|ST
+128   56.89  statx(AT_FDCWD, "/w/hello.js", AT_STATX_SYNC_AS_STAT|AT_SYMLINK_NOFOLLOW, STATX_ALL, {s
+128   57.01  openat(AT_FDCWD, "/w/package.json", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or di
+128   57.21  statx(AT_FDCWD, "/w/package.json", AT_STATX_SYNC_AS_STAT, STATX_ALL, 0xfffff844e410) =
+128   57.49  openat(AT_FDCWD, "/w/hello.js", O_RDONLY|O_CLOEXEC) = 17
+128   60.36  ioctl(1, FIONBIO, [1]) = 0
+128   60.72  write(1, "hello\n", 6) = 6
+128   61.39  epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+128   61.51  epoll_pwait(13, [], 1024, 0, NULL, 8) = 0</code></pre></div>
+  <p>৫৬ ms-এ, strace-এর হিসাবে জন্মের প্রায় শেষে, Node প্রথমবার তোমার file খোঁজে। প্রথম <code>statx</code> দেখে <code>hello.js</code> আছে কি না, আর সেটা file না folder। দ্বিতীয়টা (<code>AT_SYMLINK_NOFOLLOW</code>) দেখে সেটা symlink কি না, যাতে আসল path জানা যায় (Chapter 22: path থেকে inode)। তারপর Node খোঁজে <code>package.json</code>: প্রথমে <code>/w</code>-এ, তারপর উপরের <code>/</code>-এ। এই grep-এ শুধু <code>/w</code>-এরটা এসেছে। খোঁজার কারণ, সবচেয়ে কাছের <code>package.json</code>-এর <code>"type"</code> দেখে Node ঠিক করে <code>.js</code> file-টা CommonJS না ES module। তারপর <code>openat</code>, ২২ byte <code>read</code>, <code>close</code> (Chapter 21)। Compile-এ কোনো syscall নেই: V8 পুরোটা user mode-এ করে (Chapter 4)।</p>
+  <p><code>console.log</code>-এর আগে Node দেখে নেয় fd ১ আসলে কী। <code>ioctl(1, TCGETS)</code> (grep-এ নেই) উত্তর দেয় <code>ENOTTY</code>, মানে এটা terminal না। <code>-t</code> ছাড়া Docker stdout-কে একটা pipe দিয়ে নিজের কাছে নেয়। Terminal, file আর pipe-এ লেখার নিয়ম আলাদা বলে Node এটা আগে জেনে নেয়। তারপর fd-টাকে non-blocking করে (<code>FIONBIO</code>, Chapter 28), আর একটাই <code>write(1, "hello\n", 6)</code> (Chapter 32)। node জানে না লেখাটা শেষে কোথায় যাবে, সে শুধু fd ১-এ লেখে (Chapter 15-এর <code>dup3</code>)।</p>
+  <p>তারপর দুটো <code>epoll_pwait(13, [], 1024, 0)</code>। তোমার script শেষ, এবার event loop ঘোরে। শেষ argument <code>0</code> হলো timeout: "একটুও অপেক্ষা কোরো না"। কারণ অপেক্ষা করার মতো কিছু বাকি নেই: কোনো timer নেই, socket নেই, চলমান file-এর কাজ নেই। Loop তাই শেষ, আর process-ও শেষ। Node কখন exit করে, তার নিয়ম এটাই: যখন আর কিছুর অপেক্ষা বাকি থাকে না। একটা timer যোগ করলে একই লাইন বদলে যায়:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
+  strace -f -e trace=epoll_pwait node -e "setTimeout(() =&gt; {}, 200)" 2&gt;&amp;1 | grep "epoll_pwait(13"'</code></pre></div>
+  <div class="codewrap"><pre><code>[pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+[pid   129] epoll_pwait(13, [], 1024, 200, NULL, 8) = 0
+[pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+[pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0</code></pre></div>
+  <p>দ্বিতীয় লাইনে timeout ২০০: main thread ২০০ ms kernel-এর ভেতরে ঘুমাল (Blocked), আর timer শেষ হলে kernel তাকে জাগাল। এভাবেই চিনেছি যে fd ১৩ তোমার event loop। একটা server কখনো নিজে থেকে exit করে না, কারণ তার listening socket সবসময় এই epoll-এ বসানো থাকে (Chapter 29)।</p>
+
+  <h3>বিদায়: exit_group, wait4, $?</h3>
+  <div class="codewrap"><pre><code>grep -E 'write\(12|exit_group|exited|wait4 resumed|--- SIGCHLD|"exit=0' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre><code>128   68.92  write(12, "\1\0\0\0\0\0\0\0", 8 &lt;unfinished ...&gt;
+133   70.37  +++ exited with 0 +++
+132   70.40  +++ exited with 0 +++
+131   70.42  +++ exited with 0 +++
+130   70.70  +++ exited with 0 +++
+129   70.98  +++ exited with 0 +++
+128   72.85  exit_group(0)   = ?
+134   72.99  +++ exited with 0 +++
+128   73.22  +++ exited with 0 +++
+127   73.24  &lt;... wait4 resumed&gt;[{WIFEXITED(s) &amp;&amp; WEXITSTATUS(s) == 0}], 0, NULL) = 128
+127   73.61  --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=128, si_uid=0, si_status=0, s
+127   73.95  write(1, "exit=0\n", 7) = 7</code></pre></div>
+  <p>Node আগে নিজে গোছায়। V8 worker-দের <code>futex</code> দিয়ে জাগিয়ে বলে থামতে (grep-এ নেই; Chapter 17–18-এর ঘুম-জাগানো)। <code>DelayedTaskScheduler</code> ঘুমিয়ে আছে তার epoll-এ, তাই তাকে জাগাতে fd ১২-তে ৮ byte লেখে। fd ১২ একটা eventfd, যেটা সেই epoll-এ বসানো ছিল (Chapter 29)। একে একে পাঁচটা thread শেষ হয়। তারপর <code>exit_group(0)</code>, আর বাকি কাজ kernel-এর:</p>
+  <ul>
+    <li>যে thread-কে কেউ থামতে বলেনি, তাকে মেরে ফেলে। এখানে ১৩৪, সেই signal watcher।</li>
+    <li>পুরো address space ফেরত নেয়: ৪৭৩ MB-এর mapping, যার ৪১ MB RAM-এ ছিল (নিচে মাপা)।</li>
+    <li>সব খোলা fd বন্ধ করে।</li>
+    <li>Exit code রেখে দেয়। Parent সেটা তুলে না নেওয়া পর্যন্ত process-টা zombie হয়ে থাকে (Chapter 15)।</li>
+  </ul>
+  <p>৭৩.২৪ ms-এ bash-এর সেই <code>wait4</code> অবশেষে ফেরে, <code>WEXITSTATUS == 0</code> নিয়ে, সাথে <code>SIGCHLD</code>। bash কোডটা রাখে <code>$?</code>-এ, আর <code>echo</code> লেখে <code>exit=0</code>। Terminal-এ হলে এখানেই prompt ফিরে আসত।</p>
+
+  <h3>strace যা দেখে না</h3>
+  <p>strace শুধু system call দেখে। অথচ ওই ১৩ ms-এ আরও অনেক কিছু ঘটে যা syscall না। Page fault একটা exception, kernel-এর তৃতীয় দরজা (Chapter 31)। Context switch ঘটায় scheduler (Chapter 17)। Timer interrupt আসে hardware থেকে। কোনোটাই strace-এর লাইনে আসে না। তবে kernel প্রতিটা process-এর জন্য এগুলোর হিসাব রাখে, আর <code>getrusage()</code> syscall সেটা দেয়; Node-এ <code>process.resourceUsage()</code>। <code>-r</code> (require) দিয়ে যেকোনো script-এর আগে load করা যায় এমন একটা ছোট file:</p>
+  <div class="codewrap"><pre><code>// watch.js — যেকোনো script-এর আগে load করো (node -r ./watch.js app.js); শেষে kernel-এর খাতা দেখায়
+process.on('exit', () =&gt; {
+  const r = process.resourceUsage();                        // getrusage(): পুরো process, সব thread মিলিয়ে
+  const vm = require('fs').readFileSync('/proc/self/status', 'utf8');
+  const mb = key =&gt; Math.round(vm.match(new RegExp(key + ':\\s+(\\d+)'))[1] / 1024);
+  console.error(`CPU time         user ${(r.userCPUTime / 1000).toFixed(1)} ms, kernel ${(r.systemCPUTime / 1000).toFixed(1)} ms`);
+  console.error(`page faults      ${r.minorPageFault} minor, ${r.majorPageFault} major`);
+  console.error(`context switches ${r.voluntaryContextSwitches} voluntary, ${r.involuntaryContextSwitches} involuntary`);
+  console.error(`memory           ${mb('VmSize')} MB mapped, ${mb('VmRSS')} MB in RAM, ${vm.match(/Threads:\s+(\d+)/)[1]} threads`);
+});</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'node -r ./watch.js hello.js 2&gt;&amp;1; echo "exit=$?"'</code></pre></div>
+  <div class="codewrap"><pre><code>hello
+CPU time         user 12.2 ms, kernel 1.9 ms
+page faults      2434 minor, 0 major
+context switches 24 voluntary, 1 involuntary
+memory           473 MB mapped, 41 MB in RAM, 7 threads
+exit=0</code></pre></div>
+  <ul>
+    <li><strong>CPU time</strong> — ১২ ms user mode-এ, ২ ms kernel mode-এ (Chapter 31-এর দুই mode)। দুটো মিলিয়ে প্রায় পুরো ১৩ ms, কারণ বেশিরভাগ সময় একটা thread-ই ব্যস্ত ছিল। User আর kernel-এর ভাগটা এক চালানো থেকে আরেক চালানোয় বেশ নড়ে। এই তিন সংখ্যা (real, user, kernel) দিয়ে ধীর program-এর রোগ ধরা Chapter 39-এর বিষয়।</li>
+    <li><strong>২৪৩৪টা minor page fault</strong> — প্রতিটা একটা page-এ প্রথম ছোঁয়া: node-এর code (Chapter 34-এর সেই ৩০ MB), V8-এর heap, thread-দের stack। Major শূন্য, কারণ node file-টা page cache-এ ছিল; ঠান্ডা অবস্থায় Chapter 34-এ পেয়েছিলাম ৩০৩টা। এই আড়াই হাজার ঘটনার একটাও strace-এ নেই।</li>
+    <li><strong>২৪টা voluntary context switch</strong> — প্রতিবার কোনো thread নিজে থেকে ঘুমাতে গেছে (ওপরের ছবির futex আর epoll_pwait)। Involuntary মাত্র ১: scheduler প্রায় কাউকেই জোর করে সরায়নি (Chapter 17)।</li>
+    <li><strong>৪৭৩ MB mapped, ৪১ MB RAM-এ</strong> — V8 বড় বড় জায়গা আগে থেকে দাবি করে রাখে, ব্যবহার করে সামান্যই। Virtual আর physical memory-র সেই পার্থক্য (Chapter 9)।</li>
+  </ul>
+  <p>(Command-টা <code>bash -c</code>-এর ভেতরে চালিয়েছি। node নিজেই container-এর PID ১ হলে, মানে <code>docker run … node -r ./watch.js hello.js</code>, আমার এখানে সংখ্যাগুলো বেশি আসে: প্রায় ৩২০০ fault আর ৮০টা switch। কারণটা আমি খুঁজে বের করিনি।)</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"<code>time node script.js</code> মানে আমার code-এর সময়।" hello.js-এ ১৩ ms-এর মধ্যে তোমার code ২ ms-ও না; বাকিটা process-এর জন্ম আর বিদায়, যা প্রতিবার একই দামে দিতে হয়। ছোট script, CLI tool, প্রতি test-এ নতুন process চালানো test runner, serverless-এর cold start (Chapter 34): এসব ক্ষেত্রে এই স্থির খরচটাই প্রায়ই মূল খরচ। নিজের code মাপতে চাইলে ভেতর থেকে মাপো (<code>performance.now()</code>), নয়তো এত বেশিবার চালাও যে স্থির খরচ হিসাবে আর চোখে না পড়ে। আর strace-এর সময় বিশ্বাস কোরো না: এখানে সে সবকিছু ছয় গুণ ধীর করেছিল।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">এখন পরীক্ষা করো নিজেকে</div>
-    <p>উপরের দশটা ধাপ বই বন্ধ করে, নিজের ভাষায়, কাউকে (বা রাবার হাঁসকে) বলে যাও — কোথায় আটকাও দেখো। যেখানে আটকাবে, সংশ্লিষ্ট chapter-টাই তোমার revision list। এই এক গল্প ঝরঝরে বলতে পারা মানে বইয়ের ৮০% হজম।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Enter চাপার পর: shell <code>PATH</code> ধরে file খোঁজে, fork করে (copy-on-write copy), আর <code>wait4</code>-এ ঘুমিয়ে পড়ে। Child <code>execve</code> দিয়ে node হয়ে যায়। Kernel ELF map করে, ld.so library জোড়ে। node-এর main signal গোছায়, event loop-এর epoll বানায়, ছয়টা helper thread তৈরি করে, cgroup দেখে heap-এর সীমা ঠিক করে, snapshot থেকে নিজের JS দাঁড় করায়। তারপর, ১০ ms পরে, তোমার file: খোঁজা, পড়া, compile, আর একটা <code>write(1)</code>। Event loop-এ অপেক্ষার কিছু না থাকলে (<code>timeout 0</code>) node গুছিয়ে <code>exit_group</code> করে। Kernel memory আর fd ফেরত নেয়, আর parent-কে exit code পৌঁছে দেয়। পুরো পথে strace-এর চোখের আড়ালে থাকে আড়াই হাজার page fault, কয়েক ডজন ঘুম-জাগা আর timer interrupt। এই গল্পটা বই না খুলে বলতে পারলে, আর যেখানে আটকাও সেই chapter-এ ফিরে গেলে, বইয়ের বেশিরভাগটাই তোমার।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>timeline.sh-এ <code>; echo</code> না থাকলে trace-এ কোন লাইনটা থাকত না, আর কেন? bash fork-এর আগে <code>/usr/local/sbin/node</code> দেখল কেন? fork-এর পর parent কোন অবস্থায় ছিল, কতক্ষণ?</li>
+      <li>trace-এ ৭৪ ms, when.sh-এ ১৩ ms: কোনটা বিশ্বাস করবে, কোন কাজে? when.sh fork-এর মুহূর্ত আর node-এর জন্মের সময় কীভাবে মেলায়?</li>
+      <li>node চালু হতেই ছয়টা thread কেন? কোনটা কী করে, আর libuv-এর thread pool কেন নেই? <code>io_uring_setup</code> কেন <code>EPERM</code>, আর তাতে তোমার code-এর কী হলো?</li>
+      <li>hello.js চালানোর আগে Node <code>package.json</code> খোঁজে কেন? <code>epoll_pwait(13, [], 1024, 0)</code>-এর শেষ ০ কী বোঝায়, আর <code>setTimeout</code> দিলে কী বদলায়? একটা HTTP server কেন নিজে থেকে exit করে না?</li>
+      <li>watch.js-এর ২৪৩৪টা page fault আর ২৪টা context switch strace-এ কেন নেই? ৪৭৩ MB mapped অথচ ৪১ MB RAM-এ, কীভাবে? <code>exit_group</code>-এর পর kernel কী কী ফেরত নেয়, আর exit code bash পর্যন্ত পৌঁছায় কীভাবে?</li>
+    </ul>
   </div>

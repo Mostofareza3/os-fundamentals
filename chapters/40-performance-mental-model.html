@@ -1,26 +1,224 @@
   <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
   <h2>Chapter 40 — Performance-এর Mental Model</h2>
-  <p class="chap-sub">শেষ chapter — hierarchy-টা মাথায় নিয়ে, কিন্তু তার ফাঁদগুলো জেনে।</p>
+  <p class="chap-sub">শেষ chapter। পুরো বইয়ে মাপা সংখ্যাগুলো এক সিঁড়িতে সাজানো, তারপর তিনটা নিয়ম যা সেই সিঁড়ির চেয়েও বেশি গুরুত্বপূর্ণ: লাইন (queueing আর Little's law), গড়ের মিথ্যা (P50 বনাম P99), আর parallel-এর সিলিং (Amdahl's law)। শেষে চারটা প্রশ্ন, যেকোনো system-এর সামনে দাঁড়িয়ে জিজ্ঞেস করার জন্য।</p>
 
-  <h3>Hierarchy — প্রথম approximation</h3>
-  <pre class="diagram">CPU registers      <span class="dim">তাৎক্ষণিক</span>
-CPU cache          <span class="dim">ns-স্কেল</span>
-RAM                <span class="dim">~শত ns</span>
-NVMe SSD           <span class="dim">~µs–শত µs</span>
-HDD                <span class="dim">~ms</span>
-Network (LAN→WAN)  <span class="dim">~µs → শত ms</span>
-<span class="dim">(সংখ্যা নয়, মাত্রার লাফগুলো মনে রাখো — প্রতি ধাপে ~১০–১০০×)</span></pre>
-  <p>প্রথম-স্তরের intuition: <strong>data যত নিচের স্তরে, ছোঁয়া তত দামি — design এমন করো যেন গরম data উপরের স্তরে থাকে।</strong> এটুকুই অনেক দূর নিয়ে যায়। কিন্তু "closer = always faster" বলে থেমে গেলে এই ফাঁদগুলোয় পড়বে:</p>
+  <p>Chapter 39 শিখিয়েছে ধীর program-এ সময় কোথায় যাচ্ছে সেটা কীভাবে মাপতে হয়। এই chapter আগের ধাপের কথা: code লেখার বা design করার সময়েই আন্দাজ করা, কোন সিদ্ধান্তের দাম কত। এর জন্য দুটো জিনিস মাথায় রাখা দরকার: কয়েকটা সংখ্যার মাত্রা, আর কয়েকটা নিয়ম যেগুলো বলে load বাড়লে সেই সংখ্যাগুলো কীভাবে বদলায়।</p>
 
-  <ul>
-    <li><strong>Latency ≠ throughput:</strong> Network-এর latency জঘন্য হতে পারে, কিন্তু throughput disk-কে হারাতে পারে। "কোনটা দরকার" আগে ঠিক করো — একটা payment confirm (latency-র খেলা) আর একটা backup (throughput-এর খেলা) সম্পূর্ণ আলাদা design চায়।</li>
-    <li><strong>Contention সব হিসাব উল্টে দেয়:</strong> কাগজে-কলমে দ্রুত জিনিসও লাইনে দাঁড়ালে ধীর। এক মিউটেক্সে দশ থ্রেড, এক DB row-এ শত transaction, এক NVMe-তে হাজার random write — resource-এর গতি না, <strong>queue-র দৈর্ঘ্য</strong> তখন তোমার latency। Load বাড়লে response time ধীরে না, hockey-stick-এ বাড়ে — queuing-এর স্বভাবই এই।</li>
-    <li><strong>Cache মানেই দুই জগৎ:</strong> প্রতিটা স্তরে hit আর miss-এর পার্থক্য এত বড় যে "গড় সময়" প্রায়ই মিথ্যা বলে। Benchmark-এ warm/cold আলাদা মাপো; production-এ P99 দেখো, গড় না।</li>
-    <li><strong>Parallelism মাত্রা বদলায়, জাত না:</strong> দশগুণ core দশগুণ throughput দিতে পারে — যদি কাজ ভাগ হয় আর shared state না আটকায়। Serial অংশটুকুই শেষমেশ সিলিং।</li>
-    <li><strong>Bandwidth-ও ফুরায়:</strong> RAM-এরও bandwidth সীমা আছে — সব core মিলে বিশাল data চিবাতে গেলে দ্রুততম CPU-ও ভাতঘুমে যায়।</li>
-  </ul>
+  <h3>সংখ্যার সিঁড়ি</h3>
+  <p>এই বইয়ে আমরা অনেক কিছু মেপেছি, এই Mac-এ আর তার Docker VM-এ। সেগুলো এক জায়গায়, ছোট থেকে বড়:</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 412" width="100%" role="img" aria-label="The latency ladder, on a logarithmic scale from 1 nanosecond to 100 milliseconds, with numbers measured earlier in this book: JS function call 1.2 ns, L1 cache hit 1.3 ns, L2 cache 7.6 ns, Date.now via vDSO 23 ns, RAM random access 121 ns, a system call 155 ns, a 4 KB read from the page cache 0.9 µs, a thread wake-up round trip 2.4 µs, a loopback TCP request and response 60 µs, an NVMe random 4 KB read 79 µs, fsync on Docker's disk 288 µs, F_FULLFSYNC on the Mac 3.6 ms, starting a node process 12.9 ms, and the Nagle plus delayed ACK stall 42 ms">
+      <rect x="450" y="36" width="180" height="336" class="band"/>
+      <text x="360" y="26" text-anchor="middle" class="t-m t-s">nanoseconds</text>
+      <text x="540" y="26" text-anchor="middle" class="t-m t-s">microseconds</text>
+      <text x="690" y="26" text-anchor="middle" class="t-m t-s">milliseconds</text>
+      <line x1="330" y1="36" x2="330" y2="372" class="grid"/>
+      <line x1="390" y1="36" x2="390" y2="372" class="grid"/>
+      <line x1="510" y1="36" x2="510" y2="372" class="grid"/>
+      <line x1="570" y1="36" x2="570" y2="372" class="grid"/>
+      <line x1="690" y1="36" x2="690" y2="372" class="grid"/>
+      <line x1="750" y1="36" x2="750" y2="372" class="grid"/>
+
+      <text x="260" y="54" text-anchor="end" class="t-s">JS function call (Ch 32)</text>
+      <g><title>JS function call: 1.2 ns</title><circle cx="274.8" cy="50" r="12" fill="transparent"/><circle cx="274.8" cy="50" r="5" class="dot-s"/></g>
+      <text x="286" y="54" class="t-m t-s">1.2 ns</text>
+      <text x="260" y="78" text-anchor="end" class="t-s">L1 cache hit (Ch 13)</text>
+      <g><title>L1 cache hit: 1.3 ns</title><circle cx="276.8" cy="74" r="12" fill="transparent"/><circle cx="276.8" cy="74" r="5" class="dot-s"/></g>
+      <text x="288" y="78" class="t-m t-s">1.3 ns</text>
+      <text x="260" y="102" text-anchor="end" class="t-s">L2 cache (Ch 13)</text>
+      <g><title>L2 cache: 7.6 ns</title><circle cx="322.8" cy="98" r="12" fill="transparent"/><circle cx="322.8" cy="98" r="5" class="dot-s"/></g>
+      <text x="334" y="102" class="t-m t-s">7.6 ns</text>
+      <text x="260" y="126" text-anchor="end" class="t-s">Date.now(), vDSO (Ch 32)</text>
+      <g><title>Date.now() via vDSO: 23 ns</title><circle cx="351.7" cy="122" r="12" fill="transparent"/><circle cx="351.7" cy="122" r="5" class="dot-s"/></g>
+      <text x="363" y="126" class="t-m t-s">23 ns</text>
+      <text x="260" y="150" text-anchor="end" class="t-s">RAM, random access (Ch 13)</text>
+      <g><title>RAM, random access: 121 ns</title><circle cx="395.0" cy="146" r="12" fill="transparent"/><circle cx="395.0" cy="146" r="5" class="dot-s"/></g>
+      <text x="407" y="150" class="t-m t-s">121 ns</text>
+      <text x="260" y="174" text-anchor="end" class="t-s">a system call (Ch 32)</text>
+      <g><title>a system call, getppid on Linux: 155 ns</title><circle cx="401.4" cy="170" r="12" fill="transparent"/><circle cx="401.4" cy="170" r="5" class="dot-s"/></g>
+      <text x="413" y="174" class="t-m t-s">155 ns</text>
+      <text x="260" y="198" text-anchor="end" class="t-s">4 KB read, page cache (Ch 23)</text>
+      <g><title>4 KB random read from the page cache: 0.9 µs</title><circle cx="447.3" cy="194" r="12" fill="transparent"/><circle cx="447.3" cy="194" r="5" class="dot-s"/></g>
+      <text x="459" y="198" class="t-m t-s">0.9 µs</text>
+      <text x="260" y="222" text-anchor="end" class="t-s">wake a thread, round trip (Ch 17)</text>
+      <g><title>thread sleep and wake-up round trip: 2.4 µs</title><circle cx="472.4" cy="218" r="12" fill="transparent"/><circle cx="472.4" cy="218" r="5" class="dot-s"/></g>
+      <text x="484" y="222" class="t-m t-s">2.4 µs</text>
+      <text x="260" y="246" text-anchor="end" class="t-s">loopback TCP request + reply (Ch 27)</text>
+      <g><title>loopback TCP request and reply: 60 µs</title><circle cx="556.7" cy="242" r="12" fill="transparent"/><circle cx="556.7" cy="242" r="5" class="dot-s"/></g>
+      <text x="568" y="246" class="t-m t-s">60 µs</text>
+      <text x="260" y="270" text-anchor="end" class="t-s">NVMe random 4 KB read (Ch 20)</text>
+      <g><title>NVMe random 4 KB read, bypassing the cache: 79 µs</title><circle cx="563.8" cy="266" r="12" fill="transparent"/><circle cx="563.8" cy="266" r="5" class="dot-s"/></g>
+      <text x="575" y="270" class="t-m t-s">79 µs</text>
+      <text x="260" y="294" text-anchor="end" class="t-s">fsync, Docker's disk (Ch 39)</text>
+      <g><title>fsync on Docker's disk: 288 µs</title><circle cx="597.6" cy="290" r="12" fill="transparent"/><circle cx="597.6" cy="290" r="5" class="dot-s"/></g>
+      <text x="586" y="294" text-anchor="end" class="t-m t-s">288 µs</text>
+      <text x="260" y="318" text-anchor="end" class="t-s">F_FULLFSYNC, Mac's SSD (Ch 21)</text>
+      <g><title>F_FULLFSYNC on the Mac: 3.6 ms</title><circle cx="663.3" cy="314" r="12" fill="transparent"/><circle cx="663.3" cy="314" r="5" class="dot-s"/></g>
+      <text x="675" y="318" class="t-m t-s">3.6 ms</text>
+      <text x="260" y="342" text-anchor="end" class="t-s">start a node process (Ch 37)</text>
+      <g><title>node hello.js, fork to exit: 12.9 ms</title><circle cx="696.6" cy="338" r="12" fill="transparent"/><circle cx="696.6" cy="338" r="5" class="dot-s"/></g>
+      <text x="708" y="342" class="t-m t-s">12.9 ms</text>
+      <text x="260" y="366" text-anchor="end" class="t-s">Nagle + delayed ACK (Ch 27, 38)</text>
+      <g><title>Nagle and delayed ACK stall: 42 ms</title><circle cx="727.4" cy="362" r="12" fill="transparent"/><circle cx="727.4" cy="362" r="5" class="dot-s"/></g>
+      <text x="739" y="366" class="t-m t-s">42 ms</text>
+
+      <line x1="270" y1="378" x2="750" y2="378" class="axis"/>
+      <text x="270" y="396" text-anchor="middle" class="t-m t-s">1 ns</text>
+      <text x="330" y="396" text-anchor="middle" class="t-m t-s">10</text>
+      <text x="390" y="396" text-anchor="middle" class="t-m t-s">100</text>
+      <text x="450" y="396" text-anchor="middle" class="t-m t-s">1 µs</text>
+      <text x="510" y="396" text-anchor="middle" class="t-m t-s">10</text>
+      <text x="570" y="396" text-anchor="middle" class="t-m t-s">100</text>
+      <text x="630" y="396" text-anchor="middle" class="t-m t-s">1 ms</text>
+      <text x="690" y="396" text-anchor="middle" class="t-m t-s">10</text>
+      <text x="750" y="396" text-anchor="middle" class="t-m t-s">100 ms</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">এই বইয়ে মাপা সংখ্যা, log scale-এ: ডানে প্রতিটা দাগ আগেরটার দশ গুণ। বাঁ থেকে ডানে সাড়ে সাত ঘর, মানে সবচেয়ে সস্তা আর সবচেয়ে দামি কাজের মধ্যে প্রায় সাড়ে তিন কোটি গুণ তফাত। Machine: M4 Pro Mac আর তার Docker VM।</p>
+  <p>সংখ্যাগুলো মুখস্থ করার দরকার নেই, তোমার machine-এ অন্য রকম হবে। মনে রাখার জিনিস হলো মাত্রা আর ধাপ। CPU আর cache থাকে nanosecond-এর ঘরে। Kernel-এ একবার ঢোকা, page cache থেকে পড়া বা একটা thread জাগানো microsecond-এর নিচের দিকে। Disk আর network-এর এক round trip microsecond-এর উপরের দিকে। আর durability (fsync) বা একটা ভুল TCP setting millisecond-এ। প্রতিটা বড় ধাপে দশ থেকে হাজার গুণ। মানুষের মাপে ভাবলে ধাক্কাটা বোঝা যায়: L1-এর একটা ছোঁয়া যদি ১ সেকেন্ড হতো, তাহলে RAM দেড় মিনিট, NVMe থেকে একটা read ১৭ ঘণ্টা, একটা fsync আড়াই দিন, আর delayed ACK-এর একটা আটকে থাকা প্রায় এক বছর। সংখ্যায় বললে, একটা fsync-এর সময়ে CPU প্রায় আড়াই হাজার বার RAM থেকে পড়ে আসতে পারত।</p>
+  <p>এখান থেকে design-এর প্রথম দুটো নিয়ম আসে। এক: যে data বারবার লাগে, সেটা সিঁড়ির উপরের দিকে রাখো। এই কারণেই CPU cache (Chapter 13), page cache (Chapter 23), আর তোমার application-এর নিজের cache আছে। দুই: নিচের ধাপে নামতে হলে কম বার নামো, প্রতিবার বেশি কাজ নিয়ে। এক byte করে লেখার বদলে batching (Chapter 32), প্রতি order-এ fsync-এর বদলে group commit (Chapter 24), N+1 query-র বদলে একটা query।</p>
+
+  <h3>Latency আর throughput: Little's law</h3>
+  <p>দুটো আলাদা প্রশ্ন প্রায়ই গুলিয়ে যায়। <strong>Latency</strong> মানে একটা কাজ কতক্ষণ নেয়। <strong>Throughput</strong> মানে প্রতি সেকেন্ডে কয়টা কাজ শেষ হয়। দুটোকে জোড়ে একটা সরল নিয়ম, Little's law:</p>
+  <div class="codewrap"><pre><code>L = λ × W
+L = গড়ে একসাথে কয়টা কাজ চলছে (in flight)
+λ = প্রতি সেকেন্ডে কয়টা কাজ আসে (আর স্থির অবস্থায়, শেষ হয়)
+W = প্রতিটা কাজ গড়ে কতক্ষণ system-এর ভেতরে থাকে</code></pre></div>
+  <p>নিয়মটা যেকোনো স্থির system-এ খাটে, কাজ কীভাবে আসে বা কীভাবে সারা হয় তাতে কিছু যায় আসে না। Chapter 20-এর NVMe মনে করো। একটা করে read পাঠালে (L = ১) প্রতিটা ৭৯ µs, তাই λ = ১ ÷ ৭৯ µs ≈ ১২,৬০০ IOPS। ১৬টা একসাথে পাঠালে পাওয়া গিয়েছিল ১,১১,৬১০ IOPS। Little's law দিয়ে প্রতিটার latency: W = ১৬ ÷ ১,১১,৬১০ ≈ ১৪৩ µs। প্রতিটা read প্রায় দ্বিগুণ ধীর, অথচ throughput নয় গুণ। বেশি কাজ একসাথে চালালে throughput বাড়ে, latency কিছুটা বাড়ে, আর কতটা বাড়ে সেটা দেখায় কতগুলো কাজ একসাথে চলছে।</p>
+  <p>রোজকার কাজে এর সবচেয়ে বড় ব্যবহার হলো আকার ঠিক করা। Chapter 38-এর server-এ প্রতিটা DB query ৫ ms। সেকেন্ডে ২০০০ request সামলাতে হলে গড়ে L = ২০০০ × ০.০০৫ = ১০টা query একসাথে চলবে। একটা connection-এ query একটার পর একটা চললে সেকেন্ডে ২০০টার বেশি হবে না; তাই connection pool-এ অন্তত ১০টা connection লাগবে, আর ওঠানামা সামলাতে কিছু বেশি। Accept queue-এর আকার (Chapter 26), thread pool-এর আকার (Chapter 19), সবখানে একই হিসাব।</p>
+
+  <h3>লাইন: utilization বাড়লে latency লাফায়</h3>
+  <p>Chapter 39-এ বলেছিলাম saturation, মানে লাইন, utilization-এর চেয়ে গুরুত্বপূর্ণ। কেন? একটা resource ১০০% ব্যস্ত না হলেও লাইন তৈরি হয়, কারণ কাজ সমান তালে আসে না। কখনো তিনটা একসাথে আসে, তারপর কিছুক্ষণ কেউ না। একসাথে আসা তিনজনের দুজনকে দাঁড়াতে হয়, আর পরের ফাঁকা সময়টা ফেরত আসে না। এর দাম কত, সেটা সূত্র দিয়ে না, একটা simulation দিয়ে দেখি। একটা server, প্রতিটা request-এর কাজ গড়ে ১ ms, request আসে এলোমেলো সময়ে; শুধু আসার হার বাড়াব:</p>
+  <div class="codewrap"><pre><code>// queue.js — একটা server, একটা লাইন: প্রতিটা request-এর কাজ গড়ে ১ ms, আর request আসে এলোমেলো সময়ে।
+// Utilization বাড়ালে latency কী করে? Simulation: ঘড়িটা নিজেরা চালাই, আসল অপেক্ষা লাগে না।
+let seed = 42;                                                  // নির্দিষ্ট seed: তোমার output আমার সাথে হুবহু মিলবে
+const uniform = () =&gt; ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const random = mean =&gt; -mean * Math.log(1 - uniform());          // এলোমেলো সময়, কিন্তু গড় = mean
+function run(util, n = 1e6) {
+  const work = 1;                                   // ms, প্রতিটা request-এর গড় কাজ
+  const rate = util / work;                         // প্রতি ms-এ গড়ে কয়টা request আসে
+  let now = 0, freeAt = 0, inSystemSum = 0;
+  const done = [], latency = new Float64Array(n);
+  for (let i = 0, head = 0; i &lt; n; i++) {
+    now += random(1 / rate);                        // পরের request এল
+    while (head &lt; done.length &amp;&amp; done[head] &lt;= now) head++;
+    inSystemSum += done.length - head;              // সে এসে কতজনকে ভেতরে দেখল
+    const start = Math.max(now, freeAt);            // server ব্যস্ত থাকলে লাইনে দাঁড়াও
+    freeAt = start + random(work);
+    done.push(freeAt);
+    latency[i] = freeAt - now;                      // লাইনে অপেক্ষা + নিজের কাজ
+  }
+  latency.sort();
+  const mean = latency.reduce((a, b) =&gt; a + b) / n;
+  return { mean, p50: latency[n * 0.5 | 0], p99: latency[n * 0.99 | 0], L: inSystemSum / n, rate };
+}
+console.log('util   mean    p50     p99    | in system  λ×W');
+for (const u of [0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]) {
+  const r = run(u), f = x =&gt; x.toFixed(1).padStart(5);
+  console.log(`${String(u * 100).padStart(3)}%  ${f(r.mean)}  ${f(r.p50)}  ${f(r.p99)} ms |  ${r.L.toFixed(2).padStart(6)}  ${(r.rate * r.mean).toFixed(2).padStart(6)}`);
+}</code></pre></div>
+  <div class="codewrap"><pre><code>node queue.js</code></pre></div>
+  <div class="codewrap"><pre><code>util   mean    p50     p99    | in system  λ×W
+ 10%    1.1    0.8    5.1 ms |    0.11    0.11
+ 30%    1.4    1.0    6.6 ms |    0.43    0.43
+ 50%    2.0    1.4    9.2 ms |    0.99    1.00
+ 70%    3.3    2.3   15.2 ms |    2.33    2.33
+ 80%    5.0    3.5   22.8 ms |    4.00    4.00
+ 90%   10.0    7.0   47.0 ms |    9.03    9.03
+ 95%   19.7   13.8   86.2 ms |   18.70   18.71</code></pre></div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 350" width="100%" role="img" aria-label="Latency against utilization from queue.js, for work that takes 1 ms on average. The mean latency grows from 1.1 ms at 10 percent utilization to 2.0 at 50, 5.0 at 80, 10.0 at 90 and 19.7 at 95 percent. The 99th percentile grows from 5.1 ms to 9.2 at 50, 22.8 at 80, 47.0 at 90 and 86.2 ms at 95 percent. Both curves stay flat and then shoot up past 70 percent">
+      <rect x="542" y="30" width="198" height="270" class="band"/>
+      <text x="641" y="22" text-anchor="middle" class="t-m t-s">past ~70%: the queue takes over</text>
+      <line x1="80" y1="300" x2="740" y2="300" class="axis"/>
+      <line x1="80" y1="30" x2="80" y2="300" class="axis"/>
+      <line x1="80" y1="242.2" x2="740" y2="242.2" class="grid"/>
+      <line x1="80" y1="184.4" x2="740" y2="184.4" class="grid"/>
+      <line x1="80" y1="126.7" x2="740" y2="126.7" class="grid"/>
+      <line x1="80" y1="68.9" x2="740" y2="68.9" class="grid"/>
+      <text x="70" y="304" text-anchor="end" class="t-m t-s">0</text>
+      <text x="70" y="246" text-anchor="end" class="t-m t-s">20</text>
+      <text x="70" y="188" text-anchor="end" class="t-m t-s">40</text>
+      <text x="70" y="131" text-anchor="end" class="t-m t-s">60</text>
+      <text x="70" y="73" text-anchor="end" class="t-m t-s">80 ms</text>
+      <text x="80" y="320" text-anchor="middle" class="t-m t-s">0%</text>
+      <text x="212" y="320" text-anchor="middle" class="t-m t-s">20%</text>
+      <text x="344" y="320" text-anchor="middle" class="t-m t-s">40%</text>
+      <text x="476" y="320" text-anchor="middle" class="t-m t-s">60%</text>
+      <text x="608" y="320" text-anchor="middle" class="t-m t-s">80%</text>
+      <text x="740" y="320" text-anchor="middle" class="t-m t-s">100%</text>
+      <text x="410" y="336" text-anchor="middle" class="t-m t-s">utilization of the server</text>
+
+      <path d="M146 285.3 L278 280.9 L410 273.4 L542 256.1 L608 234.1 L674 164.2 L707 51.0" class="ln-s dash"/>
+      <path d="M146 296.8 L278 296.0 L410 294.2 L542 290.5 L608 285.6 L674 271.1 L707 243.1" class="ln-s"/>
+      <g><title>10%: p99 5.1 ms</title><circle cx="146" cy="285.3" r="12" fill="transparent"/><circle cx="146" cy="285.3" r="4.5" class="dot-s"/></g>
+      <g><title>30%: p99 6.6 ms</title><circle cx="278" cy="280.9" r="12" fill="transparent"/><circle cx="278" cy="280.9" r="4.5" class="dot-s"/></g>
+      <g><title>50%: p99 9.2 ms</title><circle cx="410" cy="273.4" r="12" fill="transparent"/><circle cx="410" cy="273.4" r="4.5" class="dot-s"/></g>
+      <g><title>70%: p99 15.2 ms</title><circle cx="542" cy="256.1" r="12" fill="transparent"/><circle cx="542" cy="256.1" r="4.5" class="dot-s"/></g>
+      <g><title>80%: p99 22.8 ms</title><circle cx="608" cy="234.1" r="12" fill="transparent"/><circle cx="608" cy="234.1" r="4.5" class="dot-s"/></g>
+      <g><title>90%: p99 47.0 ms</title><circle cx="674" cy="164.2" r="12" fill="transparent"/><circle cx="674" cy="164.2" r="4.5" class="dot-s"/></g>
+      <g><title>95%: p99 86.2 ms</title><circle cx="707" cy="51.0" r="12" fill="transparent"/><circle cx="707" cy="51.0" r="4.5" class="dot-s"/></g>
+      <g><title>10%: mean 1.1 ms</title><circle cx="146" cy="296.8" r="12" fill="transparent"/><circle cx="146" cy="296.8" r="4.5" class="dot-s"/></g>
+      <g><title>30%: mean 1.4 ms</title><circle cx="278" cy="296.0" r="12" fill="transparent"/><circle cx="278" cy="296.0" r="4.5" class="dot-s"/></g>
+      <g><title>50%: mean 2.0 ms</title><circle cx="410" cy="294.2" r="12" fill="transparent"/><circle cx="410" cy="294.2" r="4.5" class="dot-s"/></g>
+      <g><title>70%: mean 3.3 ms</title><circle cx="542" cy="290.5" r="12" fill="transparent"/><circle cx="542" cy="290.5" r="4.5" class="dot-s"/></g>
+      <g><title>80%: mean 5.0 ms</title><circle cx="608" cy="285.6" r="12" fill="transparent"/><circle cx="608" cy="285.6" r="4.5" class="dot-s"/></g>
+      <g><title>90%: mean 10.0 ms</title><circle cx="674" cy="271.1" r="12" fill="transparent"/><circle cx="674" cy="271.1" r="4.5" class="dot-s"/></g>
+      <g><title>95%: mean 19.7 ms</title><circle cx="707" cy="243.1" r="12" fill="transparent"/><circle cx="707" cy="243.1" r="4.5" class="dot-s"/></g>
+      <text x="694" y="55" text-anchor="end" class="t-s">p99 · 86 ms</text>
+      <text x="694" y="238" text-anchor="end" class="t-s">mean · 20 ms</text>
+      <line x1="100" y1="52" x2="136" y2="52" class="ln-s dash"/>
+      <text x="144" y="56" class="t-s">p99: 99 of 100 requests are faster</text>
+      <line x1="100" y1="76" x2="136" y2="76" class="ln-s"/>
+      <text x="144" y="80" class="t-s">mean</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">queue.js-এর ফল। কাজ একই, ১ ms; শুধু utilization বাড়ছে। ৫০% পর্যন্ত প্রায় সমতল, তারপর বাঁক নিয়ে খাড়া। গড় (নিচের রেখা) ৯৫%-এ বিশ গুণ, আর P99 (dashed) ৮৬ গুণ।</p>
+  <p>৫০% utilization-এ latency দ্বিগুণ: গড়ে যতক্ষণ নিজের কাজ, ততক্ষণই লাইনে। ৮০%-এ পাঁচ গুণ, ৯০%-এ দশ গুণ, ৯৫%-এ বিশ গুণ। এই ধরনের একটা লাইনের জন্য নিয়মটা সরল: গড় latency = কাজের সময় ÷ (১ − utilization)। Utilization যত ১০০%-এর কাছে যায়, হর তত শূন্যের দিকে, আর latency অসীমের দিকে। এটাই "hockey stick"। Server হঠাৎ "পড়ে যায়" এভাবেই: traffic ৮০% থেকে ৯০%-এ উঠল, মানে মাত্র ১২% বেশি, অথচ latency দ্বিগুণ। শেষ দুই কলামে Little's law নিজে থেকেই মিলে গেছে: আসা request-রা ভেতরে গড়ে যতজনকে দেখেছে, সেটা λ × W-এর সমান।</p>
+  <p>বাস্তবে এর মানে: latency যেখানে জরুরি, সেখানে কোনো resource-কে ৭০–৮০%-এর বেশি ব্যস্ত রাখার পরিকল্পনা কোরো না। বাকিটা অপচয় না, সেটাই লাইন শোষণ করার জায়গা। CPU, DB connection pool, একটা Node process-এর event loop (Chapter 39), disk, সবার জন্য একই কথা।</p>
+
+  <h3>গড় কেন মিথ্যা বলে: P50, P99</h3>
+  <p>ওপরের table-এ ৯০% utilization-এ গড় ১০ ms, কিন্তু P50 ৭ ms আর P99 ৪৭ ms। <strong>Percentile</strong> মানে: সব মাপ ছোট থেকে বড় সাজালে P50 হলো ঠিক মাঝেরটা, আর P99 হলো সেই মান, যার চেয়ে ধীর মাত্র ১%। গড় দুটোর কোনোটাই না। অল্প কয়েকটা খুব ধীর request গড়কে টেনে তোলে, অথচ বেশিরভাগ user সেই গড় কখনো দেখে না। আর সবচেয়ে খারাপ অভিজ্ঞতাটা গড়ে লুকিয়ে যায়।</p>
+  <p>Chapter 39-এর lag.sh এর আরেকটা উদাহরণ: <code>/ping</code>-এর P50 ০.৭ ms, P99 ৫৬ ms। Dashboard-এ শুধু গড় বা P50 দেখলে মনে হতো server ঠিক আছে। অথচ প্রতি একশো request-এর একটা ৫০ ms আটকে ছিল, আর সেটাই event loop আটকে যাওয়ার একমাত্র চিহ্ন।</p>
+  <p>P99 কেন "প্রায় কেউ না"-র সংখ্যা না, সেটা বোঝা যায় যখন একটা page বা API অনেকগুলো backend call করে। প্রতিটা call ১% সম্ভাবনায় ধীর হলে, ১০টা call-এর মধ্যে অন্তত একটা ধীর হওয়ার সম্ভাবনা কত?</p>
+  <div class="codewrap"><pre><code>node -p "(1 - 0.99 ** 10).toFixed(3) + '  ' + (1 - 0.99 ** 100).toFixed(3)"</code></pre></div>
+  <div class="codewrap"><pre><code>0.096  0.634</code></pre></div>
+  <p>১০টা call-এ প্রায় ১০%, ১০০টায় ৬৩%। Page-টা সবচেয়ে ধীর call-এর জন্য অপেক্ষা করে, তাই backend-এর P99 হয়ে যায় page-এর P90। বড় system-এ tail, মানে সবচেয়ে ধীর কয়েক শতাংশ, অনেক user-এর রোজকার অভিজ্ঞতা। তাই latency-র লক্ষ্য লেখো percentile-এ ("P99 &lt; ১০০ ms"), গড়ে না।</p>
+
+  <h3>Amdahl's law: parallel-এর সিলিং</h3>
+  <p>Chapter 14-এর parallel.js মনে করো: ১২টা worker-এ ৮ গুণ দ্রুত, ১২ গুণ না; ২৪টায় আরও ধীর। কারণের একটা অংশ হার্ডওয়্যার: এই Mac-এর ১২ core-এর ৪টা ছোট efficiency core। আরেকটা অংশ আরও মৌলিক: প্রতিটা কাজের কিছু অংশ ভাগ করা যায় না। Worker চালু করা, কাজ ভাগ করে দেওয়া, ফল জোড়া দেওয়া, একটা shared lock বা একটা DB row-এর জন্য লাইন। এর নাম Amdahl's law: কাজের যে অংশ parallel করা যায় না, core যতই বাড়াও সেটা একই সময় নেয়:</p>
+  <div class="codewrap"><pre><code>// amdahl.js — কাজের ৯৫% ভাগ করা যায়, ৫% যায় না: core বাড়ালে কত গুণ দ্রুত?
+const speedup = (parallel, cores) =&gt; 1 / ((1 - parallel) + parallel / cores);
+for (const n of [1, 2, 4, 8, 12, 100, Infinity])
+  console.log(`${String(n).padStart(8)} cores: ${speedup(0.95, n).toFixed(1).padStart(4)}×`);</code></pre></div>
+  <div class="codewrap"><pre><code>       1 cores:  1.0×
+       2 cores:  1.9×
+       4 cores:  3.5×
+       8 cores:  5.9×
+      12 cores:  7.7×
+     100 cores: 16.8×
+Infinity cores: 20.0×</code></pre></div>
+  <p>মাত্র ৫% ভাগ-না-করা অংশ থাকলে ১২ core-এ ৭.৭ গুণ, ১০০ core-এ ১৬.৮, আর অসীম core-এও ২০ গুণের বেশি না। সিলিং ঠিক করে দেয় serial অংশটা: ১ ÷ ০.০৫। তাই কোনো system-কে scale করতে চাইলে আগে খোঁজো কোন অংশ serial। Node-এ সবচেয়ে বড় serial অংশ প্রায়ই event loop নিজে: একটা process-এর সব JS একটা thread-এ। এই কারণেই CPU-ভারী Node service একাধিক process-এ চালাতে হয় (cluster, একাধিক container), আর ভারী কাজ worker-এ পাঠাতে হয় (Chapter 19)।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"Server ৬০% CPU-তে চলছে, তাই এখনো ৪০% জায়গা আছে। Traffic দেড় গুণ হলেও চলবে।" Queue.js বলছে উল্টো। ৬০% থেকে ৯০%-এ গেলে গড় latency ২.৫ ms থেকে ১০ ms, চার গুণ; P99 আরও বেশি। আর traffic কখনো সমান তালে আসে না: এক মিনিটের গড় ৬০% মানে কিছু সেকেন্ডে ৯০%-এর বেশি। Capacity-র হিসাব utilization দিয়ে না, latency-র লক্ষ্য দিয়ে করো: "P99 ১০০ ms-এর নিচে রেখে কত traffic নেওয়া যায়?", আর সেটা load test করে মাপো।</p>
+  </div>
 
   <div class="box concept">
     <div class="box-title">শেষ কথা — চারটা প্রশ্নের অভ্যাস</div>
-    <p>যেকোনো system/feature/bug-এর সামনে দাঁড়িয়ে জিজ্ঞেস করো: <strong>(১)</strong> Data কোন স্তরে বসে আছে, আর প্রতি request-এ কোন স্তর পর্যন্ত নামতে হচ্ছে? <strong>(২)</strong> কোথায় boundary পার হচ্ছি (syscall, network, process) — আর কতবার? <strong>(৩)</strong> কোথায় queue জমছে — কে কার জন্য অপেক্ষায়? <strong>(৪)</strong> কী shared — আর সেটাই কি লাইনের কারণ? এই চার প্রশ্ন সঙ্গে থাকলে এই বইয়ের প্রতিটা chapter তোমার হাতিয়ার।</p>
+    <p>যেকোনো system, feature বা bug-এর সামনে দাঁড়িয়ে চারটা প্রশ্ন। <strong>(১) Data সিঁড়ির কোন ধাপে?</strong> প্রতিটা request কত নিচে নামছে: cache, RAM, kernel, disk, network? উপরে রাখা যায় কি? <strong>(২) সীমানা কতবার পার হচ্ছি?</strong> Syscall, process, network-এর প্রতিটা পারাপারের একটা স্থির দাম আছে। কম বার, বড় টুকরোয় পার হওয়া যায় কি? <strong>(৩) লাইন কোথায়?</strong> কোন resource ৭০%-এর বেশি ব্যস্ত, কে কার অপেক্ষায়, কত লম্বা লাইনে? আর আমি গড় দেখছি, নাকি P99? <strong>(৪) কোন অংশ serial বা shared?</strong> একটা lock, একটা event loop, একটা DB row, একটা connection: সেটাই শেষে সিলিং। এই চার প্রশ্নের প্রতিটার উত্তর দিতে এই বইয়ের কোনো না কোনো chapter লাগে। আর উত্তরগুলো অনুমানে না, মেপে দাও।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>সিঁড়ির সংখ্যাগুলো থেকে: একটা request-এ ১০০০টা ছোট syscall আর একটা fsync থাকলে কোনটা বেশি সময় নেবে? L1 থেকে delayed ACK পর্যন্ত মোটামুটি কত গুণ তফাত?</li>
+      <li>Little's law কী বলে? NVMe-তে ১৬টা read একসাথে পাঠালে প্রতিটা ধীর হলো অথচ throughput নয় গুণ বাড়ল, কীভাবে? ৫ ms-এর query দিয়ে সেকেন্ডে ২০০০ request সামলাতে কয়টা DB connection লাগবে?</li>
+      <li>queue.js-এ কাজ একই রেখেও ৯৫% utilization-এ গড় latency বিশ গুণ কেন? ১০০% ব্যস্ত না হয়েও লাইন তৈরি হয় কেন? Latency-জরুরি resource-কে কেন ৭০–৮০%-এর নিচে রাখা ভালো?</li>
+      <li>P50, P99 আর গড়ের পার্থক্য কী? ১০টা backend call-এর page-এ backend-এর P99 কেন page-এর প্রায় P90 হয়ে যায়?</li>
+      <li>৫% serial অংশ থাকলে অসীম core-এও ২০ গুণের বেশি দ্রুত হয় না কেন? Node service-এ সবচেয়ে সাধারণ serial অংশ কোনটা, আর তার সমাধান কী?</li>
+    </ul>
   </div>

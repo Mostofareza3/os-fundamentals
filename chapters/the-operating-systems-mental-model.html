@@ -1,29 +1,109 @@
   <p class="part-label">উপসংহার</p>
   <h2>The Operating Systems Mental Model</h2>
-  <p class="chap-sub">পুরো বই, এক ছবিতে — তারপর সুতোগুলোর জোড়া।</p>
+  <p class="chap-sub">পুরো বই এক ছবিতে: তোমার JS থেকে silicon পর্যন্ত প্রতিটা স্তর, আর কোন chapter কোন স্তরের কথা বলে। তারপর পাঁচটা সুতো, যেগুলো চল্লিশটা chapter-কে একসাথে বেঁধে রাখে।</p>
 
-  <pre class="diagram"><span class="u">        Application (তোমার code)</span>
-<span class="u">        Runtime / Libraries (V8, libc, JVM)</span>
-<span class="u">┌─────────────  USER SPACE  ─────────────┐</span>
-│  process memory: code · data · heap · stack  │
-└──────────────────┬─────────────────────┘
-          <span class="dim">system calls (একমাত্র দরজা)</span>
-<span class="k">┌────────────────  KERNEL  ──────────────┐</span>
-<span class="k">│ Process Mgmt   — scheduler, fork, states │</span>
-<span class="k">│ Memory Mgmt    — page tables, page cache │</span>
-<span class="k">│ File System    — VFS, ext4, inodes       │</span>
-<span class="k">│ Network Stack  — sockets, TCP/IP, queues │</span>
-<span class="k">│ Device Drivers — disk, NIC (DMA, IRQ)    │</span>
-<span class="k">└──────────────────┬─────────────────────┘</span>
-                   ↓
-        Hardware:  CPU (+cache) · RAM · Storage · Network</pre>
+  <p>প্রতিটা chapter একটা জায়গায় zoom করেছে। এই পাতায় zoom-out: সব জায়গা একসাথে, কে কার উপর দাঁড়িয়ে, আর কোথায় সীমানা। কোনো স্তর ঝাপসা লাগলে পাশে লেখা chapter-এ ফিরে যাও।</p>
 
-  <h3>সুতোগুলো</h3>
+  <figure class="fig">
+    <svg viewBox="0 0 800 560" width="100%" role="img" aria-label="The whole stack in one picture, top to bottom. In user mode, inside one process: your JavaScript; the runtime, V8 with its JIT and garbage-collected heap and libuv with the event loop and thread pool; libc and the dynamic linker; all inside one address space with code, heap, stacks and mapped files, several threads and a table of file descriptors. The user-kernel boundary is crossed by system calls, exceptions such as page faults, and interrupts, and signals come back the other way. In kernel mode: processes and the scheduler, virtual memory and the page cache, the VFS and file systems, the network stack with sockets and TCP/IP buffers, and drivers with DMA and interrupts, with namespaces, cgroups, capabilities and seccomp across all of them making containers. Below that, the hardware: CPU cores with pipelines and caches, RAM, the NVMe SSD and the network card. Under everything, in a virtual machine, sits a hypervisor">
+      <text x="24" y="22" class="t-u t-s">user mode</text>
+      <rect x="20" y="30" width="640" height="232" rx="12" class="b-m"/>
+      <text x="36" y="50" class="t-m t-s">one process</text>
+
+      <rect x="36" y="58" width="608" height="38" rx="8" class="b-u"/>
+      <text x="52" y="82" class="t-h t-s">your JavaScript</text>
+      <text x="200" y="82" class="t-m t-s">handlers, objects on the heap, closures, await</text>
+      <rect x="36" y="104" width="296" height="52" rx="8" class="b-u"/>
+      <text x="52" y="126" class="t-h t-s">V8</text>
+      <text x="52" y="145" class="t-m t-s">interpreter + JIT, heap, GC</text>
+      <rect x="348" y="104" width="296" height="52" rx="8" class="b-u"/>
+      <text x="364" y="126" class="t-h t-s">libuv</text>
+      <text x="364" y="145" class="t-m t-s">event loop (epoll), thread pool</text>
+      <rect x="36" y="164" width="608" height="30" rx="8" class="b-u"/>
+      <text x="52" y="184" class="t-h t-s">libc · ld.so</text>
+      <text x="200" y="184" class="t-m t-s">wrappers around system calls, shared libraries</text>
+      <text x="52" y="218" class="t-s">address space: code · data · heap · stacks · mmap</text>
+      <text x="52" y="238" class="t-s">threads (tasks) · fd table: files, sockets, pipes</text>
+
+      <text x="676" y="82" class="t-m t-s">Ch 4, 6, 19</text>
+      <text x="676" y="136" class="t-m t-s">Ch 4, 6, 16,</text>
+      <text x="676" y="152" class="t-m t-s">19, 24, 29</text>
+      <text x="676" y="184" class="t-m t-s">Ch 33, 34</text>
+      <text x="676" y="218" class="t-m t-s">Ch 3, 5, 9,</text>
+      <text x="676" y="234" class="t-m t-s">16, 21</text>
+
+      <line x1="10" y1="282" x2="790" y2="282" class="ln-k dash"/>
+      <text x="400" y="276" text-anchor="middle" class="t-k t-s">↓ syscall · page fault (exception) · interrupt · ↑ signal</text>
+      <text x="676" y="298" class="t-m t-s">Ch 1, 31, 32</text>
+
+      <text x="24" y="300" class="t-k t-s">kernel mode</text>
+      <rect x="20" y="308" width="118" height="84" rx="8" class="b-k"/>
+      <text x="79" y="332" text-anchor="middle" class="t-h t-s">processes</text>
+      <text x="79" y="350" text-anchor="middle" class="t-m t-s">scheduler,</text>
+      <text x="79" y="366" text-anchor="middle" class="t-m t-s">fork, exec, wait</text>
+      <text x="79" y="384" text-anchor="middle" class="t-m t-s">Ch 15, 17</text>
+      <rect x="146" y="308" width="118" height="84" rx="8" class="b-k"/>
+      <text x="205" y="332" text-anchor="middle" class="t-h t-s">memory</text>
+      <text x="205" y="350" text-anchor="middle" class="t-m t-s">page tables,</text>
+      <text x="205" y="366" text-anchor="middle" class="t-m t-s">page cache</text>
+      <text x="205" y="384" text-anchor="middle" class="t-m t-s">Ch 9, 10, 23</text>
+      <rect x="272" y="308" width="118" height="84" rx="8" class="b-k"/>
+      <text x="331" y="332" text-anchor="middle" class="t-h t-s">files</text>
+      <text x="331" y="350" text-anchor="middle" class="t-m t-s">VFS, inodes,</text>
+      <text x="331" y="366" text-anchor="middle" class="t-m t-s">journal</text>
+      <text x="331" y="384" text-anchor="middle" class="t-m t-s">Ch 21, 22</text>
+      <rect x="398" y="308" width="118" height="84" rx="8" class="b-k"/>
+      <text x="457" y="332" text-anchor="middle" class="t-h t-s">network</text>
+      <text x="457" y="350" text-anchor="middle" class="t-m t-s">sockets, TCP/IP,</text>
+      <text x="457" y="366" text-anchor="middle" class="t-m t-s">buffers, queues</text>
+      <text x="457" y="384" text-anchor="middle" class="t-m t-s">Ch 25–27</text>
+      <rect x="524" y="308" width="118" height="84" rx="8" class="b-k"/>
+      <text x="583" y="332" text-anchor="middle" class="t-h t-s">drivers</text>
+      <text x="583" y="350" text-anchor="middle" class="t-m t-s">DMA,</text>
+      <text x="583" y="366" text-anchor="middle" class="t-m t-s">interrupts</text>
+      <text x="583" y="384" text-anchor="middle" class="t-m t-s">Ch 2, 11</text>
+      <rect x="20" y="400" width="622" height="28" rx="8" class="b-k"/>
+      <text x="331" y="419" text-anchor="middle" class="t-s">namespaces · cgroups · capabilities · seccomp = containers</text>
+      <text x="676" y="419" class="t-m t-s">Ch 36</text>
+
+      <line x1="10" y1="444" x2="790" y2="444" class="ln dash"/>
+      <text x="24" y="462" class="t-m t-s">hardware</text>
+      <rect x="20" y="470" width="244" height="44" rx="8" class="b"/>
+      <text x="142" y="489" text-anchor="middle" class="t-h t-s">CPU cores</text>
+      <text x="142" y="506" text-anchor="middle" class="t-m t-s">pipeline, caches · Ch 12–14</text>
+      <rect x="272" y="470" width="118" height="44" rx="8" class="b"/>
+      <text x="331" y="489" text-anchor="middle" class="t-h t-s">RAM</text>
+      <text x="331" y="506" text-anchor="middle" class="t-m t-s">Ch 7, 8</text>
+      <rect x="398" y="470" width="118" height="44" rx="8" class="b"/>
+      <text x="457" y="489" text-anchor="middle" class="t-h t-s">NVMe SSD</text>
+      <text x="457" y="506" text-anchor="middle" class="t-m t-s">Ch 20</text>
+      <rect x="524" y="470" width="118" height="44" rx="8" class="b"/>
+      <text x="583" y="489" text-anchor="middle" class="t-h t-s">network card</text>
+      <text x="583" y="506" text-anchor="middle" class="t-m t-s">Ch 11, 25</text>
+      <rect x="20" y="522" width="622" height="28" rx="8" class="b-m"/>
+      <text x="331" y="541" text-anchor="middle" class="t-m t-s">in a VM: a hypervisor under the kernel, stage-2 page tables, virtio</text>
+      <text x="676" y="541" class="t-m t-s">Ch 35</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">পুরো stack, ওপর থেকে নিচে। নীল অংশ একটা process-এর ভেতরে, user mode-এ। Amber রেখা সেই সীমানা যেটা শুধু syscall, exception আর interrupt দিয়ে পার হওয়া যায়, আর signal উল্টো দিকে আসে। তার নিচে kernel-এর পাঁচ বিভাগ, আর সবার নিচে hardware। ডানে প্রতিটা স্তরের chapter।</p>
+
+  <h3>পাঁচটা সুতো</h3>
   <ul>
-    <li><strong>সব রাস্তার এক প্যাটার্ন:</strong> চাওয়া (নীল) → syscall → kernel-এর স্তর → hardware → ফেরা। File, network, memory — গল্প একটাই, চরিত্র আলাদা।</li>
-    <li><strong>Illusion স্তরে স্তরে:</strong> Virtual memory প্রতিটা process-কে "memory তোমার একার" বলে; scheduler বলে "CPU তোমার একার"; TCP বলে "নির্ভরযোগ্য stream আছে"; namespace বলে "machine-টা তোমার একার"; hypervisor বলে "hardware তোমার একার"। <strong>OS মানে সুশৃঙ্খল মিথ্যার স্থাপত্য — যে মিথ্যাগুলো আমাদের সরল code লিখতে দেয়।</strong></li>
-    <li><strong>যেখানেই speed-ফারাক, সেখানেই cache/buffer:</strong> CPU cache, TLB, page cache, socket buffers, তোমার Redis — এক pattern-এর পাঁচ তলা।</li>
-    <li><strong>সবকিছুর দাম আছে:</strong> syscall-এর boundary cost, context switch-এর cache-দূষণ, page fault-এর disk-যাত্রা, lock-এর লাইন। Engineering মানে এই দামগুলো জেনে খরচ করা।</li>
+    <li><strong>সব রাস্তার একই আকার।</strong> File পড়া, socket-এ লেখা, একটা page প্রথমবার ছোঁয়া: প্রতিবার তোমার code একটা কিছু চায়, সীমানা পার হয় (syscall বা exception), kernel তার কোনো বিভাগে কাজটা এগোয়, দরকার হলে hardware-কে বলে, আর উত্তর নিয়ে user mode-এ ফেরে। Device-এর কাজ শেষ হলে interrupt এসে kernel-কে জানায়, আর kernel ঘুমন্ত thread-কে জাগায়। চরিত্র আলাদা, গল্প একটাই (Chapter 2, 21, 27, 31)। Chapter 37 আর 38 এই গল্প সত্যি সত্যি trace করে দেখিয়েছে।</li>
+    <li><strong>প্রতিটা স্তর একটা মায়া দেয়, আর প্রতিটা মায়ার একটা দাম।</strong> Virtual memory বলে "পুরো memory তোমার একার", scheduler বলে "CPU তোমার একার", fd বলে "সবকিছু একটা file", TCP বলে "byte হারায় না, ক্রম বদলায় না", namespace বলে "machine-টা তোমার একার", hypervisor বলে "hardware তোমার একার"। এই মায়াগুলোর জন্যই আমরা সরল code লিখতে পারি। কিন্তু মায়া কোথাও না কোথাও ফাটে, আর সেখানেই performance-এর রহস্য লুকায়: প্রথম ছোঁয়ায় page fault, context switch-এর পরে ঠান্ডা cache, Nagle-এর ৪২ ms, <code>os.cpus()</code>-এর ১২ যখন cgroup দিয়েছে আধখানা CPU।</li>
+    <li><strong>যেখানে গতির ফাঁক, সেখানে cache বা buffer।</strong> CPU আর RAM-এর মাঝে cache (Chapter 13), অনুবাদের জন্য TLB (Chapter 9), disk আর RAM-এর মাঝে page cache (Chapter 23), app আর network-এর মাঝে socket buffer (Chapter 27), আর তোমার নিজের application cache। একই কৌশলের পাঁচ তলা। প্রতিটার একই দুই প্রশ্ন: hit না হলে কত দাম, আর cache-এর copy আর আসলটা আলাদা হয়ে গেলে কী হয় (dirty page, false sharing, backpressure)।</li>
+    <li><strong>বেশিরভাগ সময় যায় অপেক্ষায়।</strong> Chapter 38-এর server-এ তোমার JS ৮ ms-এর মধ্যে ০.২৪ ms; বাকিটা DB, kernel আর network। Chapter 37-এ এক লাইনের program ১৩ ms নিল, তোমার লাইন ২ ms-এর কম। অপেক্ষা CPU% দেখে ধরা যায় না, কিন্তু kernel প্রতিটা process-এর সময়ের পুরো হিসাব রাখে। সেই হিসাব (<code>time</code>, strace, vmstat, event loop delay) পড়তে পারাই এই বইয়ের সবচেয়ে কাজের দক্ষতা (Chapter 39)।</li>
+    <li><strong>শেষ পর্যন্ত লাইন আর serial অংশই সীমা ঠিক করে।</strong> Resource-এর গতি না, তার সামনের লাইন latency ঠিক করে, আর utilization ১০০%-এর কাছে গেলে লাইন লাফিয়ে বাড়ে। যে অংশ ভাগ করা যায় না (একটা lock, একটা event loop, একটা DB row), core যতই বাড়াও সেটাই সিলিং (Chapter 18, 40)।</li>
   </ul>
 
-  <p>আর সেই final goal-টা মিলিয়ে দেখো: এখন একটা running application-এর দিকে তাকালে তোমার চোখে ভাসা উচিত — process আর তার address space, stack-এ ওঠানামা করা frames, heap-এ জন্মানো objects, cache-এ hit-miss-এর জুয়া, boundary পেরোনো syscalls, kernel-এর queue আর buffer, disk আর NIC-এর DMA, আর scheduler-এর অদৃশ্য কাঁচি। যদি ভাসে — বইটা কাজ করেছে।</p>
+  <h3>চলন্ত একটা program-এর দিকে তাকালে</h3>
+  <p>বইয়ের শুরুতে লক্ষ্য ছিল একটা চোখ তৈরি করা। এখন <code>node server.js</code>-এর মতো একটা চলন্ত program-এর দিকে তাকালে তোমার দেখতে পাওয়া উচিত:</p>
+  <ul>
+    <li>একটা process আর তার address space। সেখানে map করা আছে node binary-র ৯৯ MB, যার ৩০ MB আসলে RAM-এ, আর V8-এর heap-এ object জন্মাচ্ছে আর GC-তে মরছে।</li>
+    <li>সাতটা thread, আর file বা crypto-র কাজ হলে libuv-এর আরও চারটা। এর মধ্যে একটা তোমার JS চালায়, বাকিরা বেশিরভাগ সময় futex বা epoll-এ ঘুমিয়ে থাকে।</li>
+    <li>কয়েক ডজন fd: listening socket, প্রতিটা client-এর socket, DB-র connection, log file।</li>
+    <li>প্রতিটা request-এ কয়েকটা syscall, একেকটা একশো ns-এর ঘরে, আর তাদের ফাঁকে ফাঁকে CPU-র cache-এ hit আর miss।</li>
+    <li>Kernel-এর ভেতরে প্রতিটা connection-এর buffer আর queue, page cache-এ গরম file, আর disk-এ যাওয়ার অপেক্ষায় dirty page।</li>
+    <li>Scheduler, যে প্রতি millisecond-এ ঠিক করছে কে CPU পাবে, আর container হলে cgroup-এর কোটা, যেটা চুপচাপ তোমার request-কে থামিয়ে রাখতে পারে।</li>
+  </ul>
+  <p>এগুলো যদি চোখে ভাসে, আর কোনটা ঝাপসা সেটা যদি জানো এবং মেপে দেখতে পারো, তাহলে বইটা কাজ করেছে। শেষ পাতায় প্রশ্নগুলো দিয়ে নিজেকে যাচাই করে নাও।</p>

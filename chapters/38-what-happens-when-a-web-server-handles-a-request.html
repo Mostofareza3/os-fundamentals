@@ -1,20 +1,330 @@
   <p class="part-label">PART 11 · PUTTING EVERYTHING TOGETHER</p>
   <h2>Chapter 38 — একটা Web Server-এ Request এলে কী ঘটে?</h2>
-  <p class="chap-sub">দ্বিতীয় মহাসংযোগ — এবং তোমার প্রতিদিনের কাজের সবচেয়ে কাছের গল্পটা। ধরি: Node/Express API, Postgres, এক user browser-এ চাপ দিলো।</p>
+  <p class="chap-sub">তোমার প্রতিদিনের কাজের সবচেয়ে কাছের গল্প: একটা request আসে, handler database-কে জিজ্ঞেস করে, JSON ফেরত যায়। দুই process-এর system call আর network-এর প্রতিটা packet এক সময়রেখায়, তারপর মাপ: তোমার code আসলে কতটুকু সময় নেয়। শেষে ২০টা request একসাথে পাঠিয়ে Chapter 27-এর একটা ফাঁদ নিজে থেকে বেরিয়ে আসে।</p>
 
-  <ol>
-    <li><strong>Browser-এর দিক:</strong> DNS, তারপর TCP handshake — SYN উড়ে এলো তোমার server-এ। <em>তোমার Node process টেরও পেলো না</em> — kernel একাই SYN queue → handshake → accept queue সামলালো। <em>[Ch 26]</em></li>
-    <li><strong>Event loop-এর ঘুম ভাঙলো:</strong> Node <code>epoll_wait</code>-এ ঘুমিয়ে ছিল; listening fd ready → জাগলো → <code>accept()</code> → নতুন connection fd, non-blocking করে epoll-এ ADD। <em>[Ch 29, 25]</em></li>
-    <li><strong>Request এলো:</strong> NIC → DMA → interrupt → kernel TCP: চার-টুপল মিলিয়ে সঠিক socket-এর receive buffer-এ HTTP bytes → epoll-এ সেই fd ready। Node <code>read()</code> করলো, HTTP parse হলো, তোমার route handler ডাক পেলো — <strong>এতক্ষণে, প্রথমবারের মতো, তোমার লেখা code মঞ্চে।</strong> <em>[Ch 27, 29]</em></li>
-    <li><strong>Handler-এ <code>await db.query(...)</code>:</strong> Postgres-এর দিকের socket-এ query <code>write()</code> (send buffer-এ জমা) — আর ব্যস, <em>অপেক্ষা নয়</em>: callback নথিভুক্ত করে event loop পরের event ধরলো। ওই এক thread এই ফাঁকে অন্য দশটা request-এর টুকরো এগোলো — এটাই সেই waiter-এর জাদু। <em>[Ch 28-29, 19]</em></li>
-    <li><strong>ওদিকে Postgres (আলাদা process!):</strong> নিজের socket-এ query পেলো, plan করলো, data চাইলো — তার নিজের page cache-জগৎ, ভাগ্য খারাপে disk: block layer → driver → DMA। ফলাফল socket-এ ফেরত <code>write()</code>। <em>[Ch 21, 23, 20]</em></li>
-    <li><strong>ফলাফল ফিরলো:</strong> আবার NIC → interrupt → TCP → Node-এর সেই fd ready → event loop জাগলো → তোমার <code>await</code>-এর পরের লাইন চললো। Response JSON বানানো — এটুকু খাঁটি CPU কাজ: V8-এর machine code, cache hit/miss, heap-এ object জন্ম (পরে GC-র খোরাক)। <em>[Ch 12-13, 6]</em></li>
-    <li><strong>Response রওনা:</strong> <code>res.json()</code> → শেষমেশ socket-এ <code>write()</code> → send buffer → TCP segment → IP → NIC → ইন্টারনেটের ওপারে browser-এর kernel → তার receive buffer → browser-এর epoll-জাতীয় জিনিস → পর্দায় pixel। <em>[Ch 27]</em></li>
-  </ol>
+  <p>Chapter 37-এ একটা process জন্ম থেকে মৃত্যু পর্যন্ত দেখেছি। Server-এর গল্প আলাদা: process আগে থেকেই চালু, বেশিরভাগ সময় ঘুমিয়ে থাকে, আর প্রতিটা request-এ অল্প কিছুক্ষণ জাগে। এই জেগে ওঠা থেকে আবার ঘুমানো পর্যন্ত কী ঘটে, আর সময় কোথায় যায়, সেটাই এই chapter। আয়োজনটা ছোট, কিন্তু আসল জিনিসের মতো। তিনটা process থাকবে: client হিসেবে <code>curl</code>, একটা Node HTTP server, আর database-এর জায়গায় আলাদা process-এ একটা নকল DB, যে প্রতিটা query-র উত্তর দেয় ৫ ms পরে। Packet ধরবে tcpdump (Chapter 26), syscall ধরবে strace। তিনটা tool-ই একই kernel-এর ঘড়ি দেখে সময় লেখে, তাই সব লাইন সময় ধরে সাজালে একটাই সময়রেখা পাওয়া যায়।</p>
 
-  <p>পুরো যাত্রায় হয়তো তোমার handler-এর CPU-সময় মিলিসেকেন্ডেরও ভগ্নাংশ — বাকিটা kernel-এর কারিগরি আর অপেক্ষার শিল্প। এবার production-এর চেনা রোগগুলোও নতুন চোখে দেখো: <strong>latency spike?</strong> — DB-র disk নাকি event loop কেউ আটকে রেখেছে নাকি accept queue উপচে পড়ছে? <strong>Memory বাড়ছে?</strong> — heap leak নাকি কেউ receive buffer পড়ছে না? প্রতিটা প্রশ্ন এখন এই map-এর কোনো না কোনো জায়গায় pin করা যায়।</p>
+  <h3>তিনটা process, একটা request</h3>
+  <div class="codewrap"><pre><code>// db.js — নকল database: আলাদা process, port 5432; প্রতিটা query-র উত্তর দেয় ৫ ms পরে
+const net = require('net'), readline = require('readline');
+net.createServer(sock =&gt; {
+  if (process.env.NODELAY) sock.setNoDelay(true);        // এখন না; কেন লাগে, chapter-এর শেষে
+  readline.createInterface({ input: sock }).on('line', q =&gt; {      // "user 42", লাইন ধরে ধরে (Chapter 27)
+    const id = Number(q.split(' ')[1]);
+    setTimeout(() =&gt; sock.write(JSON.stringify({ id, name: 'Rahim' }) + '\n'), 5);   // disk আর query-র ভান
+  });
+}).listen(5432, '127.0.0.1');</code></pre></div>
+  <div class="codewrap"><pre><code>// server.js — HTTP server; প্রতিটা request-এ db.js-কে একটা query, তারপর JSON উত্তর
+const http = require('http'), net = require('net'), readline = require('readline');
+const db = net.connect(5432, '127.0.0.1');               // একটাই connection, আগে থেকে খোলা (pool-এর মতো)
+if (process.env.NODELAY) db.setNoDelay(true);            // এখন না; কেন লাগে, chapter-এর শেষে
+const waiting = [];                                      // উত্তরের অপেক্ষায় থাকা query-রা, পাঠানোর ক্রমে
+readline.createInterface({ input: db }).on('line', l =&gt; waiting.shift()(JSON.parse(l)));
+const query = q =&gt; new Promise(resolve =&gt; { waiting.push(resolve); db.write(q + '\n'); });
+
+http.createServer(async (req, res) =&gt; {
+  const t0 = performance.now();
+  const pending = query('user 42');                      // query পাঠানো পর্যন্ত: আমাদের JS
+  const t1 = performance.now();
+  const user = await pending;                            // এখানে handler থামে; event loop অন্য কাজে যায়
+  const t2 = performance.now();
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ user, path: req.url }));      // উত্তর বানানো আর পাঠানো: আবার আমাদের JS
+  const t3 = performance.now();
+  console.error(`handler JS ${(t1 - t0 + t3 - t2).toFixed(2)} ms, waiting for db ${(t2 - t1).toFixed(2)} ms`);
+}).listen(3000, '127.0.0.1');</code></pre></div>
+  <p>DB-র সাথে যোগাযোগ একটা সাধারণ TCP connection-এ, প্রতি লাইনে একটা query, প্রতি লাইনে একটা উত্তর। আসল database driver-ও মূলত এটাই করে, শুধু protocol-টা আরও জটিল। TCP message-এর সীমানা রাখে না (Chapter 27), তাই দুই দিকেই <code>readline</code> byte-এর স্রোত থেকে লাইন কেটে দেয়। Handler নিজের JS-এ কতটা সময় নিল আর DB-র জন্য কতক্ষণ অপেক্ষা করল, সেটা আলাদা করে লিখে রাখে। এবার trace:</p>
+  <div class="codewrap"><pre><code># request.sh — একটা HTTP request: tcpdump-এ packet, strace-এ দুই process-এর syscall, এক সময়রেখায়
+node db.js &amp; sleep 0.3
+node server.js 2&gt; handler.txt &amp; sleep 0.5
+tcpdump -i lo -n -tt -l 'tcp port 3000 or tcp port 5432' &gt; packets.txt 2&gt; /dev/null &amp;
+strace -ttt -e trace=epoll_pwait,epoll_ctl,accept4,read,write,writev,close -o node.txt -p $(pgrep -f server.js) 2&gt; /dev/null &amp;
+strace -ttt -e trace=epoll_pwait,read,write -o db.txt -p $(pgrep -f db.js) 2&gt; /dev/null &amp;
+sleep 1
+curl -s -w '\n' http://127.0.0.1:3000/user/42
+sleep 0.5; kill $(jobs -p); wait 2&gt; /dev/null
+# তিন file এক সময়রেখায়; প্রথম packet (curl-এর SYN) = 0 ms
+{ sed 's/^/net  /' packets.txt; sed 's/^/node /' node.txt; sed 's/^/db   /' db.txt; } | grep -v EINTR | sort -k2 -n |
+  awk '$1 == "net" &amp;&amp; !t0 { t0 = $2 }
+       t0 { printf "%-4s %6.2f  %s\n", $1, ($2 - t0) * 1000, substr($0, index($0, $3)) }' &gt; together.txt
+wc -l &lt; together.txt</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace tcpdump curl procps &gt;/dev/null 2&gt;&amp;1
+  bash request.sh'</code></pre></div>
+  <div class="codewrap"><pre><code>{"user":{"id":42,"name":"Rahim"},"path":"/user/42"}
+45</code></pre></div>
+  <p>এবার <code>strace -p</code>-কে একটা আগে থেকে চালু process-এ জুড়ে দিয়েছি (<code>-p</code> = attach), আর <code>-f</code> দিইনি, তাই শুধু main thread-এর syscall এসেছে। <code>-e trace=</code> দিয়ে শুধু দরকারি syscall-গুলো বেছেছি। শেষের pipeline-এ সেই লাইনগুলো বাদ দিয়েছি, যেগুলো কাজ শেষে strace থামানোর সময় মাঝপথে কাটা পড়ে (<code>EINTR</code>)। Mac-এর terminal-এ <code>cut -c1-100 together.txt</code> চালিয়ে পুরো সময়রেখা দেখো; নিচে সেটা তিন ভাগে ভেঙে পড়ছি, আগে পুরো ছবিটা:</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 474" width="100%" role="img" aria-label="Sequence diagram of one request, time running downward. Lanes: curl, the kernel's TCP/IP on the client side, the node server, the kernel on the database side, and db.js. The kernel completes the TCP handshake and receives GET while node sleeps in epoll_pwait. The kernel wakes node, which calls accept4 and read, runs the handler for about 0.4 ms, and writes the query. The kernel delivers it to db.js, which sleeps 5 ms on its timer while node sleeps in epoll_pwait, free for other requests. db.js writes the reply, the kernel wakes node, node builds the JSON and sends it with one writev, the kernel delivers the response to curl. curl closes, node reads 0 bytes and closes too">
+      <defs>
+        <marker id="c38f1-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-u" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="c38f1-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-k" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="10" y="10" width="100" height="32" rx="7" class="b-u"/>
+      <text x="60" y="31" text-anchor="middle" class="t-h t-s">curl</text>
+      <rect x="160" y="10" width="120" height="32" rx="7" class="b-k"/>
+      <text x="220" y="31" text-anchor="middle" class="t-h t-s">kernel TCP/IP</text>
+      <rect x="340" y="10" width="120" height="32" rx="7" class="b-u"/>
+      <text x="400" y="31" text-anchor="middle" class="t-h t-s">node server</text>
+      <rect x="520" y="10" width="120" height="32" rx="7" class="b-k"/>
+      <text x="580" y="31" text-anchor="middle" class="t-h t-s">kernel TCP/IP</text>
+      <rect x="690" y="10" width="100" height="32" rx="7" class="b-u"/>
+      <text x="740" y="31" text-anchor="middle" class="t-h t-s">db.js</text>
+      <line x1="60" y1="42" x2="60" y2="466" class="ln dash"/>
+      <line x1="220" y1="42" x2="220" y2="466" class="ln-k dash"/>
+      <line x1="400" y1="42" x2="400" y2="466" class="ln dash"/>
+      <line x1="580" y1="42" x2="580" y2="466" class="ln-k dash"/>
+      <line x1="740" y1="42" x2="740" y2="466" class="ln dash"/>
+
+      <text x="140" y="66" text-anchor="middle" class="mono">connect()</text>
+      <line x1="60" y1="72" x2="216" y2="72" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="228" y="90" class="t-k t-s">SYN · SYN-ACK · ACK</text>
+      <text x="228" y="104" class="t-m t-s">kernel alone</text>
+      <rect x="392" y="56" width="16" height="84" rx="4" class="b-m"/>
+      <text x="416" y="92" class="t-m t-s">asleep in epoll_pwait</text>
+      <text x="140" y="118" text-anchor="middle" class="mono">GET /user/42</text>
+      <line x1="60" y1="124" x2="216" y2="124" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="310" y="144" text-anchor="middle" class="t-s">wake: accept4, read(20)</text>
+      <line x1="220" y1="150" x2="390" y2="150" class="ln-k" marker-end="url(#c38f1-k)"/>
+
+      <rect x="392" y="150" width="16" height="46" rx="4" class="b-u"/>
+      <text x="386" y="178" text-anchor="end" class="t-u t-s">handler JS</text>
+      <text x="490" y="190" text-anchor="middle" class="mono">write(18) query</text>
+      <line x1="408" y1="196" x2="576" y2="196" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="660" y="208" text-anchor="middle" class="t-s">wake: read(19)</text>
+      <line x1="580" y1="214" x2="730" y2="214" class="ln-k" marker-end="url(#c38f1-k)"/>
+
+      <rect x="392" y="196" width="16" height="108" rx="4" class="b-m"/>
+      <text x="416" y="244" class="t-m t-s">asleep in epoll_pwait,</text>
+      <text x="416" y="260" class="t-m t-s">free for other requests</text>
+      <rect x="732" y="214" width="16" height="76" rx="4" class="b-m"/>
+      <text x="726" y="248" text-anchor="end" class="t-m t-s">asleep 5 ms</text>
+      <text x="726" y="264" text-anchor="end" class="t-m t-s">(its timer)</text>
+
+      <text x="660" y="284" text-anchor="middle" class="mono">write(19) reply</text>
+      <line x1="740" y1="290" x2="584" y2="290" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="490" y="298" text-anchor="middle" class="t-s">wake: read(18)</text>
+      <line x1="580" y1="304" x2="410" y2="304" class="ln-k" marker-end="url(#c38f1-k)"/>
+
+      <rect x="392" y="304" width="16" height="46" rx="4" class="b-u"/>
+      <text x="416" y="332" class="t-u t-s">JSON + headers</text>
+      <text x="310" y="344" text-anchor="middle" class="mono">writev(20)</text>
+      <line x1="400" y1="350" x2="224" y2="350" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="140" y="360" text-anchor="middle" class="t-s">HTTP/1.1 200 OK</text>
+      <line x1="220" y1="366" x2="64" y2="366" class="ln-k" marker-end="url(#c38f1-k)"/>
+
+      <text x="140" y="396" text-anchor="middle" class="mono">close() → FIN</text>
+      <line x1="60" y1="402" x2="216" y2="402" class="ln-u" marker-end="url(#c38f1-u)"/>
+      <text x="310" y="414" text-anchor="middle" class="t-s">wake: read(20) = 0</text>
+      <line x1="220" y1="420" x2="396" y2="420" class="ln-k" marker-end="url(#c38f1-k)"/>
+      <text x="310" y="444" text-anchor="middle" class="mono">close(20) → FIN</text>
+      <line x1="400" y1="450" x2="224" y2="450" class="ln-u" marker-end="url(#c38f1-u)"/>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা request, সময় ওপর থেকে নিচে। নীল তীর একটা syscall: user mode থেকে kernel-এ কিছু দেওয়া। Amber তীর kernel কাউকে জাগিয়ে data দিচ্ছে। দুই "kernel" কলাম এখানে আসলে একই kernel, কারণ তিনটা process এক container-এ, loopback-এ। আলাদা machine হলে প্রতিটা পাশে নিজের kernel থাকত, মাঝে network।</p>
+
+  <h3>Node জাগার আগেই: handshake</h3>
+  <div class="codewrap"><pre><code>net    0.00  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [S], seq 1511807736, win 65495, options [mss
+net    0.02  IP 127.0.0.1.3000 &gt; 127.0.0.1.39244: Flags [S.], seq 1978473728, ack 1511807737, win 65
+net    0.04  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [.], ack 1, win 512, options [nop,nop,TS val
+net    0.11  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [P.], seq 1:86, ack 1, win 512, options [nop
+net    0.12  IP 127.0.0.1.3000 &gt; 127.0.0.1.39244: Flags [.], ack 86, win 511, options [nop,nop,TS va
+node   0.55  accept4(19, NULL, NULL, SOCK_CLOEXEC|SOCK_NONBLOCK) = 20
+node   2.27  epoll_ctl(13, EPOLL_CTL_ADD, 20, {events=EPOLLIN, data={u32=20, u64=20}}) = 0
+node   2.58  epoll_pwait(13, [{events=EPOLLIN, data={u32=20, u64=20}}], 1024, 0, NULL, 8) = 1
+node   2.89  read(20, "GET /user/42 HTTP/1.1\r\nHost: 127"..., 65536) = 85</code></pre></div>
+  <p>প্রথম পাঁচটা লাইনের একটাও Node-এর না। Handshake-এর তিন packet (Chapter 26), তারপর curl-এর ৮৫ byte-এর <code>GET</code> আর তার ACK, সবই ০.১২ ms-এর মধ্যে। পুরো কাজটা kernel একা করেছে: connection তৈরি করে accept queue-তে রেখেছে, আর request-এর byte-গুলো সেই connection-এর receive buffer-এ (Chapter 27)। Node তখনো ঘুমিয়ে ছিল।</p>
+  <p>তারপর Node জাগে। তার ঘুমের <code>epoll_pwait</code> লাইনটা trace-এ নেই, কারণ সেটা strace জোড়ার আগেই শুরু হয়েছিল। Listening socket (fd ১৯) ready হওয়ায় সে জেগে <code>accept4</code> করে। Queue থেকে connection-টা বের হয়ে একটা নতুন fd পায়, ২০, যেটা শুরু থেকেই non-blocking (<code>SOCK_NONBLOCK</code>, Chapter 28)। <code>epoll_ctl(…ADD, 20…)</code> দিয়ে সেটাকে event loop-এর তালিকায় যোগ করে (Chapter 29)। পরের <code>epoll_pwait</code>-এর timeout ০, আর উত্তর সাথে সাথে এসে যায়: fd ২০ ready, কারণ data আগে থেকেই বসে আছে। তারপর এক <code>read</code>-এ পুরো request। HTTP parse হয় user mode-এ, কোনো syscall ছাড়া, আর তারপর প্রথমবারের মতো তোমার handler চলে।</p>
+  <p>(strace-এর নিচে সব সময় ফুলে যায়, Chapter 37-এ দেখেছ। এখানে ক্রমটা দেখো; আসল সময় পরে মাপব।)</p>
+
+  <h3>Handler থামে, event loop থামে না</h3>
+  <div class="codewrap"><pre><code>node   5.05  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
+node   5.85  write(18, "user 42\n", 8) = 8
+net    6.01  IP 127.0.0.1.39076 &gt; 127.0.0.1.5432: Flags [P.], seq 3860823399:3860823407, ack 2050728
+net    6.04  IP 127.0.0.1.5432 &gt; 127.0.0.1.39076: Flags [.], ack 8, win 512, options [nop,nop,TS val
+db     6.33  read(19, "user 42\n", 65536) = 8
+node   6.92  epoll_pwait(13, [{events=EPOLLIN, data={u32=16, u64=16}}], 1024, 0, NULL, 8) = 1
+db     7.52  epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+node   7.75  read(16, "\1\0\0\0\0\0\0\0", 1024) = 8
+db     7.80  epoll_pwait(13, [], 1024, 4, NULL, 8) = 0
+node  10.74  epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+node  10.99  epoll_pwait(13, [{events=EPOLLIN, data={u32=18, u64=18}}], 1024, 28494, NULL, 8) = 1
+db    13.71  write(19, "{\"id\":42,\"name\":\"Rahim\"}\n", 25) = 25
+net   13.83  IP 127.0.0.1.5432 &gt; 127.0.0.1.39076: Flags [P.], seq 1:26, ack 8, win 512, options [nop
+net   13.85  IP 127.0.0.1.39076 &gt; 127.0.0.1.5432: Flags [.], ack 26, win 512, options [nop,nop,TS va
+node  14.00  read(18, "{\"id\":42,\"name\":\"Rahim\"}\n", 65536) = 25</code></pre></div>
+  <p>fd ১৬-এ ৮ byte-এর লেখা আর পড়া Node-এর নিজের ভেতরের ডাকাডাকি। এটা একটা eventfd, Chapter 37-এর বিদায়ের অংশে যেমন দেখেছিলে। এগুলো বাদ দিয়ে পড়ো। বাকি গল্প:</p>
+  <ul>
+    <li><strong>৫.৮৫</strong> — handler <code>query()</code> ডাকল: DB-র socket-এ (fd ১৮) একটা <code>write</code>। ১৬০ µs পরে packet-টা port ৫৪৩২-এ, আর তার ACK।</li>
+    <li><strong>৬.৩৩</strong> — অন্য process, db.js, জেগে <code>read</code> করল। একই kernel, একই মুহূর্তে দুই process-এর কাজ।</li>
+    <li><strong>৭.৮০</strong> — db.js-এর <code>epoll_pwait</code>-এর timeout ৪: তার <code>setTimeout(…, 5)</code>-এর বাকি সময়টা সে kernel-এর ভেতরে ঘুমায়।</li>
+    <li><strong>১০.৯৯</strong> — Node-এর main thread-এরও কিছু করার নেই। Handler <code>await</code>-এ থেমে আছে, অন্য কোনো request নেই, তাই event loop ঘুমাতে যায়। Timeout ২৮৪৯৪ ms, মানে সবচেয়ে কাছের timer পর্যন্ত: http server প্রতি ৩০ সেকেন্ডে একবার পুরনো connection-গুলোর সময়সীমা পরীক্ষা করে, আর server চালু হয়েছে দেড় সেকেন্ড আগে। strace লাইনের সময়টা call শুরুর, আর ফলাফলটা এসেছে পরে: fd ১৮ ready।</li>
+    <li><strong>১৩.৭১</strong> — db.js উত্তর লিখল। Packet গেল, আর kernel Node-কে জাগাল। <code>read(18)</code>-এ ২৫ byte, <code>await</code>-এর পরের লাইন চলতে শুরু করে।</li>
+  </ul>
+  <p>এই chapter-এর সবচেয়ে জরুরি কথা এই অংশে। <code>await</code> মানে thread আটকে থাকা না (Chapter 19)। Handler থেমে আছে, কিন্তু main thread kernel-কে বলে দিয়েছে "এই fd-গুলোর যেকোনোটায় কিছু এলে জাগিও" (Chapter 29), তারপর ঘুমিয়েছে। এই ফাঁকে অন্য কোনো request এলে সে সেটা ধরত। Thread-per-request server-এ (Chapter 28) এই পুরো সময়টা একটা thread শুধু বসে থাকত।</p>
+
+  <h3>উত্তর, আর বিদায়</h3>
+  <div class="codewrap"><pre><code>node  15.62  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 114
+node  15.97  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 60
+node  16.20  close(21)             = 0
+node  17.60  writev(20, [{iov_base="HTTP/1.1 200 OK\r\ncontent-type: a"..., iov_len=206}, {iov_base=
+net   17.69  IP 127.0.0.1.3000 &gt; 127.0.0.1.39244: Flags [P.], seq 1:207, ack 86, win 512, options [n
+net   17.70  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [.], ack 207, win 511, options [nop,nop,TS v
+net   17.85  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [F.], seq 86, ack 207, win 512, options [nop
+node  18.89  write(2, "handler JS 4.16 ms, waiting for "..., 43) = 43
+node  20.18  epoll_pwait(13, [{events=EPOLLIN, data={u32=20, u64=20}}], 1024, 0, NULL, 8) = 1
+node  20.43  read(20, "", 65536)   = 0
+node  21.31  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
+net   21.60  IP 127.0.0.1.3000 &gt; 127.0.0.1.39244: Flags [F.], seq 207, ack 87, win 512, options [nop
+net   21.61  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [.], ack 208, win 512, options [nop,nop,TS v
+node  21.87  epoll_ctl(13, EPOLL_CTL_DEL, 20, 0xfffffdfb95f0) = 0
+node  22.25  close(20)             = 0</code></pre></div>
+  <p>(শেষের কয়েকটা লাইন, Node আবার ঘুমাতে যাওয়ার, বাদ দিয়েছি।) উত্তর পাঠানোর আগে একটা অপ্রত্যাশিত file: <code>TZif2</code> দিয়ে শুরু, মানে timezone-এর তথ্য, <code>/etc/localtime</code>। HTTP response-এ একটা <code>Date:</code> header যায়, আর তারিখ-সময়ের কাজ প্রথমবার হলে সময়ের হিসাবের জন্য এই file পড়তে হয়। শুধু প্রথম request-এ হয়; পরের request-এ আর আসে না।</p>
+  <p>তারপর একটাই <code>writev</code>: status line, header আর body মিলিয়ে ২০৬ byte, একটা syscall, একটা packet (Chapter 32-এর batching)। curl উত্তর পেয়ে connection বন্ধ করে (<code>[F.]</code>)। Node-এর কাছে সেটা আসে <code>read</code> = ০ হিসেবে, মানে "ওপাশ আর কিছু পাঠাবে না"। Node তখন নিজের দিক থেকেও FIN পাঠায়, <code>epoll_ctl(…DEL…)</code> দিয়ে fd ২০-কে তালিকা থেকে সরায়, আর <code>close</code> করে। যে আগে বন্ধ করেছে, সেই curl-এর দিকের socket এখন TIME-WAIT-এ (Chapter 26)।</p>
+
+  <h3>সময় কোথায় যায়</h3>
+  <p>এবার strace আর tcpdump ছাড়া মাপা যাক। পাঁচটা request, একটার পর একটা। curl মাপে মোট সময়, আর server-এর নিজের লাইন বলে তার JS কতক্ষণ চলল:</p>
+  <div class="codewrap"><pre><code># timing.sh — strace আর tcpdump ছাড়া: পাঁচটা request, একটার পর একটা
+node db.js &amp; sleep 0.3
+node server.js 2&gt; handler.txt &amp; sleep 0.5
+for i in 1 2 3 4 5; do
+  curl -s -o /dev/null -w 'total %{time_total}s' http://127.0.0.1:3000/user/42
+  sleep 0.1; echo " | $(tail -1 handler.txt)"
+done
+kill $(jobs -p)</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq curl &gt;/dev/null 2&gt;&amp;1
+  bash timing.sh'</code></pre></div>
+  <div class="codewrap"><pre><code>total 0.015258s | handler JS 2.02 ms, waiting for db 9.17 ms
+total 0.007861s | handler JS 0.24 ms, waiting for db 6.76 ms
+total 0.008050s | handler JS 0.50 ms, waiting for db 6.88 ms
+total 0.007949s | handler JS 0.29 ms, waiting for db 6.69 ms
+total 0.008891s | handler JS 0.43 ms, waiting for db 7.60 ms</code></pre></div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 236" width="100%" role="img" aria-label="Where the time of a request goes, from timing.sh. Request 1, the first one, took 15.3 ms: 2.0 ms of handler JavaScript, 9.2 ms waiting for the database, 4.1 ms everything else. Request 2 took 7.9 ms: 0.24 ms of handler JavaScript, 6.8 ms waiting for the database, 0.9 ms everything else">
+      <text x="140" y="56" text-anchor="end" class="t-s">request 1 (first)</text>
+      <g><title>request 1: handler JS 2.02 ms</title>
+        <rect x="150" y="36" width="73.8" height="32" rx="4" class="b-u"/></g>
+      <text x="186.9" y="57" text-anchor="middle" class="t-s">JS 2.0</text>
+      <g><title>request 1: waiting for db 9.17 ms</title>
+        <rect x="225.8" y="36" width="341.9" height="32" rx="4" class="b-m"/></g>
+      <text x="396.7" y="57" text-anchor="middle" class="t-s">waiting for db 9.2</text>
+      <g><title>request 1: everything else 4.07 ms</title>
+        <rect x="569.7" y="36" width="152.6" height="32" rx="4" class="b"/></g>
+      <text x="646" y="57" text-anchor="middle" class="t-s">other 4.1</text>
+      <text x="730" y="57" class="t-h t-s">15.3 ms</text>
+
+      <text x="140" y="120" text-anchor="end" class="t-s">request 2</text>
+      <g><title>request 2: handler JS 0.24 ms</title>
+        <rect x="150" y="100" width="7" height="32" rx="2" class="b-u"/></g>
+      <g><title>request 2: waiting for db 6.76 ms</title>
+        <rect x="159" y="100" width="251.5" height="32" rx="4" class="b-m"/></g>
+      <text x="284.8" y="121" text-anchor="middle" class="t-s">waiting for db 6.8</text>
+      <g><title>request 2: everything else 0.86 ms</title>
+        <rect x="412.5" y="100" width="32.3" height="32" rx="4" class="b"/></g>
+      <text x="452" y="121" class="t-h t-s">7.9 ms</text>
+      <line x1="153.5" y1="134" x2="153.5" y2="146" class="ln"/>
+      <text x="153.5" y="158" text-anchor="middle" class="t-u t-s">your JS: 0.24</text>
+      <line x1="428.6" y1="134" x2="428.6" y2="146" class="ln"/>
+      <text x="428.6" y="158" text-anchor="middle" class="t-m t-s">other 0.9</text>
+
+      <line x1="150" y1="176" x2="750" y2="176" class="axis"/>
+      <line x1="150" y1="176" x2="150" y2="181" class="axis"/>
+      <text x="150" y="194" text-anchor="middle" class="t-m t-s">0</text>
+      <line x1="300" y1="176" x2="300" y2="181" class="axis"/>
+      <text x="300" y="194" text-anchor="middle" class="t-m t-s">4</text>
+      <line x1="450" y1="176" x2="450" y2="181" class="axis"/>
+      <text x="450" y="194" text-anchor="middle" class="t-m t-s">8</text>
+      <line x1="600" y1="176" x2="600" y2="181" class="axis"/>
+      <text x="600" y="194" text-anchor="middle" class="t-m t-s">12</text>
+      <line x1="750" y1="176" x2="750" y2="181" class="axis"/>
+      <text x="750" y="194" text-anchor="middle" class="t-m t-s">16 ms</text>
+
+      <rect x="150" y="212" width="14" height="14" rx="3" class="b-u"/>
+      <text x="170" y="223" class="t-s">handler's own JS</text>
+      <rect x="300" y="212" width="14" height="14" rx="3" class="b-m"/>
+      <text x="320" y="223" class="t-s">waiting for db (event loop free)</text>
+      <rect x="530" y="212" width="14" height="14" rx="3" class="b"/>
+      <text x="550" y="223" class="t-s">kernel, HTTP parsing, curl</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">timing.sh-এর প্রথম দুই request, strace ছাড়া। দ্বিতীয়টায় ৭.৯ ms-এর মধ্যে তোমার handler-এর JS মাত্র ০.২৪ ms, মানে ৩%। বাকিটা DB-র অপেক্ষা আর সবার কাজ: kernel, HTTP parsing, curl। প্রথম request-এ মোট সময় প্রায় দ্বিগুণ, JS আট গুণ।</p>
+  <p>গরম অবস্থায় (দ্বিতীয় request থেকে) একটা request ৮ ms-এর মতো। তার মধ্যে DB-র অপেক্ষা ৭ ms: DB-র নিজের ৫ ms, সাথে দুই দিকের পথ আর দুই process-এর ঘুম থেকে জাগা। তোমার handler-এর JS ০.২–০.৫ ms। বাকি প্রায় ১ ms-এ সব মিলিয়ে: kernel-এর TCP/IP, Node-এর HTTP parse, curl নিজে। তাই এই endpoint দ্রুত করতে JS optimize করলে লাভ প্রায় নেই। লাভ আছে DB-র কাজ কমালে, বা DB-তে যাওয়াই এড়ালে, যেমন cache দিয়ে।</p>
+  <p>প্রথম request দ্বিগুণ সময় নেয়। JS ২ ms, কারণ handler আর http module-এর উত্তর পাঠানোর code এই প্রথম চলছে: V8-কে এগুলো তখনই parse করে bytecode বানাতে হয়, আর এরা interpreter-এ চলে, JIT-এর machine code-এ না (Chapter 4)। সাথে <code>/etc/localtime</code> পড়া। একেই বলে cold request। Deploy-এর পর প্রথম কিছু request, বা autoscaling-এ নতুন চালু হওয়া instance-এর প্রথম request ধীর হয় এই কারণে। তাই অনেকে traffic পাঠানোর আগে কয়েকটা warm-up request দিয়ে নেয়।</p>
+
+  <h3>২০টা একসাথে: Chapter 27-এর ফাঁদ, নিজে থেকেই</h3>
+  <p>Event loop DB-র অপেক্ষার সময় মুক্ত থাকে। তাহলে ২০টা request একসাথে এলে সবার অপেক্ষা একসাথে চলার কথা, আর মোট সময় একটা request-এর কাছাকাছি হওয়ার কথা। মেপে দেখি:</p>
+  <div class="codewrap"><pre><code>// burst.js — একই request ২০টা, একসাথে; আগে একটা একা, তুলনার জন্য
+const http = require('http');
+const get = () =&gt; new Promise(done =&gt; http.get('http://127.0.0.1:3000/user/42', r =&gt; r.resume().on('end', done)));
+(async () =&gt; {
+  await get();                                           // warm-up: প্রথম request-এর বাড়তি খরচ বাদ
+  let t = performance.now();
+  await get();
+  console.log(`1 request:            ${(performance.now() - t).toFixed(1)} ms`);
+  t = performance.now();
+  await Promise.all(Array.from({ length: 20 }, get));
+  console.log(`20 requests at once:  ${(performance.now() - t).toFixed(1)} ms`);
+})();</code></pre></div>
+  <div class="codewrap"><pre><code># burst.sh — ২০টা request একসাথে, সাথে db connection-এর packet
+node db.js &amp; sleep 0.3
+node server.js 2&gt; /dev/null &amp; sleep 0.5
+tcpdump -i lo -n -tt -l 'tcp port 5432' &gt; db-packets.txt 2&gt; /dev/null &amp; sleep 0.5
+node burst.js
+sleep 0.2; kill $(jobs -p); wait 2&gt; /dev/null
+awk '/ IP / { if (!t0) t0 = $1; printf "%7.2f ms  %s %s %s %-5s length %s\n", ($1 - t0) * 1000, $3, $4, $5, $7, $NF }' db-packets.txt</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null 2&gt;&amp;1
+  bash burst.sh'</code></pre></div>
+  <div class="codewrap"><pre><code>1 request:            7.2 ms
+20 requests at once:  60.9 ms
+   0.00 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [P.], length 8
+   0.01 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [.],  length 0
+   8.28 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [P.], length 25
+   8.28 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [.],  length 0
+  11.90 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [P.], length 8
+  17.63 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [P.], length 25
+  21.83 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [P.], length 8
+  28.73 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [P.], length 25
+  28.74 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [P.], length 152
+  34.59 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [P.], length 25
+  76.70 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [.],  length 0
+  76.70 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [P.], length 450
+  76.72 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [.],  length 0</code></pre></div>
+  <p>একটা request ৭ ms, অথচ ২০টা একসাথে ৬১ ms। Event loop কি তাহলে কাজ করছে না? Packet-গুলো উত্তর দেয়। প্রথম দুই জোড়া (০ আর ১১.৯০ ms) হলো warm-up আর একা request: ৮ byte-এর query, ২৫ byte-এর উত্তর। Burst শুরু ২১.৮৩-এ:</p>
+  <ul>
+    <li><strong>২১.৮৩</strong> — ২০টা query-র প্রথমটা একা যায়, ৮ byte।</li>
+    <li><strong>২৮.৭৪</strong> — বাকি ১৯টা যায় একসাথে, একটা packet-এ: ১৯ × ৮ = ১৫২ byte। মাঝের ৭ ms kernel এদের আটকে রেখেছিল, যতক্ষণ না প্রথম query-র ACK এল। ACK এসেছে db-র প্রথম উত্তরের সাথে, ২৮.৭৩-এ।</li>
+    <li><strong>৩৪.৫৯</strong> — db-র দিকে একই ঘটনা। প্রথম উত্তর যায়, বাকি ১৮টা আটকে থাকে।</li>
+    <li><strong>৭৬.৭০</strong> — ৪২ ms পরে, server-এর kernel-এর একটা খালি ACK। সাথে সাথে বাকি ১৮টা উত্তর একসাথে আসে, ১৮ × ২৫ = ৪৫০ byte।</li>
+  </ul>
+  <p>এটা Chapter 27-এর Nagle আর delayed ACK। প্রেরকের kernel ছোট টুকরো আটকে রাখে, যতক্ষণ আগেরটার ACK না আসে (Nagle)। গ্রাহকের kernel ACK পাঠাতে দেরি করে, এই আশায় যে app উত্তর লিখলে ACK সেটার সাথে যাবে (delayed ACK, Linux-এ ~৪০ ms)। একজন ACK-এর অপেক্ষায়, অন্যজন ACK দিতে দেরি করছে, আর মাঝে ৪২ ms নষ্ট। Chapter 27-এ দেখেছিলাম <code>http</code> server নিজেই প্রতিটা connection-এ Nagle বন্ধ করে দেয় (<code>TCP_NODELAY</code>)। কিন্তু DB-র connection-টা আমাদের নিজের বানানো <code>net</code> connection, আর <code>net</code>-এ Nagle চালু থাকে। একা request-এ ধরা পড়ে না, কারণ তখন আটকে থাকা পরের টুকরো থাকেই না। একসাথে অনেকগুলো query গেলেই ফাঁদটা খোলে। সমাধান দুই দিকে এক লাইন, যেটা আগে থেকেই code-এ বসানো আছে, শুধু চালু করা বাকি:</p>
+  <div class="codewrap"><pre><code>docker run --rm -e NODELAY=1 -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null 2&gt;&amp;1
+  bash burst.sh | head -2'</code></pre></div>
+  <div class="codewrap"><pre><code>1 request:            7.8 ms
+20 requests at once:  13.1 ms</code></pre></div>
+  <p>৬১ ms থেকে ১৩ ms। এবার ২০টা request-এর অপেক্ষা সত্যিই একসাথে চলেছে। একই test আমার Mac-এ, Docker ছাড়া, NODELAY ছাড়াই ১০–১৪ ms এসেছে: macOS-এর delayed ACK-এর নিয়ম আলাদা (Chapter 27)। মানে এই bug developer-এর Mac-এ লুকিয়ে থাকে, আর বেরোয় production-এর Linux-এ, load আসার পর। নিজে TCP-র উপর কিছু বানালে, বা কোনো database বা cache-এর client library ব্যবহার করলে, দেখে নিও সেটা noDelay চালু করে কি না।</p>
+
+  <div class="box warn">
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"API ধীর, মানে আমার code ধীর।" এই server-এ গরম অবস্থায় handler-এর JS ৭.৯ ms-এর মধ্যে ০.২৪ ms। Profiler দিয়ে JS-কে দশ গুণ দ্রুত করলেও request দ্রুত হবে ৩%-এরও কম। আর burst-এর ৬১ ms-এ তোমার JS-এর কোনো দোষই ছিল না, ছিল দুই kernel-এর TCP-র নিয়মে। Latency-র বেশিরভাগ থাকে অপেক্ষায়: DB, network, kernel-এর buffer আর timer। তাই ধীর request-এর প্রথম প্রশ্ন "কোন লাইনটা ধীর" না, প্রশ্ন হলো "সময়টা কোথায় যাচ্ছে": CPU-তে, নাকি কারো অপেক্ষায়। কীভাবে ধরতে হয়, সেটা পরের chapter।</p>
+  </div>
 
   <div class="box concept">
-    <div class="box-title">চূড়ান্ত উপলব্ধি</div>
-    <p>"Backend engineer" পদটার গোপন অর্থ: <strong>দুই kernel-এর মাঝখানে বসে orchestration করা মানুষ।</strong> তোমার code যত ভালো হোক, request-এর ভাগ্য নির্ধারণ করে buffers, queues, caches, syscalls আর scheduler — এখন থেকে এরা তোমার কাছে অদৃশ্য না।</p>
+    <div class="box-title">MENTAL MODEL</div>
+    <p>Request আসার আগে server <code>epoll_pwait</code>-এ ঘুমিয়ে থাকে। Handshake, request-এর byte, ACK — সব kernel একা সামলায়, accept queue আর receive buffer-এ রাখে। তারপর kernel Node-কে জাগায়। Node <code>accept4</code> করে নতুন fd নেয়, epoll-এ যোগ করে, <code>read</code> করে, user mode-এ HTTP parse করে, আর handler চালায়। Handler DB-তে <code>write</code> করে <code>await</code>-এ থামে। Thread তখন আটকায় না, আবার ঘুমায়, আর অন্য request এলে ধরে। DB-র উত্তর এলে kernel জাগায়, <code>read</code>, JSON, একটা <code>writev</code>, আর FIN-এ <code>read</code> = ০ পেয়ে <code>close</code>। সময়ের হিসাবে তোমার JS সামান্য অংশ; বাকিটা অপেক্ষা আর kernel-এর কাজ। আর একসাথে অনেক request এলে যে জিনিস একা request-এ অদৃশ্য ছিল, যেমন Nagle, সেটাই সময়ের বড় অংশ হয়ে উঠতে পারে।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>together.txt-এর প্রথম পাঁচ লাইনে Node নেই কেন? Handshake আর <code>GET</code>-এর byte Node জাগার আগে কোথায় কোথায় বসে ছিল? <code>accept4</code>-এর পরের <code>epoll_pwait</code>-এর timeout ০ হয়েও fd ২০ ready পেল কেন?</li>
+      <li>Handler <code>await</code>-এ থাকার সময় Node-এর main thread কোথায়, কোন অবস্থায়? <code>epoll_pwait(…, 28494)</code>-এর timeout কোথা থেকে এল, আর কে তাকে আগেই জাগাল? db.js-এর timeout ৪ কেন?</li>
+      <li>উত্তর পাঠাতে <code>writev</code> একটাই কেন? প্রথম request-এ <code>/etc/localtime</code> পড়া হয় কেন, আর পরে হয় না কেন? <code>read(20)</code> = ০ মানে কী, আর কার socket TIME-WAIT-এ যায়?</li>
+      <li>timing.sh-এ গরম request-এর ৮ ms কোথায় কোথায় ভাগ হয়? প্রথম request-এ handler-এর JS ২ ms কেন, পরে ০.২–০.৫ ms কেন?</li>
+      <li>burst.sh-এ ১৫২ আর ৪৫০ byte-এর packet দুটো কেন তৈরি হলো, আর ৪২ ms-এর ফাঁকটা কার অপেক্ষা? <code>http</code>-এর connection-এ এই সমস্যা হয়নি কেন? Mac-এ ধরা না পড়ে Linux-এ ধরা পড়ে কেন?</li>
+    </ul>
   </div>

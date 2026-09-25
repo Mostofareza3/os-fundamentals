@@ -1,75 +1,97 @@
   <p class="part-label">উপসংহার</p>
   <h2>Final Self-Assessment</h2>
-  <p class="chap-sub">৪৫টা প্রশ্ন — multiple choice না, "নিজের ভাষায় বলো" ধাঁচের। উত্তর লিখে/বলে ফেলো; আটকালে বন্ধনীর chapter-এ ফিরে যাও। লক্ষ্য: "term চিনি" আর "বুঝি"-র পার্থক্য ধরা।</p>
+  <p class="chap-sub">৪৭টা প্রশ্ন। Multiple choice না, "নিজের ভাষায় বলো" ধাঁচের। প্রতিটার উত্তর বইয়ের ভেতরেই আছে, বন্ধনীতে লেখা chapter-এ। লক্ষ্য একটাই: "term চিনি" আর "বুঝি"-র পার্থক্য ধরা।</p>
 
-  <h3>Big picture আর process</h3>
+  <p>কীভাবে ব্যবহার করবে: বই বন্ধ রেখে প্রতিটা প্রশ্নের উত্তর লেখো বা জোরে বলো, যেন কাউকে বোঝাচ্ছ। যেখানে সংখ্যা বা experiment-এর কথা আছে, সেটা মনে করে বলতে পারলে সবচেয়ে ভালো, কারণ তখন বোঝা যায় তুমি ব্যাপারটা দেখেছ, শুধু পড়োনি। আটকে গেলে বন্ধনীর chapter-এ ফিরে যাও, আর পারলে সেই chapter-এর experiment-টা আবার চালাও।</p>
+
+  <h3>বড় ছবি (Part 1)</h3>
   <ol>
-    <li>OS-এর kernel লাগে কেন — kernel-বিহীন জগতে কী কী ভাঙতো? (Ch 1)</li>
-    <li>Program থেকে process হওয়ার মুহূর্তে ঠিক কী কী তৈরি হয়? (Ch 3-4)</li>
-    <li>একই executable-এর দুই process আলাদা জগতে থাকে — কোন mechanism-এ? (Ch 3, 9)</li>
-    <li>Stack কেন লাগে — function call-এর কোন সমস্যাটা সে solve করে? (Ch 5)</li>
-    <li>Heap কেন লাগে — stack-এ সব রাখলে কী আটকাতো? (Ch 6)</li>
-    <li>Scope আর lifetime-এর পার্থক্য, একটা bug-এর উদাহরণসহ। (Ch 6)</li>
-    <li>fork() একবার ডাকলে দুইবার return — ব্যাপারটা কী? (Ch 15)</li>
-    <li>Ready, Running, Waiting — কোন process কোন state-এ CPU চায়/চায় না? (Ch 15)</li>
+    <li>OS না থাকলে কোন তিনটা সমস্যা হতো? Abstraction আর resource management এদের কোনটা কীভাবে মেটায়? (Ch 1)</li>
+    <li>নিয়ম রক্ষার পাহারা software-এ না রেখে CPU-র hardware-এ, মানে user mode আর kernel mode-এ, রাখতে হলো কেন? System call-এ program নিজে kernel-এর কোন code-এ ঢুকবে সেটা বাছতে পারে না কেন? (Ch 1, 31)</li>
+    <li>একটা <code>readFileSync</code>-এর পুরো যাত্রা বলো: CPU, kernel, driver, SSD, interrupt — কে কখন কী করে, আর SSD যখন data আনছে তখন তোমার process কী করছে? (Ch 2)</li>
   </ol>
-  <h3>Memory</h3>
-  <ol start="9">
-    <li>প্রতিটা process-কে নিজস্ব virtual address space দেওয়ার তিনটা কারণ। (Ch 9)</li>
-    <li>Page আর page table কী, কে ব্যবহার করে? (Ch 9)</li>
-    <li>TLB না থাকলে প্রতিটা memory access-এ কী বাড়তি খরচ হতো? (Ch 9)</li>
-    <li>Page fault সবসময় error না — একটা "ভালো" page fault-এর উদাহরণ। (Ch 9-10)</li>
-    <li>Copy-on-write কীভাবে fork-কে সস্তা করে? (Ch 9)</li>
-    <li>Minor vs major page fault — কোনটা কেন ভয়ংকর? (Ch 10)</li>
-    <li>Swap আর virtual memory এক জিনিস না কেন? (Ch 9)</li>
-    <li>DMA ছাড়া বড় I/O-তে CPU-র কী দশা হতো? (Ch 11)</li>
+
+  <h3>Program থেকে process (Part 2)</h3>
+  <ol start="4">
+    <li>Program আর process-এর পার্থক্য কী? একই program-এর দুই process একে অন্যের data ছুঁতে পারে না কেন? (Ch 3, 9)</li>
+    <li>File descriptor কী, কার table-এ থাকে, আর path-এর বদলে নম্বর দিয়ে কাজ করার সুবিধা কী? (Ch 3, 21)</li>
+    <li><code>execve</code>-র পর process-এর প্রথম instruction তোমার code-এর না কেন? Kernel-এর loader আর dynamic linker কে কোন কাজ করে? (Ch 4, 34)</li>
+    <li>Address space-এর region-গুলো কী কী, কোনটার permission কী, আর code region read-only হওয়ায় কী লাভ? (Ch 5)</li>
+    <li>Stack frame কোন সমস্যার সমাধান করে? Stack-এ জায়গা নেওয়া এত সস্তা কেন, আর stack overflow কেন হয়? (Ch 5)</li>
+    <li>কোন data stack-এ রাখা যায় না, আর তাই heap কেন লাগে? Closure-এর variable-এর scope শেষ হয়েও lifetime চলে কীভাবে? GC থাকার পরেও Node server-এ memory leak হয় কীভাবে? (Ch 6)</li>
   </ol>
-  <h3>CPU</h3>
-  <ol start="17">
-    <li>Program counter কী, jump/branch-এর সাথে সম্পর্ক কী? (Ch 12)</li>
-    <li>CPU cache কেন লাগে — কোন gap-টা সে ভরাট করে? (Ch 13)</li>
-    <li>Temporal আর spatial locality — নিজের code থেকে একটা করে উদাহরণ। (Ch 13)</li>
-    <li>Array বনাম linked list — Big-O সমান হলেও বাস্তবে কে, কেন জেতে? (Ch 13)</li>
-    <li>Pipelining কী বাড়ায় — latency না throughput? কেন? (Ch 14)</li>
-    <li>Branch prediction ভুল হলে কী দাম দিতে হয়? (Ch 14)</li>
+
+  <h3>Memory (Part 3)</h3>
+  <ol start="10">
+    <li>Latency আর bandwidth: একই RAM থেকে সেকেন্ডে ~৫৮ GB আর ~০.০৩ GB, দুটোই কীভাবে সত্যি? (Ch 7)</li>
+    <li>Cache line কী? একই যোগফল এলোমেলো ক্রমে পড়লে দশ গুণ ধীর কেন, আর prefetcher কখন সাহায্য করতে পারে না? (Ch 8)</li>
+    <li>প্রতিটা process-কে নিজস্ব virtual address space দেওয়ার তিনটা কারণ। Page, frame, page table আর TLB — কে কী কাজ করে? (Ch 9)</li>
+    <li>Page fault সবসময় error না — একটা "ভালো" page fault-এর উদাহরণ দাও। Minor আর major fault-এর দামে এত তফাত কেন? (Ch 9, 10, 34)</li>
+    <li>Overcommit কী, আর তার শেষ পরিণতি OOM killer। Exit code ১৩৭ আর "JavaScript heap out of memory" — দুই মৃত্যুর পার্থক্য কী? (Ch 10, 36)</li>
+    <li>DMA না থাকলে বড় I/O-তে CPU-র কী দশা হতো? DMA-র পরেও কোন copy বাকি থাকে? (Ch 11)</li>
   </ol>
-  <h3>Concurrency</h3>
-  <ol start="23">
-    <li>Process vs thread — "container vs execution unit" ব্যাখ্যা করো। (Ch 16)</li>
-    <li>Thread-এর কোনটা নিজস্ব, কোনটা shared — এবং প্রতিটার কারণ। (Ch 16)</li>
-    <li>Context switch-এ কী save/restore হয়, আর লুকানো খরচটা কোথায়? (Ch 17)</li>
-    <li>counter++ কীভাবে race condition বানায় — instruction level-এ। (Ch 18)</li>
-    <li>Mutex আর semaphore-এর পার্থক্য, একটা করে use case। (Ch 18)</li>
-    <li>Shared state ছাড়া কি race condition সম্ভব? যুক্তি দাও। (Ch 18)</li>
-    <li>CPU-bound-এ thread/process আর I/O-bound-এ event loop — কেন এই ভাগ? (Ch 19)</li>
+
+  <h3>CPU (Part 4)</h3>
+  <ol start="16">
+    <li>CPU-র কাছে "program চলছে" মানে কী? তোমার <code>if</code> কীভাবে একটা তুলনা আর একটা লাফ হয়? শুধু GHz দিয়ে CPU তুলনা করা ভুল কেন? (Ch 4, 12)</li>
+    <li>একটা বড় cache-এর বদলে কয়েক স্তর কেন? Temporal আর spatial locality — নিজের code থেকে একটা করে উদাহরণ। Linked list কেন array-র কাছে হারে? (Ch 13)</li>
+    <li>False sharing কী? দুই worker একে অন্যের data না ছুঁয়েও কীভাবে পরস্পরকে ধীর করে? (Ch 13)</li>
+    <li>Pipelining latency বাড়ায় না throughput? Branch prediction ভুল হলে কী দাম দিতে হয়? (Ch 14)</li>
+    <li>১২ worker-এ ১২ গুণ না হয়ে ৮ গুণ দ্রুত কেন, আর ২৪-এ উল্টো ফল কেন? (Ch 14, 17, 40)</li>
   </ol>
-  <h3>Storage আর file I/O</h3>
-  <ol start="30">
-    <li>File I/O-তে kernel জড়িত থাকতেই হয় কেন? (Ch 21, 31)</li>
-    <li>File descriptor কী, কার table-এ থাকে? (Ch 21)</li>
-    <li>write() return করা সত্ত্বেও data হারাতে পারে — পুরো ঘটনাটা। (Ch 21, 23)</li>
-    <li>OS file data cache করে কেন, আর সেই cache ছাড়ে কখন? (Ch 23)</li>
-    <li>inode-এ file-এর নাম থাকে না — তাহলে নাম থাকে কোথায়? (Ch 22)</li>
-    <li>একই file দ্বিতীয়বার পড়া দ্রুত কেন — benchmark-এ এর তাৎপর্য কী? (Ch 23)</li>
+
+  <h3>Process আর thread (Part 5)</h3>
+  <ol start="21">
+    <li>Running, ready আর blocked — কে CPU চায়, কে চায় না? Scheduler কোন কোন মুহূর্তে চলে? (Ch 15)</li>
+    <li><code>fork()</code> "দুইবার ফেরে" মানে কী? fork আর exec আলাদা হওয়ায় shell-এর redirect কীভাবে সম্ভব হয়? Zombie কী, আর কে তাকে সরায়? (Ch 15, 37)</li>
+    <li>Process আর thread-এর আসল পার্থক্য ওজনে না, address space-এ — ব্যাখ্যা করো। Linux-এ দুটোই কীভাবে একই <code>clone</code> দিয়ে তৈরি হয়? (Ch 16)</li>
+    <li>Context switch-এ কী save আর restore হয়, আর লুকানো দামটা কোথায়? Voluntary আর involuntary switch-এর সংখ্যা কী বলে? (Ch 17)</li>
+    <li><code>counter++</code> কীভাবে race condition বানায়? JS-এ একটাই thread থাকার পরেও race condition সম্ভব — একটা উদাহরণ দাও। (Ch 18)</li>
+    <li>কাজটা CPU-bound না I/O-bound, <code>time</code> দিয়ে কীভাবে বুঝবে? কোন কাজে event loop, কোন কাজে worker, আর libuv-এর thread pool-এর সীমা কী? (Ch 19, 39)</li>
   </ol>
-  <h3>Network</h3>
-  <ol start="36">
-    <li>Socket কী, আর file descriptor হওয়াটা কেন সুবিধাজনক? (Ch 25)</li>
-    <li>TCP "connection" জিনিসটা physically কোথায় থাকে? (Ch 26)</li>
-    <li>SYN queue আর accept queue — কে ভরলে কী উপসর্গ? (Ch 26)</li>
-    <li>Data আসার পর ঘুমন্ত server process জাগে কীভাবে — interrupt থেকে epoll পর্যন্ত। (Ch 27, 29)</li>
-    <li>Thread-per-connection কোথায় ভাঙে, আর epoll ঠিক কী বদলে দেয়? (Ch 28-29)</li>
-    <li>Event loop-এ ভারী sync কাজ চালালে kernel level-এ কী ঘটে? (Ch 29)</li>
+
+  <h3>Storage (Part 6)</h3>
+  <ol start="27">
+    <li>Latency, throughput আর IOPS আলাদা মাপ কেন? একই SSD-তে একসাথে অনেক অনুরোধ পাঠালে IOPS প্রায় নয় গুণ হয় কেন? (Ch 20, 40)</li>
+    <li><code>write()</code> ফিরে আসার পরেও data হারাতে পারে — পুরো ঘটনাটা বলো। Crash-safe লেখার নিয়ম কী, আর rename-এর আগে ও পরে fsync কেন? (Ch 21, 23)</li>
+    <li>Inode-এ file-এর নাম থাকে না — তাহলে নাম কোথায় থাকে? <code>df</code> বলছে disk ভরা অথচ <code>du</code> কিছু পাচ্ছে না — কী ঘটেছে? (Ch 22)</li>
+    <li>Page cache কী, সব process-এর জন্য একটাই কেন, আর benchmark-এ cold আর warm আলাদা মাপতে হয় কেন? Container-এর memory হিসাবে page cache কীভাবে ঢোকে? (Ch 23)</li>
+    <li>File-এ epoll চলে না কেন, আর তাই Node file-এর কাজ কোথায় পাঠায়? Durability কেনার উপায়গুলোর (fsync, fdatasync, O_SYNC, মাঝে মাঝে fsync) দাম কেন আলাদা? (Ch 24)</li>
   </ol>
-  <h3>Boundary, virtualization আর সংযোগ</h3>
+
+  <h3>Network (Part 7)</h3>
+  <ol start="32">
+    <li>Socket কী, আর সেটা একটা fd হওয়ায় কী সুবিধা? এক port-এ হাজার connection কীভাবে আলাদা থাকে? (Ch 25)</li>
+    <li>TCP "connection" physically কোথায় থাকে? Handshake কে করে, আর SYN queue বা accept queue ভরলে কী উপসর্গ দেখা যায়? (Ch 26, 38)</li>
+    <li>"TCP byte-এর স্রোত, message না" — এর মানে কী, আর framing কেন তোমার দায়িত্ব? <code>socket.write()</code> false দিলে কী করবে? (Ch 27)</li>
+    <li>Nagle আর delayed ACK মিলে ~৪২ ms কীভাবে বানায়? এই bug Mac-এ লুকিয়ে থেকে Linux-এ load আসার পর বেরোয় কেন? (Ch 27, 38)</li>
+    <li>Thread-per-connection কোথায় ভাঙে, আর epoll কী বদলে দেয়? Event loop-এ ভারী sync কাজ চললে kernel-এর ভেতরে আর বাইরে কী ঘটে? (Ch 28, 29, 39)</li>
+    <li><code>ECONNREFUSED</code>, <code>ETIMEDOUT</code>, <code>ECONNRESET</code>, <code>EPIPE</code>, <code>EMFILE</code> — প্রতিটার পেছনে kernel-এ বা network-এ আসলে কী ঘটেছে? (Ch 30)</li>
+  </ol>
+
+  <h3>Kernel-এর সীমানা, আর executable (Part 8–9)</h3>
+  <ol start="38">
+    <li>Kernel-এ ঢোকার তিন দরজা কী কী, আর signal কীভাবে উল্টো দিকে খবর আনে? root হয়েও process user mode-এ থাকে কেন? (Ch 31)</li>
+    <li>একটা syscall-এর দাম কোথা থেকে আসে? কখন সেই দাম তুচ্ছ, কখন সেটাই মূল খরচ? vDSO কী বাঁচায়? (Ch 32)</li>
+    <li>Static আর dynamic linking: binary-র মাপ, RAM-এ ভাগাভাগি, security fix — কোনটায় কে জেতে? Node-এর <code>.node</code> file আসলে কী? (Ch 33)</li>
+    <li>"File আছে, তবু not found" — কোন তিনটা আলাদা file-এর অভাবে এই <code>ENOENT</code> আসতে পারে? Load মানে copy না কেন? (Ch 34)</li>
+  </ol>
+
+  <h3>Virtualization আর container (Part 10)</h3>
   <ol start="42">
-    <li>Process সরাসরি hardware ছুঁতে পারে না — enforcement-টা কে করে, কীভাবে? (Ch 31)</li>
-    <li>Syscall-এর overhead কখন তুচ্ছ, কখন মুখ্য — নিয়মটা কী? (Ch 32)</li>
-    <li>Container VM না কেন — namespace আর cgroup দিয়ে ব্যাখ্যা করো। (Ch 35-36)</li>
-    <li>শেষটা বড়: browser-এ একটা button চাপা থেকে API response ফেরা পর্যন্ত গল্পটা — CPU, memory, socket, kernel, syscall, cache, scheduler সবাইকে চরিত্র বানিয়ে — নিজের ভাষায় বলো। (Ch 38 — এবং আসলে পুরো বই)</li>
+    <li>VM-এর guest kernel kernel mode-এ চলেও আসল hardware ছুঁতে পারে না কেন? Steal time কী, আর cloud-এ কখন সেটা দেখবে? (Ch 35)</li>
+    <li>Container VM না কেন — namespace, cgroup, capability আর seccomp দিয়ে ব্যাখ্যা করো। Container-এ Node চালানোর দুটো ফাঁদ কী? (Ch 36)</li>
+  </ol>
+
+  <h3>সব একসাথে (Part 11–12)</h3>
+  <ol start="44">
+    <li><code>node hello.js</code>-এর ১৩ ms কোথায় কোথায় যায়, আর তোমার লেখা লাইন তার কতটুকু? strace কোন জিনিসগুলো দেখতে পায় না? (Ch 37)</li>
+    <li>একটা ধীর service-এর সামনে প্রশ্নের ক্রম কী? <code>time</code>-এর তিন সংখ্যা থেকে শুরু করে USE method পর্যন্ত বলো। CPU মাত্র ১০% দেখালেও সমস্যা CPU-তে হতে পারে কীভাবে? (Ch 39)</li>
+    <li>Utilization ৮০% থেকে ৯০%-এ গেলে latency দ্বিগুণ কেন? Little's law দিয়ে একটা connection pool-এর আকার ঠিক করো। Latency-র লক্ষ্য গড়ে না লিখে P99-এ কেন? (Ch 40)</li>
+    <li>শেষটা বড়: browser-এ একটা button চাপা থেকে API response ফেরা পর্যন্ত পুরো গল্প — CPU, memory, socket, kernel, syscall, cache, scheduler সবাইকে চরিত্র বানিয়ে — নিজের ভাষায় বলো। (Ch 38, আর আসলে পুরো বই)</li>
   </ol>
 
   <div class="box concept">
     <div class="box-title">এরপর কী</div>
-    <p>এই বই ইচ্ছা করেই অনেক কিছু বাদ দিয়েছে — scheduling algorithm-এর ভিতর, filesystem internals-এর গভীরতা, kernel development। যদি ক্ষুধা লাগে: <em>strace/perf দিয়ে নিজের production app-এর নিচে তাকানো</em> — এটাই সেরা পরের ধাপ। আর মনে রেখো এই বইয়ের মূলমন্ত্র: Depth &gt; Breadth, Mental Model &gt; Memorization।</p>
+    <p>এই বই ইচ্ছে করেই অনেক কিছু বাদ দিয়েছে: scheduling algorithm-এর তত্ত্ব, filesystem-এর ভেতরের data structure, kernel-এর নিজের code লেখা। সবচেয়ে ভালো পরের ধাপ হলো নিজের production app-এর নিচে তাকানো: <code>strace -c</code>, <code>vmstat 1</code>, event loop delay-এর metric, আর Chapter 37-এর watch.js-এর মতো <code>process.resourceUsage()</code>। তত্ত্বে আরও গভীরে যেতে চাইলে <em>Operating Systems: Three Easy Pieces</em> (Arpaci-Dusseau)। মাপজোখের জন্য Brendan Gregg-এর <em>Systems Performance</em>। আর প্রতিটা system call-এর আসল সংজ্ঞা আছে Linux-এর man page-এ (<code>man 2 read</code>)। বইয়ের মূলমন্ত্র মনে রেখো: Depth &gt; Breadth, Mental Model &gt; Memorization, আর অনুমানের আগে মাপ।</p>
   </div>

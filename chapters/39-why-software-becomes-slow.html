@@ -1,25 +1,355 @@
   <p class="part-label">PART 12 · ENGINEERING INTUITION</p>
   <h2>Chapter 39 — Software ধীর হয় কেন</h2>
-  <p class="chap-sub">"Slow" একটা রোগের নাম না — উপসর্গ। এই chapter হলো রোগ নির্ণয়ের চেকলিস্ট।</p>
+  <p class="chap-sub">"Slow" কোনো রোগের নাম না, একটা উপসর্গ। এই chapter-এ রোগগুলো নিজেরাই ঘটাব, আর প্রতিটাকে ঠিক tool দিয়ে ধরব: প্রথমে <code>time</code>-এর তিনটা সংখ্যা, তারপর profiler আর strace, পুরো machine-এর জন্য vmstat আর USE method, আর Node-এর জন্য event loop delay।</p>
 
-  <p>প্রথম নিয়ম, খোদাই করে রাখো: <strong>আগে মাপো, তারপর ভাবো, সবার শেষে optimize করো।</strong> অনুমানের ভিত্তিতে optimization প্রায়ই ভুল জায়গায় শ্রম। এখন, "slow"-এর পিছনে সাধারণত এই সন্দেহভাজনদের কেউ থাকে:</p>
+  <p>ধীর program সামনে এলে প্রথম ইচ্ছা হয় code পড়ে অনুমান করা: "এই loop-টা মনে হয় ভারী", "DB query-টা নিশ্চয়ই"। অনুমান প্রায়ই ভুল জায়গায় নিয়ে যায়, কারণ সময় যেখানে যায় সেটা code পড়ে বোঝা যায় না। বোঝা যায় OS-এর হিসাব দেখে। Kernel প্রতিটা process-এর প্রতিটা millisecond-এর খাতা রাখে (Chapter 37-এর watch.js), আর সেই খাতা পড়াই রোগ নির্ণয়ের প্রথম ধাপ। নিয়ম একটাই: আগে মাপো, তারপর ভাবো, সবার শেষে বদলাও।</p>
 
+  <h3>প্রথম প্রশ্ন: CPU-তে, নাকি অপেক্ষায়?</h3>
+  <p><code>time</code> command যেকোনো program-কে তিনটা সংখ্যা দেয়:</p>
+  <ul>
+    <li><strong>real</strong> — ঘড়ির সময়, শুরু থেকে শেষ। User এটাই টের পায়।</li>
+    <li><strong>user</strong> — CPU user mode-এ এই process-এর code চালিয়েছে কতক্ষণ: তোমার JS, V8, library (Chapter 31)।</li>
+    <li><strong>sys</strong> — CPU kernel mode-এ এই process-এর হয়ে কাজ করেছে কতক্ষণ: syscall, page fault।</li>
+  </ul>
+  <p>তিনটা মিলিয়েই প্রথম রোগ নির্ণয়। যদি user + sys প্রায় real-এর সমান হয়, তাহলে পুরো সময়টা CPU ব্যস্ত ছিল এই program নিয়ে। আর real যদি অনেক বড় হয়, তাহলে বাকিটা সময় program CPU-তে ছিলই না, কিছুর অপেক্ষায় ঘুমিয়ে ছিল। তিনটা ইচ্ছাকৃত ধীর program দিয়ে দেখা যাক:</p>
+  <div class="codewrap"><pre><code>// sick.js — তিনটা ধীর program; কোনটার রোগ কী, time বলে দেবে
+const fs = require('fs');
+const mode = process.argv[2];
+if (mode === 'cpu') {                          // হিসাবের কাজ: প্রতিবার পুরো list-এর deep copy
+  const users = Array.from({ length: 2e4 }, (_, i) =&gt; ({ id: i, name: `user${i}`, tags: ['a', 'b'] }));
+  const clone = x =&gt; JSON.parse(JSON.stringify(x));
+  for (let i = 0; i &lt; 150; i++) clone(users);
+}
+if (mode === 'syscalls') {                     // log লেখা, প্রতিবার এক byte, সরাসরি file-এ (Chapter 32)
+  const fd = fs.openSync('/tmp/app.log', 'w');
+  for (let i = 0; i &lt; 1e6; i++) fs.writeSync(fd, 'x');
+}
+if (mode === 'wait') {                         // প্রতিটা order লিখে disk পর্যন্ত নিশ্চিত হওয়া (Chapter 21)
+  const fd = fs.openSync('/tmp/orders.log', 'w');
+  for (let i = 0; i &lt; 2000; i++) { fs.writeSync(fd, `order ${i}\n`); fs.fsyncSync(fd); }
+}</code></pre></div>
+  <div class="codewrap"><pre><code># triad.sh — তিন রোগ, প্রতিটার time
+for mode in cpu syscalls wait; do
+  echo "--- $mode"
+  { time node sick.js $mode; } 2&gt;&amp;1 | grep -E 'real|user|sys'
+done</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash triad.sh</code></pre></div>
+  <div class="codewrap"><pre><code>--- cpu
+real	0m0.859s
+user	0m0.837s
+sys	0m0.039s
+--- syscalls
+real	0m0.359s
+user	0m0.179s
+sys	0m0.183s
+--- wait
+real	0m0.586s
+user	0m0.013s
+sys	0m0.018s</code></pre></div>
+  <p>তিনটা আলাদা ছবি। <strong>cpu</strong>-তে user প্রায় পুরো real: সময়টা গেছে আমাদের নিজের code-এ। (user + sys এখানে real-এর চেয়ে সামান্য বেশি, কারণ garbage collector-এর thread পাশাপাশি অন্য core-এ চলেছে; সব thread-এর CPU time যোগ হয়।) <strong>syscalls</strong>-এ sys প্রায় অর্ধেক। একটা সুস্থ program-এ sys সাধারণত কয়েক শতাংশ, তাই এত বড় sys মানে kernel-কে দিয়ে অনেক কাজ করানো হচ্ছে। <strong>wait</strong>-এ user আর sys মিলিয়ে ৩১ ms, অথচ real ৫৮৬ ms। বাকি ৯৫% সময় program CPU-তে ছিলই না, disk-এর উত্তরের অপেক্ষায় ঘুমিয়ে ছিল।</p>
+  <p>অপেক্ষা মানে সবসময় disk বা network না। CPU-র জন্যও অপেক্ষা হয়। প্রথম program-টাই আবার চালাই, এবার container-কে আধখানা CPU দিয়ে (Chapter 36):</p>
+  <div class="codewrap"><pre><code>docker run --rm --cpus 0.5 -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '{ time node sick.js cpu; } 2&gt;&amp;1 | grep -E "real|user|sys"'</code></pre></div>
+  <div class="codewrap"><pre><code>real	0m1.893s
+user	0m0.914s
+sys	0m0.029s</code></pre></div>
+  <p>কাজ একই, user একই (০.৯ s), কিন্তু real দ্বিগুণ। বাকি ০.৯৫ s program runnable ছিল, মানে চলতে তৈরি, কিন্তু CPU পায়নি: cgroup-এর কোটা শেষ হয়ে গিয়েছিল। ভিড় করা machine-এ, অন্য process-এর সাথে কাড়াকাড়িতেও (Chapter 17) বা cloud-এ অন্য VM-এর কারণে (steal, Chapter 35) একই ছবি আসে। তাই "real ≫ user + sys" মানে "অপেক্ষা", কিন্তু কিসের অপেক্ষা, সেটা পরের প্রশ্ন।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="Real, user and sys time of four runs, in seconds. sick.js cpu: real 0.86, user 0.84, sys 0.04, almost no waiting: our code on the CPU. sick.js syscalls: real 0.36, user 0.18, sys 0.18: half of it in the kernel. sick.js wait: real 0.59, user 0.01, sys 0.02, the rest 0.56 waiting for the disk. sick.js cpu with --cpus 0.5: real 1.89, user 0.91, sys 0.03, the rest 0.95 waiting for the CPU quota">
+      <text x="160" y="46" text-anchor="end" class="mono">cpu</text>
+      <g><title>cpu: user 0.837 s</title><rect x="170" y="26" width="249.1" height="30" rx="4" class="b-u"/></g>
+      <g><title>cpu: sys 0.039 s</title><rect x="421.1" y="26" width="11.7" height="30" rx="3" class="b-k"/></g>
+      <text x="442" y="46" class="t-s"><tspan class="t-h">0.86 s</tspan> · our code on the CPU</text>
+
+      <text x="160" y="96" text-anchor="end" class="mono">syscalls</text>
+      <g><title>syscalls: user 0.179 s</title><rect x="170" y="76" width="51.7" height="30" rx="4" class="b-u"/></g>
+      <g><title>syscalls: sys 0.183 s</title><rect x="223.7" y="76" width="54.9" height="30" rx="4" class="b-k"/></g>
+      <text x="288" y="96" class="t-s"><tspan class="t-h">0.36 s</tspan> · half of it in the kernel</text>
+
+      <text x="160" y="146" text-anchor="end" class="mono">wait</text>
+      <g><title>wait: user 0.013 s</title><rect x="170" y="126" width="3.9" height="30" rx="1" class="b-u"/></g>
+      <g><title>wait: sys 0.018 s</title><rect x="175.9" y="126" width="5.4" height="30" rx="1" class="b-k"/></g>
+      <g><title>wait: off the CPU 0.555 s</title><rect x="183.3" y="126" width="166.5" height="30" rx="4" class="b-m"/></g>
+      <text x="360" y="146" class="t-s"><tspan class="t-h">0.59 s</tspan> · waiting for the disk</text>
+
+      <text x="160" y="196" text-anchor="end" class="mono">cpu, 0.5 CPU</text>
+      <g><title>cpu with --cpus 0.5: user 0.914 s</title><rect x="170" y="176" width="272.2" height="30" rx="4" class="b-u"/></g>
+      <g><title>cpu with --cpus 0.5: sys 0.029 s</title><rect x="444.2" y="176" width="8.7" height="30" rx="2" class="b-k"/></g>
+      <g><title>cpu with --cpus 0.5: off the CPU 0.950 s</title><rect x="454.9" y="176" width="285" height="30" rx="4" class="b-m"/></g>
+      <text x="597.4" y="196" text-anchor="middle" class="t-s">waiting for the CPU</text>
+      <text x="746" y="196" class="t-h t-s">1.89 s</text>
+
+      <line x1="170" y1="226" x2="770" y2="226" class="axis"/>
+      <line x1="170" y1="226" x2="170" y2="231" class="axis"/>
+      <text x="170" y="244" text-anchor="middle" class="t-m t-s">0</text>
+      <line x1="320" y1="226" x2="320" y2="231" class="axis"/>
+      <text x="320" y="244" text-anchor="middle" class="t-m t-s">0.5</text>
+      <line x1="470" y1="226" x2="470" y2="231" class="axis"/>
+      <text x="470" y="244" text-anchor="middle" class="t-m t-s">1.0</text>
+      <line x1="620" y1="226" x2="620" y2="231" class="axis"/>
+      <text x="620" y="244" text-anchor="middle" class="t-m t-s">1.5</text>
+      <line x1="770" y1="226" x2="770" y2="231" class="axis"/>
+      <text x="770" y="244" text-anchor="middle" class="t-m t-s">2.0 s</text>
+
+      <rect x="170" y="270" width="14" height="14" rx="3" class="b-u"/>
+      <text x="190" y="281" class="t-s">user: our code</text>
+      <rect x="320" y="270" width="14" height="14" rx="3" class="b-k"/>
+      <text x="340" y="281" class="t-s">sys: kernel, for us</text>
+      <rect x="490" y="270" width="14" height="14" rx="3" class="b-m"/>
+      <text x="510" y="281" class="t-s">real − user − sys: off the CPU</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">চার চালানোর real, user আর sys। প্রতিটা দণ্ডের পুরো দৈর্ঘ্য real। নীল আর amber অংশে CPU এই program-এর কাজ করছিল। Dashed অংশে program CPU-তে ছিলই না: disk-এর জন্য, বা CPU-র কোটার জন্য অপেক্ষা।</p>
+
+  <h3>প্রতিটা উত্তরের পরের প্রশ্ন</h3>
+  <p><code>time</code> বলে দেয় কোন দিকে খুঁজতে হবে। প্রতিটা দিকের জন্য আলাদা tool:</p>
+  <p><strong>user বেশি: কোন function?</strong> CPU কোন function-এ সময় কাটাচ্ছে, সেটা বলে profiler। Node-এর নিজের একটা আছে: <code>--cpu-prof</code> চালু থাকলে প্রতি ~১ ms-এ V8 দেখে নেয় এই মুহূর্তে কোন function চলছে, আর শেষে একটা <code>.cpuprofile</code> file লেখে। File-টা Chrome DevTools-এর Performance tab-এ খোলা যায়। এখানে ছোট একটা script দিয়ে গুনে নিচ্ছি:</p>
+  <div class="codewrap"><pre><code>// top.js — node --cpu-prof-এর file থেকে: কোন function নিজে কত % CPU নিল
+const prof = JSON.parse(require('fs').readFileSync(process.argv[2]));
+const nodes = new Map(prof.nodes.map(n =&gt; [n.id, n.callFrame]));
+const count = new Map();
+for (const id of prof.samples) {                       // প্রতি ~১ ms-এ একটা নমুনা: CPU তখন কোন function-এ
+  const f = nodes.get(id);
+  const name = `${f.functionName || '(anonymous)'} ${f.url ? f.url.split('/').pop() + ':' + (f.lineNumber + 1) : ''}`;
+  count.set(name, (count.get(name) || 0) + 1);
+}
+for (const [name, n] of [...count].sort((a, b) =&gt; b[1] - a[1]).slice(0, 5))
+  console.log(`${(100 * n / prof.samples.length).toFixed(1).padStart(5)}%  ${name}`);</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  node --cpu-prof --cpu-prof-dir=/tmp/prof sick.js cpu &amp;&amp; node top.js /tmp/prof/*.cpuprofile'</code></pre></div>
+  <div class="codewrap"><pre><code> 95.4%  clone sick.js:6
+  3.7%  (garbage collector)
+  0.5%  (anonymous) sick.js:1
+  0.2%  (program)
+  0.2%  getNearestParentPackageJSONType </code></pre></div>
+  <p>৯৫% সময় <code>clone</code>-এ, ৬ নম্বর লাইনে। সারাদিন অনুমান করার দরকার নেই। (শেষের লাইনটা চিনতে পারো? Chapter 37-এর <code>package.json</code> খোঁজা।)</p>
+  <p><strong>sys বেশি: কোন syscall, কতবার?</strong> এর উত্তর দেয় <code>strace -c</code> (Chapter 1, 32)। <strong>অপেক্ষা: কিসে আটকে আছে?</strong> এর উত্তর <code>strace -c -w</code>। <code>-w</code> মানে প্রতিটা syscall-এর ভেতরে ঘড়ির যে সময় কেটেছে তার হিসাব, ঘুমানো সময়সহ। <code>-f</code> দিইনি, তাই শুধু main thread গোনা হচ্ছে; নইলে V8-এর ঘুমন্ত helper thread-দের <code>futex</code> পুরো হিসাব দখল করত। দুটো একসাথে:</p>
+  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
+  strace -c -o /tmp/s.txt node sick.js syscalls; head -4 /tmp/s.txt
+  strace -c -w -o /tmp/w.txt node sick.js wait; head -5 /tmp/w.txt'</code></pre></div>
+  <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ------------------
+ 99.94    4.089459           4   1000003           write
+  0.01    0.000597           7        75           munmap
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ------------------
+ 92.72    0.577426         288      2000           fsync
+  5.12    0.031857          15      2002           write
+  0.24    0.001493          22        65           munmap</code></pre></div>
+  <p>প্রথমটায় দশ লাখ <code>write</code>: Chapter 32-এর রোগ, ওষুধ batching। (strace নিজে প্রতিটা call-কে ধীর করে, তাই ৪ সেকেন্ড; আসল program ০.৩৬ s-এ শেষ হয়।) দ্বিতীয়টায় ঘড়ির ৯৩% সময় <code>fsync</code>-এর ভেতরে, প্রতিটায় গড়ে ২৮৮ µs। ওষুধ হলো কম fsync: অনেক order একসাথে লিখে একবার fsync, অর্থাৎ group commit, database-গুলো যা করে (Chapter 24)।</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 800 300" width="100%" role="img" aria-label="A diagnosis flow. Start: time the program to get real, user and sys. If user is close to real, the time is in our code on the CPU: profile with node --cpu-prof to find the function. If sys is a large share, the kernel is working for us: strace -c shows which syscalls and how many. If real is much larger than user plus sys, the program is waiting. Waiting for the CPU shows as vmstat r above the number of CPUs, or cgroup throttling. Waiting for I/O or anything else shows in strace -c -w or -T, vmstat wa and b, and for Node the event loop delay">
+      <defs>
+        <marker id="c39f2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect x="250" y="12" width="300" height="44" rx="8" class="b"/>
+      <text x="400" y="32" text-anchor="middle" class="t-h t-s">time: real, user, sys</text>
+      <text x="400" y="48" text-anchor="middle" class="t-m t-s">real = user + sys + waiting</text>
+      <line x1="330" y1="56" x2="120" y2="92" class="ln" marker-end="url(#c39f2-a)"/>
+      <line x1="400" y1="56" x2="400" y2="92" class="ln" marker-end="url(#c39f2-a)"/>
+      <line x1="470" y1="56" x2="660" y2="92" class="ln" marker-end="url(#c39f2-a)"/>
+
+      <rect x="20" y="96" width="200" height="52" rx="8" class="b-u"/>
+      <text x="120" y="118" text-anchor="middle" class="t-h t-s">user ≈ real</text>
+      <text x="120" y="136" text-anchor="middle" class="t-m t-s">our code on the CPU</text>
+      <rect x="300" y="96" width="200" height="52" rx="8" class="b-k"/>
+      <text x="400" y="118" text-anchor="middle" class="t-h t-s">sys is a big share</text>
+      <text x="400" y="136" text-anchor="middle" class="t-m t-s">kernel working for us</text>
+      <rect x="560" y="96" width="220" height="52" rx="8" class="b-m"/>
+      <text x="670" y="118" text-anchor="middle" class="t-h t-s">real ≫ user + sys</text>
+      <text x="670" y="136" text-anchor="middle" class="t-m t-s">waiting, off the CPU</text>
+
+      <line x1="120" y1="148" x2="120" y2="186" class="ln" marker-end="url(#c39f2-a)"/>
+      <line x1="400" y1="148" x2="400" y2="186" class="ln" marker-end="url(#c39f2-a)"/>
+      <line x1="620" y1="148" x2="575" y2="186" class="ln" marker-end="url(#c39f2-a)"/>
+      <line x1="720" y1="148" x2="720" y2="186" class="ln" marker-end="url(#c39f2-a)"/>
+
+      <rect x="20" y="190" width="200" height="72" rx="8" class="b"/>
+      <text x="120" y="212" text-anchor="middle" class="t-s">which function?</text>
+      <text x="120" y="232" text-anchor="middle" class="mono">node --cpu-prof</text>
+      <text x="120" y="250" text-anchor="middle" class="t-m t-s">(Linux: also perf)</text>
+      <rect x="300" y="190" width="200" height="72" rx="8" class="b"/>
+      <text x="400" y="212" text-anchor="middle" class="t-s">which syscall, how often?</text>
+      <text x="400" y="232" text-anchor="middle" class="mono">strace -c</text>
+      <text x="400" y="250" text-anchor="middle" class="t-m t-s">fix: batch (Ch 32)</text>
+      <rect x="520" y="190" width="120" height="72" rx="8" class="b"/>
+      <text x="580" y="212" text-anchor="middle" class="t-s">for the CPU?</text>
+      <text x="580" y="232" text-anchor="middle" class="mono">vmstat r</text>
+      <text x="580" y="250" text-anchor="middle" class="t-m t-s">cpu.stat throttled</text>
+      <rect x="652" y="190" width="136" height="72" rx="8" class="b"/>
+      <text x="720" y="212" text-anchor="middle" class="t-s">for I/O, a lock…?</text>
+      <text x="720" y="232" text-anchor="middle" class="mono">strace -c -w</text>
+      <text x="720" y="250" text-anchor="middle" class="t-m t-s">vmstat wa, b</text>
+      <text x="400" y="290" text-anchor="middle" class="t-m t-s">Node server: the event loop is a resource too; measure its delay (below)</text>
+    </svg>
+  </figure>
+  <p class="diagram-caption">একটা ধীর program-এর সামনে প্রশ্নের ক্রম। প্রথমে সময়টা কোন ঘরে গেছে, তারপর সেই ঘরের tool দিয়ে আসল জায়গাটা খোঁজা। কোনো ধাপেই অনুমান লাগে না।</p>
+
+  <h3>পুরো machine: USE method আর vmstat</h3>
+  <p><code>time</code> আর strace একটা process দেখে। কিন্তু কখনো সমস্যা process-এ না, machine-এ: CPU-র জন্য লাইন, memory ফুরিয়ে যাওয়া, disk-এর জট। এর জন্য Brendan Gregg-এর একটা সহজ checklist আছে, <strong>USE method</strong>। Machine-এর প্রতিটা resource-কে (CPU, memory, disk, network) তিনটা প্রশ্ন:</p>
+  <ul>
+    <li><strong>Utilization</strong> — resource-টা কতটা সময় ব্যস্ত ছিল?</li>
+    <li><strong>Saturation</strong> — এর জন্য কাজ কি লাইনে দাঁড়িয়ে আছে? কত লম্বা লাইন?</li>
+    <li><strong>Errors</strong> — কিছু কি ব্যর্থ হচ্ছে?</li>
+  </ul>
+  <p>শুধু utilization দেখলে ভুল হয়। ১০০% ব্যস্ত CPU ঠিক আছে, যদি কেউ লাইনে না দাঁড়ায়; সমস্যা শুরু হয় লাইন থেকে। "Memory ৯০% used" প্রায়ই কোনো সমস্যাই না, কারণ তার বড় অংশ page cache (Chapter 23)। আসল বিপদ হলো swap-এ page যাওয়া-আসা, মানে saturation। তাই প্রথম প্রশ্নটা সবসময় saturation নিয়ে।</p>
+  <p>Linux-এ তিনটার প্রাথমিক উত্তর একটা command-এ: <code>vmstat 1</code>, প্রতি সেকেন্ডে পুরো machine-এর এক লাইন। নিচের script vmstat চালু রেখে তিনটা ঝামেলা ঘটায়, প্রতিটা ৩ সেকেন্ড করে। প্রথমটা ১২টা CPU-র জন্য ২৪টা busy loop। দ্বিতীয়টা দুই thread-এর মধ্যে একটা বল চালাচালি, যেখানে প্রতিবার ঘুম আর জাগা (Chapter 17-এর pingpong)। তৃতীয়টা ২০০ MB-র সীমার container-এ ৩০০ MB-র ওপর বারবার ঘোরা (Chapter 10-এর swap):</p>
+  <div class="codewrap"><pre><code>// storm.js — দুই thread একটা বল চালাচালি করে, প্রতিবার kernel-এ ঘুমিয়ে আর জেগে (Chapter 17)
+const { Worker, isMainThread, workerData } = require('worker_threads');
+if (isMainThread) {
+  const s = new Int32Array(new SharedArrayBuffer(4));
+  new Worker(__filename, { workerData: s });
+  const end = Date.now() + 3000;
+  let n = 0;
+  while (Date.now() &lt; end) { Atomics.store(s, 0, 1); Atomics.notify(s, 0); Atomics.wait(s, 0, 1); n++; }
+  console.error(`storm: ${n} round trips in 3 s`);
+  process.exit();
+} else {
+  const s = workerData;
+  for (;;) { Atomics.wait(s, 0, 0); Atomics.store(s, 0, 0); Atomics.notify(s, 0); }
+}</code></pre></div>
+  <div class="codewrap"><pre><code>// swap.js — 300 MB-এর working set: প্রতিটা page বারবার ছোঁয়া, ৩ সেকেন্ড ধরে (Chapter 10)
+const b = Buffer.alloc(300 * 2 ** 20);
+const end = Date.now() + 3000;
+let passes = 0;
+while (Date.now() &lt; end) { for (let i = 0; i &lt; b.length; i += 4096) b[i]++; passes++; }
+console.error(`swap: ${passes} passes over 300 MB in 3 s`);</code></pre></div>
+  <div class="codewrap"><pre><code># use.sh — vmstat চালু রেখে তিনটা ঝামেলা, প্রতিটা ৩ সেকেন্ড
+vmstat 1 13 &amp;
+sleep 1.5
+for i in $(seq 24); do timeout 3 sh -c 'while :; do :; done' &amp; done; sleep 3.2   # ১) ১২টা CPU-তে ২৪টা busy loop
+node storm.js 2&gt;&gt; /tmp/notes                                                     # ২) context switch-এর ঝড়
+node swap.js 2&gt;&gt; /tmp/notes                                                      # ৩) container-এর memory-সীমা ছাড়ানো
+wait; cat /tmp/notes</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm --memory 200m --memory-swap 1g -v "$PWD":/w:ro -w /w node:22-alpine sh -c '
+  apk add -q procps-ng &gt; /dev/null 2&gt;&amp;1
+  sh use.sh'</code></pre></div>
+  <div class="codewrap"><pre><code>procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 1  0    960 6523740 274348 763872 3996 4290 4732  4716 18159  29  1  1 98  0  0  0
+ 0  0    960 6526704 274348 763876   0    0     0     0  220  273  0  0 100 0  0  0
+24  0    960 6561972 274348 763876   0    0     0     0 6233 1704 49  0 51  0  0  0
+25  0    960 6561972 274348 763876   0    0     0     0 11872 3972 100 0 0  0  0  0
+24  0    960 6561972 274348 763876   0    0     0     0 12228 4540 100 0 0  0  0  0
+ 1  0    960 6554228 274364 768600   0    0  4732    92 27034 42980 52 1 47 0  0  0
+ 0  0    960 6553220 274364 768600   0    0     0     0 82672 164102 1 2 97 0  0  0
+ 0  0    960 6552988 274364 768600   0    0     0     0 83715 166178 1 2 97 0  0  0
+ 1  0 216240 6397988 274360 764040 94176 215264 94272 215264 63953 125129 1 2 96 1 0 0
+ 1  0 317692 6406484 274360 764312 493740 492112 493740 492112 36169 67497 0 3 93 4 0 0
+ 0  1 317692 6404060 274368 764532 440812 439972 440812 440016 32497 60412 0 3 92 4 0 0
+ 0  1 317948 6406448 274368 764304 488384 489996 488384 489996 35043 65871 0 4 93 4 0 0
+ 0  0   1532 6546076 274368 765596 25204 26624 27120 26624 2461 4566 0 0 99 0  0  0
+storm: 119935 round trips in 3 s
+swap: 6 passes over 300 MB in 3 s</code></pre></div>
+  <p>(Alpine নিয়েছি কারণ Debian bookworm-এর vmstat-এ, procps-ng 4.0.2, memory-র কলামগুলো প্রথম লাইনের পর আর বদলায় না; এটা সেই version-এর একটা bug।) প্রথম লাইনটা boot থেকে এখন পর্যন্ত গড়, সেটা বাদ। কলামগুলো পড়তে যা লাগবে:</p>
   <div class="table-wrap"><table>
-    <tr><th>সন্দেহভাজন</th><th>চেনার উপায় (লক্ষণ)</th><th>কোন chapter-এর জ্ঞান লাগবে</th></tr>
-    <tr><td><strong>CPU-bound</strong></td><td>Core গুলো 100%-এ, তবু কাজ শেষ হয় না। <code>top</code>-এ user CPU বেশি।</td><td>12-14, 19 — parallelism, cache-friendly algorithm</td></tr>
-    <tr><td><strong>Memory-bound</strong></td><td>CPU "busy" দেখায় কিন্তু আসলে RAM-এর অপেক্ষায়; এলোমেলো বড় data structure, cache miss-এর মিছিল।</td><td>7-8, 13 — locality, data layout</td></tr>
-    <tr><td><strong>Memory pressure / swap</strong></td><td>সবকিছু হঠাৎ কাদায় হাঁটছে; <code>vmstat</code>-এ si/so নড়ছে, major fault বাড়ছে, OOM-এর গন্ধ।</td><td>9-10 — working set vs RAM</td></tr>
-    <tr><td><strong>Disk-bound</strong></td><td>CPU অলস, iowait উঁচু; ছোট random read-এর বন্যা, fsync-ভারী write।</td><td>20-24 — cache, batching, sequential</td></tr>
-    <tr><td><strong>Network-bound</strong></td><td>Latency-র সিংহভাগ বাইরের service-এ; N+1 query, chatty API।</td><td>25-29 — round-trip কমাও</td></tr>
-    <tr><td><strong>Too many threads / context switching</strong></td><td><code>vmstat</code>-এ cs আকাশে, throughput বাড়ে না বা কমে; CPU busy অথচ "কাজ" কম।</td><td>17, 19 — worker সংখ্যা core-এ নামাও</td></tr>
-    <tr><td><strong>Blocking / event loop jam</strong></td><td>P99 কুৎসিত কিন্তু গড় ভালো; Node-এ event loop lag metric বাড়ে।</td><td>28-29 — sync কাজ loop থেকে বের করো</td></tr>
-    <tr><td><strong>Excessive syscalls</strong></td><td><code>strace -c</code>-তে লাখো ক্ষুদ্র read/write; per-call overhead জমে পাহাড়।</td><td>32 — batching, বড় buffer</td></tr>
-    <tr><td><strong>Lock contention</strong></td><td>Core বাড়ালেও speed বাড়ে না; সবাই এক lock/এক DB row-এর লাইনে।</td><td>18 — critical section ছোট করো, ভাগ করো</td></tr>
+    <tr><th>কলাম</th><th>মানে</th></tr>
+    <tr><td><code>r</code></td><td>যতগুলো thread চলছে বা চলার জন্য CPU-র লাইনে দাঁড়িয়ে (runnable)</td></tr>
+    <tr><td><code>b</code></td><td>যতগুলো thread এমন ঘুমে আছে যেটা ভাঙানো যায় না, প্রায় সবসময় disk-এর অপেক্ষা (Chapter 15-এর D)</td></tr>
+    <tr><td><code>swpd</code>, <code>si</code>, <code>so</code></td><td>swap-এ কত KB আছে; প্রতি সেকেন্ডে কত KB swap থেকে এল (in) আর গেল (out)</td></tr>
+    <tr><td><code>in</code>, <code>cs</code></td><td>প্রতি সেকেন্ডে interrupt আর context switch</td></tr>
+    <tr><td><code>us sy id wa st</code></td><td>CPU-র সময়ের ভাগ (%): user, kernel, অলস, অলস-কিন্তু-disk-এর-অপেক্ষায়, অন্য VM-এর নেওয়া (steal, Chapter 35)</td></tr>
+  </table></div>
+  <p>এবার তিন ঝামেলা, তিন রকম সংকেত:</p>
+  <ul>
+    <li><strong>CPU (লাইন ৩–৫)</strong> — <code>us</code> ১০০, <code>id</code> ০: utilization পুরো। কিন্তু আসল খবর <code>r</code> = ২৪: CPU ১২টা, চাইছে ২৪ জন। অর্ধেক সবসময় লাইনে, প্রত্যেকে অর্ধেক গতিতে। এটাই saturation। <code>r</code> যদি CPU-র সংখ্যার চেয়ে বেশি থাকে লম্বা সময় ধরে, তাহলে latency বাড়বে, CPU যতই "মাত্র ১০০%" দেখাক।</li>
+    <li><strong>Context switch (লাইন ৭–৮)</strong> — CPU প্রায় অলস (<code>id</code> ৯৭), অথচ <code>cs</code> সেকেন্ডে ১,৬৪,০০০, আর <code>in</code> ৮৩,০০০: অন্য core-এর ঘুমন্ত thread-কে জাগাতে interrupt পাঠাতে হয়। দুই thread তিন সেকেন্ডে ১,২০,০০০ বার বল চালাচালি করেছে, প্রতিবার গড়ে ২৫ µs, যার প্রায় পুরোটা ঘুম আর জাগার খরচ (Chapter 17)। Production-এ হঠাৎ <code>cs</code> লাফিয়ে উঠলে সন্দেহ করো: lock নিয়ে কাড়াকাড়ি, বা core-এর চেয়ে অনেক বেশি thread।</li>
+    <li><strong>Memory (লাইন ৯–১২)</strong> — <code>si</code> আর <code>so</code> প্রতি সেকেন্ডে প্রায় ৪ লাখ ৯০ হাজার KB করে, মানে প্রায় আধা GB, <code>swpd</code> প্রায় ৩১০ MB পর্যন্ত, <code>b</code> ১, <code>wa</code> ৪। প্রতিটা ছোঁয়া page আগে swap থেকে আনতে হয়, আর আনতে গিয়ে অন্যটা বের করে দিতে হয়। ফল দেখো শেষ লাইনে: তিন সেকেন্ডে ৩০০ MB-র ওপর মাত্র ৬ বার ঘোরা গেছে। একই swap.js সীমা ছাড়া চালালে (<code>docker run --rm -v "$PWD":/w:ro -w /w node:22-alpine node swap.js</code>) আমার এখানে ৪১২০ বার। প্রায় সাতশো গুণ ধীর। অথচ CPU ৯৩% অলস।</li>
+  </ul>
+  <p>শেষ উদাহরণটা মনে রাখো: machine "অলস" দেখাচ্ছে, অথচ program প্রায় থেমে আছে। শুধু CPU% দেখলে এই রোগ কোনোদিন ধরা পড়ত না। পুরো checklist, এই বইয়ের tool দিয়ে:</p>
+  <div class="table-wrap"><table>
+    <tr><th>Resource</th><th>Utilization</th><th>Saturation</th><th>Errors</th></tr>
+    <tr><td>CPU</td><td><code>vmstat</code> us + sy; process-এর <code>top</code></td><td><code>vmstat</code> r &gt; CPU-র সংখ্যা; container-এ <code>cpu.stat</code>-এর throttled (Chapter 36)</td><td>প্রায় কখনো না</td></tr>
+    <tr><td>Memory</td><td><code>free -m</code>-এর available (page cache-কে ব্যবহৃত ধরো না)</td><td><code>vmstat</code> si/so; major fault (Chapter 10)</td><td>OOM kill: exit ১৩৭, <code>dmesg</code> (Chapter 36)</td></tr>
+    <tr><td>Disk</td><td><code>iostat -x</code>-এর <code>%util</code></td><td><code>vmstat</code> b আর wa; <code>iostat -x</code>-এর queue</td><td><code>EIO</code>, fsync error (Chapter 21)</td></tr>
+    <tr><td>Network</td><td>interface-এর byte/s বনাম link-এর গতি</td><td><code>ss</code>-এর Recv-Q/Send-Q, accept queue (Chapter 26–27)</td><td>retransmission, <code>ECONNRESET</code> (Chapter 30)</td></tr>
+    <tr><td>Node-এর event loop</td><td><code>performance.eventLoopUtilization()</code></td><td>event loop delay (নিচে)</td><td>timeout, unhandled error</td></tr>
   </table></div>
 
-  <p>খেয়াল করো — এই তালিকার একটা রোগও তোমার application-এর code দেখে ধরা যায় না; ধরা যায় OS-এর জানালা দিয়ে দেখলে (top, vmstat, iostat, strace, ss)। এই বইয়ের আসল উপহার এই জানালাগুলো চেনা।</p>
+  <h3>Node-এর নিজস্ব resource: event loop</h3>
+  <p>শেষ সারিটা Node-এর জন্য আলাদা করে। Event loop একটাই thread (Chapter 29)। সে কোনো sync কাজে ১ ms আটকে থাকলে, সেই ১ ms-এ আসা প্রতিটা request অপেক্ষা করে। Machine-এর হিসাবে এটা কোথাও saturation হিসেবে দেখা যায় না: ১২ core-এর machine-এ একটা thread পুরো ব্যস্ত মানে machine-এর CPU মাত্র ৮%। তাই Node নিজেই এই saturation মাপার ব্যবস্থা রাখে: <code>monitorEventLoopDelay</code>। একটা timer বারবার বসিয়ে দেখে, সেটা সময়মতো ফুটল কি না; দেরির পরিমাণই event loop-এর লাইনে কাজ আটকে থাকার মাপ।</p>
+  <p>একটা চেনা ঘটনা দিয়ে দেখি। একটা server-এর <code>/login</code> password hash করে, যেটা ইচ্ছে করেই ধীর একটা কাজ (এখানে ~৫০ ms), আর <code>/ping</code> সাথে সাথে উত্তর দেয়। একবার hash হবে main thread-এ, <code>pbkdf2Sync</code> দিয়ে; আরেকবার libuv-এর thread pool-এ (Chapter 19):</p>
+  <div class="codewrap"><pre><code>// app.js — দুটো endpoint: /ping সাথে সাথে উত্তর দেয়; /login password hash করে (~৫০ ms CPU)
+const http = require('http'), crypto = require('crypto');
+const { monitorEventLoopDelay } = require('perf_hooks');
+const lag = monitorEventLoopDelay({ resolution: 1 });    // event loop কতটা দেরিতে ঘুরছে, ms-এর ঘরে মাপা
+lag.enable();
+const hash = (pw, done) =&gt; process.env.SYNC
+  ? done(crypto.pbkdf2Sync(pw, 'salt', 5e5, 32, 'sha256'))              // main thread-এই
+  : crypto.pbkdf2(pw, 'salt', 5e5, 32, 'sha256', (err, key) =&gt; done(key)); // libuv-এর thread pool-এ (Chapter 19)
+http.createServer((req, res) =&gt; {
+  if (req.url === '/login') hash('secret', key =&gt; res.end(key.toString('hex')));
+  else res.end('pong');
+}).listen(3000, '127.0.0.1');
+process.on('SIGTERM', () =&gt; {
+  const ms = ns =&gt; (ns / 1e6).toFixed(1);
+  console.log(`event loop delay: p50 ${ms(lag.percentile(50))} ms, p99 ${ms(lag.percentile(99))} ms, max ${ms(lag.max)} ms`);
+  process.exit();
+});</code></pre></div>
+  <div class="codewrap"><pre><code>// load.js — ৩ সেকেন্ড ধরে: প্রতি ১০ ms-এ একটা /ping, প্রতি ১০০ ms-এ একটা /login; /ping-এর latency মাপা
+const http = require('http');
+const pings = [];
+const get = (path, done) =&gt; {
+  const t = performance.now();
+  http.get(`http://127.0.0.1:3000${path}`, r =&gt; r.resume().on('end', () =&gt; done &amp;&amp; done(performance.now() - t)));
+};
+const a = setInterval(() =&gt; get('/ping', ms =&gt; pings.push(ms)), 10);
+const b = setInterval(() =&gt; get('/login'), 100);
+setTimeout(() =&gt; {
+  clearInterval(a); clearInterval(b);
+  pings.sort((x, y) =&gt; x - y);
+  const p = q =&gt; pings[Math.floor(q * (pings.length - 1))].toFixed(1);
+  console.log(`/ping: ${pings.length} requests, p50 ${p(0.5)} ms, p99 ${p(0.99)} ms, max ${p(1)} ms`);
+}, 3000);</code></pre></div>
+  <div class="codewrap"><pre><code># lag.sh — একই load, দুইবার: hash main thread-এ (SYNC=1), আর thread pool-এ
+for sync in 1 ""; do
+  echo "--- SYNC=${sync:-no}"
+  SYNC=$sync node app.js &amp; sleep 0.5
+  node load.js; sleep 0.2
+  kill $!; wait
+done</code></pre></div>
+  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash lag.sh</code></pre></div>
+  <div class="codewrap"><pre><code>--- SYNC=1
+/ping: 256 requests, p50 0.7 ms, p99 56.0 ms, max 71.9 ms
+event loop delay: p50 2.0 ms, p99 54.6 ms, max 73.0 ms
+--- SYNC=no
+/ping: 273 requests, p50 0.2 ms, p99 0.7 ms, max 7.3 ms
+event loop delay: p50 2.0 ms, p99 2.5 ms, max 4.0 ms</code></pre></div>
+  <p>(P50 আর P99 মানে: সব মাপ ছোট থেকে বড় সাজালে মাঝেরটা, আর একশোটার মধ্যে সবচেয়ে ধীর একটার সীমা। এগুলো নিয়ে পরের chapter-এ আরও।) <code>SYNC=1</code>-এ <code>/ping</code>-এর P50 ০.৭ ms, ঠিকঠাক। কিন্তু P99 ৫৬ ms, মানে প্রতি একশো ping-এর একটা ৫৬ ms আটকে ছিল। কারণ hash চলার ৫০ ms-এ event loop আর কিছু ধরতে পারেনি, ping-এর byte kernel-এর buffer-এ বসে ছিল (Chapter 38)। <code>/ping</code>-এর নিজের code-এ কোনো দোষ নেই, অথচ সেই ধীর। একই কাজ thread pool-এ পাঠাতেই P99 ০.৭ ms।</p>
+  <p>লক্ষ্য করো, server-এর ভেতরের event loop delay-এর P99 (৫৪.৬ ms) বাইরে থেকে মাপা ping-এর P99-এর (৫৬ ms) প্রায় সমান। তাই load test ছাড়াই, production-এ চলন্ত server থেকেই এই saturation মাপা যায়: event loop delay-এর P99 একটা metric হিসেবে পাঠাও। (অলস অবস্থাতেও P50 ২ ms আসে, কারণ এই মাপে ১ ms-এর timer-এর নিজের ঘোরাটাও ধরা হয়। তুলনা করো পার্থক্যটা।)</p>
+
+  <h3>Mac-এ কী দিয়ে</h3>
+  <p>এই chapter-এর বেশিরভাগ tool Linux-এর। Production server সাধারণত Linux, তাই এগুলোই শেখার মতো। নিজের Mac-এ কাজ চালানোর জন্য সমতুল্যগুলো:</p>
+  <div class="table-wrap"><table>
+    <tr><th>প্রশ্ন</th><th>Linux</th><th>macOS</th></tr>
+    <tr><td>real, user, sys</td><td><code>time</code></td><td><code>time</code>; আরও বেশি দেখতে <code>/usr/bin/time -l</code> (page fault, context switch, সর্বোচ্চ memory)</td></tr>
+    <tr><td>কোন function-এ CPU</td><td><code>node --cpu-prof</code>, <code>perf</code></td><td><code>node --cpu-prof</code>, <code>sample &lt;pid&gt;</code>, Instruments</td></tr>
+    <tr><td>কোন syscall, কতবার</td><td><code>strace -c</code></td><td><code>dtruss -c</code>, তবে SIP বন্ধ না করলে চলে না; বাস্তবে Docker-এ Linux</td></tr>
+    <tr><td>পুরো machine, প্রতি সেকেন্ডে</td><td><code>vmstat 1</code></td><td><code>vm_stat 1</code> (memory), <code>top -l 0 -s 1</code> (CPU), <code>iostat 1</code></td></tr>
+    <tr><td>কে disk-এ লিখছে</td><td><code>iostat -x</code>, <code>pidstat -d</code></td><td><code>sudo fs_usage</code></td></tr>
+    <tr><td>socket আর queue</td><td><code>ss -tan</code></td><td><code>netstat -an</code>, <code>lsof -i</code>, <code>nettop</code></td></tr>
+    <tr><td>event loop</td><td colspan="2"><code>monitorEventLoopDelay</code>, <code>performance.eventLoopUtilization()</code> — দুই জায়গায় একই</td></tr>
+  </table></div>
 
   <div class="box warn">
-    <div class="box-title">সাবধান</div>
-    <p>কোনো magical checklist নেই — "cache যোগ করো / thread বাড়াও / SSD লাগাও" জাতীয় ঢালাও ওষুধ প্রায়ই রোগ না জেনে antibiotics। আগে <em>কোন resource-এ আটকে আছো</em> সেটা প্রমাণসহ বের করো; সমাধান তখন প্রায় নিজেই দেখা দেয়।</p>
+    <div class="box-title">COMMON MISCONCEPTION</div>
+    <p>"CPU মাত্র ১০%, তাই সমস্যা CPU-তে না।" machine-এর CPU% পুরো machine-এর গড়। lag.sh-এর Node server-এর event loop hash চলার সময় পুরো ব্যস্ত, কিন্তু ১২ core-এর machine-এ সেটা ৮%-এর বেশি দেখাবে না। swap.js-এর সময় machine ৯৩% অলস, অথচ program সাতশো গুণ ধীর। আবার উল্টোটাও সত্যি: ১০০% CPU নিজে কোনো সমস্যা না, যদি কেউ লাইনে না দাঁড়ায়। Utilization-এর সংখ্যা একা কিছু বলে না। জিজ্ঞেস করো কে অপেক্ষা করছে, কিসের জন্য, আর কত লম্বা লাইনে।</p>
+  </div>
+
+  <div class="box concept">
+    <div class="box-title">MENTAL MODEL</div>
+    <p>ধীর মানে সময় কোথাও যাচ্ছে, আর kernel সেই সময়ের হিসাব রাখে। প্রথমে <code>time</code>: real = user + sys + অপেক্ষা। user বেশি হলে profiler (<code>--cpu-prof</code>) বলে কোন function। sys বেশি হলে <code>strace -c</code> বলে কোন syscall, কতবার। অপেক্ষা বেশি হলে খুঁজতে হয় কিসের অপেক্ষা: CPU-র লাইন (<code>vmstat r</code>, throttling), disk (<code>strace -c -w</code>, <code>wa</code>), memory (<code>si/so</code>), নাকি আটকে থাকা event loop (event loop delay)। পুরো machine-এর জন্য প্রতিটা resource-কে USE-এর তিন প্রশ্ন, আর সবচেয়ে গুরুত্ব দাও saturation-কে: লাইন যেখানে, latency সেখানে। অনুমান দিয়ে শুরু কোরো না; সংখ্যা যেখানে নিয়ে যায়, code সেখানে খোলো।</p>
+  </div>
+
+  <div class="box quiz">
+    <div class="box-title">CAN I EXPLAIN THIS?</div>
+    <ul>
+      <li>triad.sh-এর তিন program-এর real, user, sys দেখে কোনটার কী রোগ, কীভাবে বুঝলে? <code>--cpus 0.5</code>-এ user একই থেকেও real দ্বিগুণ হলো কেন, আর cpu mode-এ user + sys real-এর চেয়ে বেশি কেন?</li>
+      <li>user বেশি, sys বেশি, আর অপেক্ষা বেশি: প্রতিটার পরের প্রশ্ন কী, আর কোন tool দিয়ে? <code>strace -c -w</code>-এ <code>-f</code> দিলে ফল কেন বিভ্রান্তিকর হতো?</li>
+      <li>USE-এর তিন প্রশ্ন কী কী? use.sh-এর CPU অংশে <code>us</code> ১০০ থাকা অবস্থায় আসল সংকেত কোন কলামে ছিল? "memory ৯০% used" কেন একা কোনো খবর না?</li>
+      <li>swap.js চলার সময় CPU ৯৩% অলস, অথচ program সাতশো গুণ ধীর। vmstat-এর কোন কোন কলাম এটা ধরিয়ে দেয়? storm.js-এ CPU অলস থেকেও <code>cs</code> আর <code>in</code> এত বেশি কেন?</li>
+      <li>lag.sh-এ <code>/ping</code>-এর P50 ঠিক থেকেও P99 ৫৬ ms কেন? <code>/ping</code>-এর নিজের code-এ দোষ না থাকলে সে ধীর হলো কীভাবে? Production-এ load test ছাড়া এটা কীভাবে ধরবে?</li>
+    </ul>
   </div>
