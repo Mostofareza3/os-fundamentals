@@ -119,8 +119,10 @@ function render(text, lang, prompts) {
   let cur = '';
   let prompt = false;
 
-  function flush() {
-    lines.push('<span class="ln' + (prompt ? ' p' : '') + '">' + cur + '</span>');
+  // The newline stays inside its line's span, so the block's text is
+  // unchanged; a trailing newline in a block does not add a blank line.
+  function flush(nl) {
+    lines.push('<span class="ln' + (prompt ? ' p' : '') + '">' + cur + nl + '</span>');
     cur = '';
     prompt = false;
   }
@@ -128,12 +130,12 @@ function render(text, lang, prompts) {
   toks.forEach(function (t) {
     if (t[0] === 'start') { prompt = prompts; return; }
     t[1].split('\n').forEach(function (piece, i) {
-      if (i > 0) flush();
+      if (i > 0) flush('\n');
       if (piece) cur += t[0] ? '<span class="t-' + t[0] + '">' + esc(piece) + '</span>' : esc(piece);
     });
   });
-  flush();
-  return lines.join('\n');
+  flush('');
+  return lines.join('');
 }
 
 function esc(s) {
@@ -155,12 +157,18 @@ function ruleTokenizer(rules) {
       for (const [re, cls] of compiled) {
         re.lastIndex = i;
         const m = re.exec(text);
-        if (m && m[0].length) { hit = [typeof cls === 'function' ? cls(m) : cls, m[0]]; break; }
+        if (m && m[0].length) {
+          // cls: a class, a function of the match, or one class per group
+          hit = Array.isArray(cls)
+            ? cls.map((c, g) => [c, m[g + 1] || ''])
+            : [[typeof cls === 'function' ? cls(m) : cls, m[0]]];
+          i += m[0].length;
+          break;
+        }
       }
       if (hit) {
         if (plain) { out.push(['', plain]); plain = ''; }
-        out.push(hit);
-        i += hit[1].length;
+        hit.forEach(t => { if (t[1]) out.push(t); });
       } else {
         plain += text[i++];
       }
@@ -179,13 +187,16 @@ const C_KW = kwSet('int char void return if else for while do break continue sta
 const C_LIT = kwSet('NULL true false');
 
 // An identifier is a keyword, a literal, a call ("name(") or nothing.
+// Pair with IDENT: group 1 is a name followed by "(", group 2 any other.
 function wordClass(kw, lit) {
   return function (m) {
-    if (kw.has(m[1])) return 'kw';
-    if (lit.has(m[1])) return 'lit';
-    return m[2] ? 'fn' : '';
+    const w = m[1] || m[2];
+    if (kw.has(w)) return 'kw';
+    if (lit.has(w)) return 'lit';
+    return m[1] ? 'fn' : '';
   };
 }
+const IDENT = /([A-Za-z_$][\w$]*)(?=\s*\()|([A-Za-z_$][\w$]*)/;
 
 const NUM = [/0[xX][0-9a-fA-F_]+n?|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?n?\b/, 'num'];
 
@@ -195,13 +206,15 @@ const TOKENIZERS = {
     [/\/\*[\s\S]*?\*\//, 'com'],
     [/'(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?|`(?:\\.|[^`\\])*`?/, 'str'],
     [/%[A-Za-z]+(?=\()/, 'fn'],                       // V8 natives: %DebugPrint(
-    [/([A-Za-z_$][\w$]*)(\s*\()?/, wordClass(JS_KW, JS_LIT)],
+    // a regex literal can only follow an operator or an opening bracket
+    [/(?<=(?:^|[(,=:[!&|?{};])[ \t]*)\/(?![*\/])(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^\/\\\n])+\/[dgimsuy]*/m, 'str'],
+    [IDENT, wordClass(JS_KW, JS_LIT)],
     NUM,
   ]),
   py: ruleTokenizer([
     [/#[^\n]*/, 'com'],
     [/[rbfRBF]{0,2}(?:'''[\s\S]*?'''|"""[\s\S]*?"""|'(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?)/, 'str'],
-    [/([A-Za-z_]\w*)(\s*\()?/, wordClass(PY_KW, PY_LIT)],
+    [IDENT, wordClass(PY_KW, PY_LIT)],
     NUM,
   ]),
   c: ruleTokenizer([
@@ -209,76 +222,77 @@ const TOKENIZERS = {
     [/\/\*[\s\S]*?\*\//, 'com'],
     [/^[ \t]*#\s*\w+[^\n]*/m, 'kw'],                   // #include <stdio.h>
     [/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"?/, 'str'],
-    [/([A-Za-z_]\w*)(\s*\()?/, wordClass(C_KW, C_LIT)],
+    [IDENT, wordClass(C_KW, C_LIT)],
     NUM,
   ]),
   asm: ruleTokenizer([
     [/;[^\n]*|\/\/[^\n]*/, 'com'],
     [/#-?(?:0x[0-9a-fA-F]+|\d+)/, 'num'],
-    [/^([ \t]*(?:[0-9a-fA-F]+:?[ \t]+)*)([a-z][a-z0-9.]*)(?=[ \t]|$)/m, function () { return ''; }],
+    // the mnemonic, after any address / opcode columns an objdump adds
+    [/^([ \t]*(?:[0-9a-fA-F]+:?[ \t]+)*)([a-z][a-z0-9.]*)(?=[ \t]|$)/m, ['', 'kw']],
   ]),
   sh: shellTokens,
 };
 
-// The assembly rule above only exists to step over address/opcode
-// columns; give the mnemonic its own colour afterwards.
-TOKENIZERS.asm = (function (base) {
-  return function (text) {
-    const out = [];
-    base(text).forEach(function (t) {
-      const m = t[0] === '' && /^([ \t]*(?:[0-9a-fA-F]+:?[ \t]+)*)([a-z][a-z0-9.]*)$/.exec(t[1]);
-      if (m && !/^[0-9a-f]+$/.test(m[2])) { out.push(['', m[1]]); out.push(['kw', m[2]]); }
-      else out.push(t);
-    });
-    return out;
-  };
-})(TOKENIZERS.asm);
-
 /* ---------- shell ----------
    Walks the text once, tracking just enough state to colour a command
-   line: whether the next word is in command position, open quotes, and
-   how deep inside do/done, then/fi, { } and ( ) we are (a line that
-   starts at depth 0, outside any quote and not after a trailing "\" or
-   "|" is a new command — that is where the "$" goes).
+   line: whether the next word names a command, and how deep inside
+   do/done, then/fi, { } and $( ) we are. A line that starts at depth 0
+   and does not continue the previous one (trailing "\", "|", "&&") is a
+   new command — that is where the "$" goes.
 
-   The body of `bash -c '...'`, `node -e "..."` and `python3 -c "..."`
-   is highlighted in that language, so a multi-line script handed to a
-   container does not render as one long string. */
+   The body of `bash -c '...'`, `node -e "..."` and `python3 -c "..."`,
+   and of a `cat > x.js <<'EOF'` heredoc, is highlighted in its own
+   language, so a script handed to a container does not render as one
+   long string. */
 
 const SH_KW = kwSet('for in do done if then elif else fi while until case esac function select');
-const SH_OPEN = kwSet('do then case {');
-const SH_CLOSE = kwSet('done fi esac }');
+const SH_OPEN = kwSet('do then case');
+const SH_CLOSE = kwSet('done fi esac');
+const SH_CMD_AFTER = kwSet('do then else elif if while until');   // keyword followed by a command
 const SH_PREFIX = kwSet('time sudo exec nohup env xargs');
 const SH_INTERP = { sh: 'sh', bash: 'sh', zsh: 'sh', node: 'js', python: 'py', python3: 'py' };
+const SH_EVAL_FLAG = kwSet('-c -e -p --eval --print');
+const EXT_LANG = { js: 'js', py: 'py', sh: 'sh', c: 'c' };
 
 function shellTokens(text) {
   const out = [];
+  const push = (cls, s) => out.push([cls, s]);
   let i = 0;
   let cmdPos = true;       // next word names a command
   let depth = 0;
-  let cont = false;        // previous line ended in "\" "|" "&&" "||"
-  let interp = null;       // last interpreter seen in this command
+  let cont = false;        // this line continues onto the next
+  let interp = null;       // interpreter named so far in this command
   let prevWord = '';
+  let forVar = 0;          // words since "for" (its "in" is a keyword)
+  let heredoc = null;      // { delim, lang } waiting for the next newline
   let lineStart = true;
-
-  const push = (cls, s) => out.push([cls, s]);
 
   while (i < text.length) {
     const ch = text[i];
 
     if (lineStart) {
       lineStart = false;
-      const rest = /^[ \t]*/.exec(text.slice(i))[0];
-      const next = text[i + rest.length];
+      const next = text[i + /^[ \t]*/.exec(text.slice(i))[0].length];
       if (depth === 0 && !cont && next !== undefined && next !== '\n' && next !== '#') push('start', '');
       cont = false;
     }
 
     if (ch === '\n') {
       push('', '\n');
-      lineStart = true;
-      if (depth === 0 && !cont) { cmdPos = true; interp = null; }
       i++;
+      if (!cont) { cmdPos = true; interp = null; }
+      if (heredoc) {
+        const rest = text.slice(i);
+        const end = new RegExp('^[ \\t]*' + heredoc.delim + '[ \\t]*$', 'm').exec(rest);
+        const body = end ? rest.slice(0, end.index) : rest;
+        (heredoc.lang ? TOKENIZERS[heredoc.lang](body) : [['str', body]]).forEach(t => out.push(t));
+        if (end) push('str', end[0]);
+        i += body.length + (end ? end[0].length : 0);
+        heredoc = null;
+        continue;          // the newline after the delimiter ends the command
+      }
+      lineStart = true;
       continue;
     }
     if (ch === ' ' || ch === '\t') {
@@ -304,22 +318,28 @@ function shellTokens(text) {
       continue;
     }
 
-    // operators
-    const op = /^(?:\|\||&&|\d?>>?&?\d?|<|\||;|&)/.exec(text.slice(i));
+    // operators and redirections
+    const op = /^(?:\|\||&&|<<-?|\d?>>?&?\d?|<|\||;|&)/.exec(text.slice(i));
     if (op) {
       push('op', op[0]);
       i += op[0].length;
       if (/^(?:\|\||&&|\||;|&)$/.test(op[0])) {
         cmdPos = true;
         interp = null;
-        cont = op[0] !== ';' && op[0] !== '&' && /^[ \t]*(?:\n|$)/.test(text.slice(i));
+        cont = /^(?:\|\||&&|\|)$/.test(op[0]) && /^[ \t]*(?:\n|$)/.test(text.slice(i));
+      }
+      if (op[0].startsWith('<<')) {
+        const d = /^[ \t]*(['"]?)([A-Za-z_]\w*)\1/.exec(text.slice(i));
+        const line = text.slice(0, i).split('\n').pop() + text.slice(i).split('\n')[0];
+        const ext = /\.(js|py|sh|c)\b/.exec(line);
+        if (d) heredoc = { delim: d[2], lang: ext ? EXT_LANG[ext[1]] : null };
       }
       continue;
     }
 
     if (ch === '(' || ch === ')') {
       push('', ch);
-      depth += ch === '(' ? 1 : -1;
+      depth = Math.max(0, depth + (ch === '(' ? 1 : -1));
       if (ch === '(') cmdPos = true;
       i++;
       continue;
@@ -329,15 +349,16 @@ function shellTokens(text) {
     const start = i;
     const word = [];
     let bare = '';
+    let subCmd = false;
     while (i < text.length && !/[\s|&;<>()]/.test(text[i])) {
       const c = text[i];
       if (c === "'" || c === '"') {
         const end = findQuote(text, i);
         const body = text.slice(i + 1, end);
-        const inner = (prevWord === '-c' || prevWord === '-e' || prevWord === '-p' || prevWord === '--eval' || prevWord === '--print') && interp;
+        const lang = SH_EVAL_FLAG.has(prevWord) && interp;
         word.push(['str', c]);
-        if (inner && body.includes(' ')) {
-          const sub = inner === 'sh' ? shellTokens(body).filter(t => t[0] !== 'start') : TOKENIZERS[inner](body);
+        if (lang && /\s/.test(body)) {
+          const sub = lang === 'sh' ? shellTokens(body).filter(t => t[0] !== 'start') : TOKENIZERS[lang](body);
           sub.forEach(t => word.push(t));
         } else if (c === '"') {
           splitDollars(body).forEach(t => word.push(t));
@@ -352,8 +373,8 @@ function shellTokens(text) {
         const m = /^\$(?:\{[^}\n]*\}|\(\(|\(|[A-Za-z_]\w*|[$?!#@*0-9])?/.exec(text.slice(i))[0];
         word.push(['var', m]);
         i += m.length;
-        if (m === '$(') { depth++; cmdPos = true; }
-        if (m === '$((') depth++;
+        if (m === '$(') { depth++; subCmd = true; }
+        if (m === '$((') depth += 2;
         continue;
       }
       if (c === '\\' && i + 1 < text.length) {
@@ -367,46 +388,45 @@ function shellTokens(text) {
       bare += m;
       i += m.length;
     }
-    if (i === start) {           // a lone character no rule claims
+    if (i === start) {           // a lone character nothing above claims
       push('', text[i++]);
       continue;
     }
 
     const whole = text.slice(start, i);
     const simple = word.length === 1 && word[0][0] === '';
+    const base = bare.split('/').pop();
     let cls = '';
-    if (simple && SH_KW.has(whole) && (cmdPos || whole === 'in' || whole === 'do')) {
+    forVar = forVar ? forVar + 1 : 0;
+    if (simple && cmdPos && SH_KW.has(whole)) {
       cls = 'kw';
       if (SH_OPEN.has(whole)) depth++;
       if (SH_CLOSE.has(whole)) depth = Math.max(0, depth - 1);
-      cmdPos = whole !== 'in';
-    } else if (simple && (whole === '{' || whole === '}') && cmdPos) {
-      depth += whole === '{' ? 1 : -1;
-      depth = Math.max(0, depth);
+      cmdPos = SH_CMD_AFTER.has(whole);
+      if (whole === 'for' || whole === 'select' || whole === 'case') forVar = 1;
+    } else if (simple && whole === 'in' && forVar === 3) {
+      cls = 'kw';
+    } else if (simple && cmdPos && (whole === '{' || whole === '}')) {
+      depth = Math.max(0, depth + (whole === '{' ? 1 : -1));
     } else if (cmdPos && /^[A-Za-z_]\w*=/.test(whole)) {
-      cls = 'var';                                  // FOO=1 cmd
-    } else if (cmdPos) {
-      cls = 'cm';
-      cmdPos = SH_PREFIX.has(bare);
-      const base = bare.split('/').pop();
+      cls = 'var';                                    // FOO=1 cmd
+    } else if (cmdPos || subCmd) {
+      cls = 'cm';                                     // cmd, or $(cmd
+      cmdPos = SH_PREFIX.has(base);
       if (SH_INTERP[base]) interp = SH_INTERP[base];
-    } else if (/^-/.test(whole)) {
+    } else if (whole[0] === '-') {
       cls = 'fl';
-    } else {
-      const base = bare.split('/').pop();
-      if (SH_INTERP[base]) interp = SH_INTERP[base];  // docker run image node -e ...
+    } else if (SH_INTERP[base]) {
+      interp = SH_INTERP[base];                       // docker run IMAGE node -e ...
     }
 
     if (cls === 'var' && simple) {
       const eq = whole.indexOf('=');
       push('var', whole.slice(0, eq + 1));
       push('', whole.slice(eq + 1));
-    } else if (cls && simple) {
-      push(cls, whole);
-    } else if (cls === 'fl' || cls === 'cm') {
-      word.forEach(t => push(t[0] || cls, t[1]));
     } else {
-      word.forEach(t => push(t[0], t[1]));
+      // plain pieces take the word's colour; quotes and $vars keep theirs
+      word.forEach(t => push(t[0] || cls, t[1]));
     }
     prevWord = whole;
   }
