@@ -5,7 +5,7 @@
 /* ---------- code + diagrams ---------- */
 .codewrap{position:relative; margin:0 0 20px;}
 pre{
-  background:var(--code-bg); color:#D3DCE6;
+  background:var(--code-bg); color:var(--code-text);
   border:1px solid var(--border); border-radius:var(--radius);
   padding:16px 18px; overflow-x:auto; line-height:1.7;
   font-family:var(--font-mono); font-size:13px;
@@ -33,6 +33,70 @@ pre.diagram .dim{color:var(--muted);}
 .copybtn.done{color:var(--ok); border-color:var(--ok); opacity:1;}
 @media(hover:none){ .copybtn{opacity:1;} }
 .diagram-caption{font-size:13px; color:var(--muted); margin:-12px 0 22px; text-align:center; line-height:1.6;}
+
+/* ---------- labelled code blocks ----------
+   codeblock.js gives every command, source file and output block a
+   header ("Terminal", "validate.js", "Output") and wraps it in .framed:
+   the frame draws the border, the <pre> inside is just the text.
+   Commands and source are dark in both themes, so the syntax colours
+   below are one palette; output sits on the page's own panel colour so
+   "what you type" and "what came back" never look alike. */
+.codewrap.framed{
+  border:1px solid var(--code-rule); border-radius:var(--radius);
+  background:var(--code-bg); overflow:hidden;
+}
+.framed pre{border:0; border-radius:0; background:none; margin:0; padding:12px 18px 14px;}
+.code-head{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  min-height:34px; padding:0 8px 0 14px;
+  border-bottom:1px solid var(--code-rule);
+  background:var(--code-head);
+}
+.code-label{
+  display:inline-flex; align-items:center; gap:8px; min-width:0;
+  font-family:var(--font-mono); font-size:11.5px; letter-spacing:.2px;
+  color:var(--code-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.code-label::before{content:""; flex:none; width:7px; height:7px; border-radius:50%; background:var(--syn-cm);}
+.k-src .code-label::before{background:var(--syn-num);}
+.code-head .copybtn{
+  position:static; opacity:1; backdrop-filter:none;
+  background:transparent; color:var(--code-dim); border-color:var(--code-rule);
+}
+.code-head .copybtn:hover{color:var(--code-text); border-color:var(--code-dim);}
+.code-head .copybtn.done{color:var(--syn-str); border-color:var(--syn-str);}
+
+/* output: the page's panel, no syntax colour, no Copy */
+.codewrap.framed.k-out{background:var(--panel); border-color:var(--border);}
+.k-out .code-head{background:none; border-bottom:1px dashed var(--border); min-height:30px;}
+.k-out .code-label{color:var(--muted);}
+.k-out .code-label::before{background:none; border:1.5px solid var(--muted); width:5px; height:5px;}
+.k-out pre{color:var(--text);}
+/* an output right under its command reads as its answer */
+.codewrap + .codewrap.k-out{margin-top:-8px;}
+
+/* Each line is its own block (codeblock.js), so a long line can wrap
+   instead of hiding behind a scrollbar. The wrapped part hangs 2ch to
+   the right of where that line's own text began (--i = its indent).
+   Output and assembly listings keep their columns and scroll instead. */
+.k-cmd code, .k-src pre:not(.lang-asm) code{white-space:pre-wrap; overflow-wrap:anywhere;}
+.framed .ln{display:block; padding-left:calc((var(--i, 0) + 2) * 1ch); text-indent:calc((var(--i, 0) + 2) * -1ch);}
+.k-cmd .ln{padding-left:calc((var(--i, 0) + 4) * 1ch); text-indent:calc((var(--i, 0) + 2) * -1ch);}
+.k-cmd .ln.p::before{
+  content:"$"; display:inline-block; width:2ch; margin-left:-2ch; text-indent:0;
+  color:var(--code-dim); user-select:none; -webkit-user-select:none;
+}
+
+/* syntax colours (tokens: code.css only; see codeblock.js) */
+.t-com{color:var(--syn-com);}
+.t-str{color:var(--syn-str);}
+.t-kw{color:var(--syn-kw);}
+.t-fn{color:var(--syn-fn);}
+.t-num, .t-lit{color:var(--syn-num);}
+.t-cm{color:var(--syn-cm); font-weight:600;}
+.t-fl{color:var(--syn-fl);}
+.t-var{color:var(--syn-var);}
+.t-op{color:var(--syn-kw);}
 
 /* ---------- SVG figures ----------
    Inline SVG diagrams. Every colour comes from a token, so a figure

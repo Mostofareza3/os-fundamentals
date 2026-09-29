@@ -13,6 +13,10 @@
   --danger:#E58F8F; --danger-dim:rgba(229,143,143,.10);
   --border:#28323E; --border-soft:#1F2833;
   --code-bg:#0A0F14; --shadow:rgba(0,0,0,.45);
+  /* code blocks stay dark in both themes: the light theme only re-tunes the frame, never the syntax colours */
+  --code-text:#D3DCE6; --code-dim:#8494A5; --code-rule:#222C37; --code-head:#0F151C;
+  --syn-com:#7F8FA1; --syn-str:#A9D4A2; --syn-kw:#C8A8F0; --syn-fn:#8EC4F0;
+  --syn-num:#F0B884; --syn-cm:#72D1C2; --syn-fl:#DCC08E; --syn-var:#F2A0A8;
   --series:#4F97E0;   /* data-series colour for charts (validated against the dark chart surface) */
   --sidebar-w:302px; --rail-w:220px;
   --radius:12px; --radius-sm:8px;
@@ -29,5 +33,6 @@ html[data-theme="light"]{
   --danger:#A94545; --danger-dim:rgba(169,69,69,.07);
   --border:#DCE3EA; --border-soft:#E8EDF2;
   --code-bg:#141C25; --shadow:rgba(30,45,60,.10);
+  --code-rule:#141C25; --code-head:#1B2430;
   --series:#2A6CA8;
 }
