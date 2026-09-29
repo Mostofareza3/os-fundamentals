@@ -206,7 +206,7 @@ server.listen(path, () =&gt; {
   console.log(fs.statSync(path).isSocket() ? 'file type: socket' : 'not a socket');
   net.connect(path).on('data', d =&gt; { process.stdout.write(d); server.close(); });
 });</code></pre></div>
-    <div class="codewrap"><pre class="cmd"><code>file type: socket
+    <div class="codewrap"><pre class="out"><code>file type: socket
 hello over a unix socket</code></pre></div>
   </div>
   <p>তুমি এটা রোজ ব্যবহার করো, না জেনেই। <code>docker</code> command আসলে Docker daemon-এর সাথে HTTP-তে কথা বলে — কিন্তু TCP port-এ না, একটা Unix socket-এ:</p>

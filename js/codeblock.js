@@ -356,8 +356,9 @@ function shellTokens(text) {
     // one shell word: runs of plain text, quoted strings and $expansions
     const start = i;
     const word = [];
+    let afterSub = false;
     let bare = '';
-    let subCmd = false;
+    let subCmd = false;      // this word opened a $( — its next piece is a command
     while (i < text.length && !/[\s|&;<>()]/.test(text[i])) {
       const c = text[i];
       if (c === "'" || c === '"') {
@@ -381,7 +382,7 @@ function shellTokens(text) {
         const m = /^\$(?:\{[^}\n]*\}|\(\(|\(|[A-Za-z_]\w*|[$?!#@*0-9])?/.exec(text.slice(i))[0];
         word.push(['var', m]);
         i += m.length;
-        if (m === '$(') { depth++; subCmd = true; }
+        if (m === '$(') { depth++; subCmd = true; afterSub = true; }
         if (m === '$((') depth += 2;
         continue;
       }
@@ -392,7 +393,8 @@ function shellTokens(text) {
         continue;
       }
       const m = /^[^\s|&;<>()'"$\\]+/.exec(text.slice(i))[0];
-      word.push(['', m]);
+      word.push([afterSub ? 'cm' : '', m]);
+      afterSub = false;
       bare += m;
       i += m.length;
     }
@@ -418,8 +420,10 @@ function shellTokens(text) {
       depth = Math.max(0, depth + (whole === '{' ? 1 : -1));
     } else if (cmdPos && /^[A-Za-z_]\w*=/.test(whole)) {
       cls = 'var';                                    // FOO=1 cmd
-    } else if (cmdPos || subCmd) {
-      cls = 'cm';                                     // cmd, or $(cmd
+    } else if (cmdPos && whole[0] === '-') {
+      cls = 'fl';                                     // time -p cmd
+    } else if (cmdPos) {
+      cls = 'cm';
       cmdPos = SH_PREFIX.has(base);
       if (SH_INTERP[base]) interp = SH_INTERP[base];
     } else if (whole[0] === '-') {
@@ -436,6 +440,7 @@ function shellTokens(text) {
       // plain pieces take the word's colour; quotes and $vars keep theirs
       word.forEach(t => push(t[0] || cls, t[1]));
     }
+    if (subCmd) cmdPos = false;                       // s=$(date +%s)
     prevWord = whole;
   }
   return out;

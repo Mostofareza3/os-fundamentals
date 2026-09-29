@@ -40,7 +40,7 @@ T0=$t0 node clock.js &gt; /dev/null
 t1=${EPOCHREALTIME/./}
 awk -v d=$((t1 - t0)) 'BEGIN { printf "back in the shell  %5.1f ms\n", d / 1000 }'</code></pre></div>
   <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash when.sh</code></pre></div>
-  <div class="codewrap"><pre class="cmd"><code>node clock starts    0.9 ms
+  <div class="codewrap"><pre class="out"><code>node clock starts    0.9 ms
 V8 ready             2.1 ms
 Node env ready       6.9 ms
 bootstrap done       9.0 ms

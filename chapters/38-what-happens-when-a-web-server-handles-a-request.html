@@ -139,7 +139,7 @@ node   2.89  read(20, "GET /user/42 HTTP/1.1\r\nHost: 127"..., 65536) = 85</code
   <p>(strace-এর নিচে সব সময় ফুলে যায়, Chapter 37-এ দেখেছ। এখানে ক্রমটা দেখো; আসল সময় পরে মাপব।)</p>
 
   <h3>Handler থামে, event loop থামে না</h3>
-  <div class="codewrap"><pre class="cmd"><code>node   5.05  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
+  <div class="codewrap"><pre class="out"><code>node   5.05  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
 node   5.85  write(18, "user 42\n", 8) = 8
 net    6.01  IP 127.0.0.1.39076 &gt; 127.0.0.1.5432: Flags [P.], seq 3860823399:3860823407, ack 2050728
 net    6.04  IP 127.0.0.1.5432 &gt; 127.0.0.1.39076: Flags [.], ack 8, win 512, options [nop,nop,TS val
@@ -165,7 +165,7 @@ node  14.00  read(18, "{\"id\":42,\"name\":\"Rahim\"}\n", 65536) = 25</code></pr
   <p>এই chapter-এর সবচেয়ে জরুরি কথা এই অংশে। <code>await</code> মানে thread আটকে থাকা না (Chapter 19)। Handler থেমে আছে, কিন্তু main thread kernel-কে বলে দিয়েছে "এই fd-গুলোর যেকোনোটায় কিছু এলে জাগিও" (Chapter 29), তারপর ঘুমিয়েছে। এই ফাঁকে অন্য কোনো request এলে সে সেটা ধরত। Thread-per-request server-এ (Chapter 28) এই পুরো সময়টা একটা thread শুধু বসে থাকত।</p>
 
   <h3>উত্তর, আর বিদায়</h3>
-  <div class="codewrap"><pre class="cmd"><code>node  15.62  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 114
+  <div class="codewrap"><pre class="out"><code>node  15.62  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 114
 node  15.97  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 60
 node  16.20  close(21)             = 0
 node  17.60  writev(20, [{iov_base="HTTP/1.1 200 OK\r\ncontent-type: a"..., iov_len=206}, {iov_base=
