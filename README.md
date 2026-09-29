@@ -24,7 +24,7 @@ css/                  Stylesheet modules, index.html-এ order মেনে link
   base.css              Reset, scrollbar, selection, focus ring
   layout.css            Shell layout + responsive breakpoints
   typography.css        Headings, body, table, inline code
-  code.css              Code block, ASCII diagram, copy button
+  code.css              Code block (header, syntax colour), ASCII diagram
   components.css        Callout box, details, prev/next nav
   search.css            Search overlay
   cover.css             Cover hero + resume banner
@@ -37,7 +37,7 @@ js/                   ES modules (no bundler)
   rail.js               "On this page" + scroll spy
   chapnav.js            Prev/next footer
   search.js             Search index + overlay
-  copy.js               Code copy buttons
+  codeblock.js          Code block label, highlighting, Copy
   theme.js              Dark/light toggle
   store.js              localStorage (last chapter, theme)
   progress.js           Reading progress bar
@@ -61,6 +61,21 @@ chapters/
 ```
 
 TOC, prev/next, search — সব manifest থেকে আসে, তাই আর কিছু বদলাতে হবে না।
+
+## Code block
+
+প্রতিটা code block-এর `<pre>`-এ একটা class দাও — সেটা দেখেই JS label, রং আর Copy বসায়:
+
+| Class | কী | দেখতে |
+|---|---|---|
+| `cmd` | Terminal-এ যা টাইপ করবে | "Terminal" label, প্রতিটা command-এর আগে `$` |
+| `lang-js` `lang-py` `lang-c` `lang-sh` `lang-asm` | Source file | প্রথম লাইনে `// name.js` থাকলে সেটাই label |
+| `out` | Program-এর output | "Output" label, রং নেই, Copy নেই |
+| `plain` | বাকি সব | Label নেই |
+
+```html
+<div class="codewrap"><pre class="cmd"><code>node -e "console.log(1)"</code></pre></div>
+```
 
 ## Keyboard
 

@@ -8,7 +8,7 @@ import { chapterMeta, getSection, indexOf, loadChapter, metaOf } from './chapter
 import { setActiveTOC } from './toc.js';
 import { buildRail, updateRailSpy } from './rail.js';
 import { buildChapNav } from './chapnav.js';
-import { attachCopyButtons } from './copy.js';
+import { enhanceCodeBlocks } from './codeblock.js';
 import { updateProgress } from './progress.js';
 import { closeSidebar } from './sidebar.js';
 import { store, save } from './store.js';
@@ -31,7 +31,7 @@ export async function showChapter(id, scrollTarget) {
 
   // First render for this chapter: wire up its code blocks.
   if (target.dataset.enhanced !== '1') {
-    attachCopyButtons(target);
+    enhanceCodeBlocks(target);
     target.dataset.enhanced = '1';
   }
 

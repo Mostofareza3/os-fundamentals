@@ -47,6 +47,7 @@ export function enhanceCodeBlocks(scope) {
       return;
     }
 
+    wrap.classList.add('framed');
     const head = document.createElement('div');
     head.className = 'code-head';
     const label = document.createElement('span');
@@ -121,17 +122,24 @@ function render(text, lang, prompts) {
 
   // The newline stays inside its line's span, so the block's text is
   // unchanged; a trailing newline in a block does not add a blank line.
+  // --i is the line's own indentation, so when a long line wraps, CSS
+  // can hang the rest of it a little to the right of where it began.
   function flush(nl) {
-    lines.push('<span class="ln' + (prompt ? ' p' : '') + '">' + cur + nl + '</span>');
+    const lead = /^ */.exec(raw)[0].length;
+    lines.push('<span class="ln' + (prompt ? ' p' : '') + '"' +
+      (lead ? ' style="--i:' + lead + '"' : '') + '>' + cur + nl + '</span>');
     cur = '';
+    raw = '';
     prompt = false;
   }
 
+  let raw = '';
   toks.forEach(function (t) {
     if (t[0] === 'start') { prompt = prompts; return; }
     t[1].split('\n').forEach(function (piece, i) {
       if (i > 0) flush('\n');
       if (piece) cur += t[0] ? '<span class="t-' + t[0] + '">' + esc(piece) + '</span>' : esc(piece);
+      raw += piece;
     });
   });
   flush('');
@@ -198,7 +206,7 @@ function wordClass(kw, lit) {
 }
 const IDENT = /([A-Za-z_$][\w$]*)(?=\s*\()|([A-Za-z_$][\w$]*)/;
 
-const NUM = [/0[xX][0-9a-fA-F_]+n?|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?n?\b/, 'num'];
+const NUM = [/0[xX][0-9a-fA-F_]+n?|0[oObB][0-7_]+|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?n?\b/, 'num'];
 
 const TOKENIZERS = {
   js: ruleTokenizer([
@@ -357,7 +365,7 @@ function shellTokens(text) {
         const body = text.slice(i + 1, end);
         const lang = SH_EVAL_FLAG.has(prevWord) && interp;
         word.push(['str', c]);
-        if (lang && /\s/.test(body)) {
+        if (lang) {
           const sub = lang === 'sh' ? shellTokens(body).filter(t => t[0] !== 'start') : TOKENIZERS[lang](body);
           sub.forEach(t => word.push(t));
         } else if (c === '"') {

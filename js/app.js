@@ -14,7 +14,7 @@ import { initRouter } from './router.js';
 import { buildResume } from './resume.js';
 import { initSearch, buildTitleIndex, warmIndex } from './search.js';
 import { initKeys } from './keys.js';
-import { attachCopyButtons } from './copy.js';
+import { enhanceCodeBlocks } from './codeblock.js';
 
 async function boot() {
   initTheme();
@@ -49,10 +49,10 @@ async function boot() {
   initRouter();
 
   // Background: pull every chapter so search covers full body text,
-  // then fill in the cover's resume banner and remaining copy buttons.
+  // then fill in the cover's resume banner and the remaining code blocks.
   warmIndex().then(function () {
     buildResume();
-    attachCopyButtons(document.getElementById('page'));
+    enhanceCodeBlocks(document.getElementById('page'));
   });
 }
 
