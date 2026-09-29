@@ -11,7 +11,10 @@ pre{
   font-family:var(--font-mono); font-size:13px;
   tab-size:2;
 }
-pre code{background:none; border:none; padding:0; color:inherit; white-space:pre; font-size:inherit;}
+/* ".box code" (inline code in a callout) outranks a plain "pre code",
+   so the reset names .box too — otherwise a block inside an EXPERIMENT
+   box takes the inline-code pill and colour. */
+pre code, .box pre code{background:none; border:none; border-radius:0; padding:0; color:inherit; white-space:pre; font-size:inherit;}
 pre.diagram{
   background:linear-gradient(180deg, var(--panel), var(--panel-2));
   color:var(--text); border:1px solid var(--border);
@@ -79,7 +82,7 @@ pre.diagram .dim{color:var(--muted);}
    instead of hiding behind a scrollbar. The wrapped part hangs 2ch to
    the right of where that line's own text began (--i = its indent).
    Output and assembly listings keep their columns and scroll instead. */
-.k-cmd code, .k-src pre:not(.lang-asm) code{white-space:pre-wrap; overflow-wrap:anywhere;}
+.codewrap.k-cmd pre code, .codewrap.k-src pre:not(.lang-asm) code{white-space:pre-wrap; overflow-wrap:anywhere;}
 .framed .ln{display:block; padding-left:calc((var(--i, 0) + 2) * 1ch); text-indent:calc((var(--i, 0) + 2) * -1ch);}
 .k-cmd .ln{padding-left:calc((var(--i, 0) + 4) * 1ch); text-indent:calc((var(--i, 0) + 2) * -1ch);}
 .k-cmd .ln.p::before{
