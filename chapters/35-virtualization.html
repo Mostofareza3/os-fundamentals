@@ -13,18 +13,18 @@
     <li><strong>Hypervisor</strong> — যে software আসল hardware ভাগ করে VM-দের দেয়, আর guest-এর বিপজ্জনক কাজগুলো সামলায়। দুই রকম আছে। <em>Type 1</em> সরাসরি hardware-এর উপর বসে (Xen, VMware ESXi; AWS-এর Nitro KVM-ভিত্তিক)। <em>Type 2</em> একটা সাধারণ OS-এর উপর app-এর মতো চলে (VirtualBox, Parallels, UTM)। Linux-এর KVM আর macOS-এর Hypervisor.framework মাঝামাঝি: hypervisor host kernel-এর ভেতরেই একটা অংশ।</li>
   </ul>
   <p>Docker Desktop macOS-এর hypervisor ব্যবস্থার উপর একটা ছোট Linux VM (LinuxKit) চালায়, আর সব container চলে সেই VM-এর Linux kernel-এর উপর। দুই দিক থেকে দেখো:</p>
-  <div class="codewrap"><pre><code># Mac-এ
+  <div class="codewrap"><pre class="cmd"><code># Mac-এ
 uname -srm
 echo "CPUs: $(sysctl -n hw.ncpu), RAM: $(( $(sysctl -n hw.memsize) / 1048576 )) MB"
 sysctl kern.hv_support                                     # CPU-তে virtualization support আছে?</code></pre></div>
-  <div class="codewrap"><pre><code># whereami.sh — Docker-এর Linux নিজের "machine"-কে কেমন দেখে
+  <div class="codewrap"><pre class="lang-sh"><code># whereami.sh — Docker-এর Linux নিজের "machine"-কে কেমন দেখে
 uname -srm
 echo "CPUs: $(nproc), RAM: $(free -m | awk '/Mem:/ {print $2}') MB"
 grep -m1 "CPU implementer" /proc/cpuinfo                  # 0x61 = Apple
 for v in /sys/bus/virtio/devices/*; do basename "$(readlink -f "$v/driver")"; done | sort | uniq -c
 echo "vda rotational: $(cat /sys/block/vda/queue/rotational)"</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w alpine sh whereami.sh</code></pre></div>
-  <div class="codewrap"><pre><code># Mac
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w alpine sh whereami.sh</code></pre></div>
+  <div class="codewrap"><pre class="out"><code># Mac
 Darwin 25.6.0 arm64
 CPUs: 12, RAM: 24576 MB
 kern.hv_support: 1
@@ -46,9 +46,9 @@ vda rotational: 1</code></pre></div>
   <p>সবচেয়ে সরল উপায় হতো guest-এর প্রতিটা instruction software দিয়ে নকল করা (emulation)। সেটা চলে, কিন্তু দশ-বিশ গুণ ধীর। আসল কৌশলটা উল্টো: guest-এর code যতটা সম্ভব সরাসরি আসল CPU-তে চালাও, আর শুধু বিপজ্জনক মুহূর্তগুলোতে থামাও।</p>
   <p>এর জন্য CPU-তে user আর kernel mode-এর উপরে তৃতীয় আরেকটা স্তর আছে। ARM-এ <strong>EL2</strong> (Chapter 31-এর EL0/EL1-এর উপরে), Intel/AMD-এ VT-x/AMD-V-এর "root mode"। Hypervisor চলে সেখানে। Guest-এর process চলে guest-এর EL0-তে, guest kernel চলে guest-এর EL1-এ, আর দুটোই আসল CPU-তে পূর্ণ গতিতে চলে। কিন্তু hypervisor CPU-কে বলে রাখে কোন কাজগুলো guest নিজে করতে পারবে না: আসল device-এর register ছোঁয়া, কিছু বিশেষ system register লেখা, CPU-কে ঘুম পাড়ানো। Guest kernel এমন কিছু করতে গেলেই CPU থেমে hypervisor-এ লাফ দেয়। এর নাম <strong>VM exit</strong> বা <strong>trap</strong>, Chapter 31-এর exception দরজারই আরেক ধাপ। Hypervisor কাজটার ফল নিজে তৈরি করে (emulate), তারপর guest-কে পরের instruction থেকে চালিয়ে দেয়। Guest kernel ভাবে কাজটা সে নিজেই করেছে।</p>
   <p>২০০৫-০৬-এর আগে x86-এ কিছু বিপজ্জনক instruction trap না করে চুপচাপ অন্যরকম আচরণ করত। তখন VMware চলার সময় guest-এর code নিজেই বদলে লিখত, আর Xen guest kernel-কে বদলে নিতে বলত। Intel VT-x আর AMD-V এসে CPU-তে সরাসরি এই ব্যবস্থা যোগ করল, আর তখন থেকে সাধারণ কাজে VM প্রায় বিনামূল্যে। প্রমাণ, Chapter 31-এর <code>spin.js</code> (শুধু গোনা):</p>
-  <div class="codewrap"><pre><code>node spin.js                                                              # Mac-এ সরাসরি
+  <div class="codewrap"><pre class="cmd"><code>node spin.js                                                              # Mac-এ সরাসরি
 docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim node spin.js  # Linux VM-এর ভেতরে</code></pre></div>
-  <div class="codewrap"><pre><code>pid 51776: user 1902 ms, sys 7 ms, involuntary switches 65
+  <div class="codewrap"><pre class="out"><code>pid 51776: user 1902 ms, sys 7 ms, involuntary switches 65
 pid 1: user 1925 ms, sys 8 ms, involuntary switches 25</code></pre></div>
   <p>পার্থক্য ১%-এর মতো। Loop-এর একটা instruction-ও hypervisor-কে ডাকে না; ওগুলো একই M4 Pro core-এ একইভাবে চলে। VM-এর দাম আসে অন্য জায়গা থেকে: যখন ঘনঘন trap হয় (device, আর কিছু privileged কাজ), যখন memory অনুবাদ লম্বা হয় (পরের section), আর যখন অন্য কেউ তোমার CPU নিয়ে যায় (শেষ section)।</p>
 
@@ -141,18 +141,18 @@ pid 1: user 1925 ms, sys 8 ms, involuntary switches 25</code></pre></div>
   <p>মেপে দেখা যাক। VM-এর ভেতরে ৮টা একই কাজ (spin.js) একসাথে চালাব: প্রথমে Mac চুপচাপ থাকা অবস্থায়, তারপর Mac-এর ১২টা core-কেই অন্য কাজে ব্যস্ত রেখে। <code>/proc/stat</code>-এর <code>cpu</code> লাইনের অষ্টম সংখ্যাটা হলো steal:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Mac + Docker) — work.sh</div>
-    <div class="codewrap"><pre><code># work.sh — VM-এর ভেতরে ৮টা একই কাজ (spin.js) একসাথে; প্রত্যেকের হিসাবে CPU time কত?
+    <div class="codewrap"><pre class="lang-sh"><code># work.sh — VM-এর ভেতরে ৮টা একই কাজ (spin.js) একসাথে; প্রত্যেকের হিসাবে CPU time কত?
 st() { awk '/^cpu / {print $9}' /proc/stat; }               # steal-এর ঘর
 s0=$(st); t0=$(date +%s%N)
 for i in $(seq 8); do node spin.js &amp; done | awk '{gsub(",", ""); print $4}' | sort -n |
   awk '{a[NR] = $1} END {print "CPU time charged per job: " a[1] "–" a[NR] " ms"}'
 echo "wall time: $(( ($(date +%s%N) - t0) / 1000000 )) ms, steal ticks: $(( $(st) - s0 ))"</code></pre></div>
-    <div class="codewrap"><pre><code># ১) Mac চুপচাপ
+    <div class="codewrap"><pre class="cmd"><code># ১) Mac চুপচাপ
 docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash work.sh
 # ২) Mac-এর ১২টা core-এ ১২ সেকেন্ডের busy loop, তারপর একই কাজ
 for i in $(seq 12); do node -e "const e = Date.now() + 12000; while (Date.now() &lt; e);" &amp; done
 sleep 0.5; docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash work.sh; wait</code></pre></div>
-    <div class="codewrap"><pre><code># ১) Mac চুপচাপ
+    <div class="codewrap"><pre class="out"><code># ১) Mac চুপচাপ
 CPU time charged per job: 2175–2220 ms
 wall time: 2234 ms, steal ticks: 0
 # ২) Mac ব্যস্ত

@@ -6,7 +6,7 @@
 
   <h3>Process-এর অবস্থা: কে CPU চায়, কে চায় না</h3>
   <p>তোমার Mac-এ এই মুহূর্তে সাড়ে সাতশোর বেশি process, অথচ core বারোটা। Kernel যদি পালা করে সবাইকে CPU দিত, বেশিরভাগ পালা নষ্ট হতো — কারণ বেশিরভাগ process-এর এই মুহূর্তে করার কিছুই নেই: কেউ keyboard-এর অপেক্ষায়, কেউ network-এর, কেউ timer-এর। গুনে দেখো:</p>
-  <div class="codewrap"><pre><code>ps -Ao stat | tail -n +2 | cut -c1 | sort | uniq -c</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>ps -Ao stat | tail -n +2 | cut -c1 | sort | uniq -c</code></pre></div>
   <p>আমার Mac-এ: <code>755 S</code>, <code>4 R</code>, <code>3 U</code> — প্রায় সবাই ঘুমিয়ে। তাই kernel প্রতিটা process-এর PCB-তে একটা <strong>state</strong> লিখে রাখে:</p>
   <ul>
     <li><strong>Running</strong> — এই মুহূর্তে কোনো একটা core-এ চলছে।</li>
@@ -17,14 +17,14 @@
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
     <p>তিন রকম process চালিয়ে <code>ps</code>-এর <code>STAT</code> column দেখো — একটা ঘুমন্ত (<code>sleep</code>), একটা অবিরাম হিসাব করা, আর একটা যার child মারা গেছে কিন্তু parent খোঁজ নেয়নি:</p>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq procps python3 &gt;/dev/null 2&gt;&amp;1
   sleep 300 &amp;
   python3 -c "while True: pass" &amp;
   python3 -c "import os,time; pid=os.fork(); os._exit(0) if pid==0 else time.sleep(300)" &amp;
   sleep 1; ps -o pid,ppid,stat,command'</code></pre></div>
     <p>আমার output (দরকারি লাইন):</p>
-    <div class="codewrap"><pre><code>  PID  PPID STAT COMMAND
+    <div class="codewrap"><pre class="out"><code>  PID  PPID STAT COMMAND
  3161     1 S    sleep 300
  3162     1 R    python3 -c while True: pass
  3163     1 S    python3 -c import os,time; pid=os.fork(); ...
@@ -89,13 +89,13 @@
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — nice</div>
     <p><code>taskset -c 0</code> একটা process-কে শুধু CPU 0-তে চলতে বাধ্য করে — তাই দুইটা অবিরাম loop-কে একই core-এর জন্য লড়তে হবে; একটার nice ০, আরেকটার ১০:</p>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq procps python3 &gt;/dev/null 2&gt;&amp;1
   taskset -c 0 python3 -c "while True: pass" &amp;             A=$!
   taskset -c 0 nice -n 10 python3 -c "while True: pass" &amp;  B=$!
   sleep 5; ps -o pid,ni,pcpu,command -p $A,$B; kill $A $B'</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>  PID  NI %CPU COMMAND
+    <div class="codewrap"><pre class="out"><code>  PID  NI %CPU COMMAND
  3168   0 89.8 python3 -c while True: pass
  3169  10  9.5 python3 -c while True: pass</code></pre></div>
   </div>
@@ -159,7 +159,7 @@
   <p><code>fork</code>-এর পরে দুইটা process: একই code, memory-র একই বিষয়বস্তু, একই খোলা file, একই জায়গায় থেমে — এমনকি দুজনেই <code>fork</code> call থেকে ফিরছে। পার্থক্য দুইটা: নতুনটার (child) আলাদা PID, আর <code>fork</code>-এর ফেরত মান — child পায় <code>0</code>, parent পায় child-এর PID। এই একটা সংখ্যা দেখেই দুজন আলাদা পথে যায়। Node-এ সরাসরি <code>fork</code> নেই (Node-এর <code>child_process.fork</code> নামে এক হলেও আসলে একটা নতুন node process চালু করে), তাই এখানে Python — পড়তে JS-এর মতোই সহজ:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — fork.py</div>
-    <div class="codewrap"><pre><code>import os
+    <div class="codewrap"><pre class="lang-py"><code>import os
 
 x = 1
 pid = os.fork()                 # এই লাইন থেকে দুইটা process — দুজনেই এখান থেকে এগোবে
@@ -171,12 +171,12 @@ else:                           # parent-এ fork() ফেরত দেয় ch
     _, status = os.waitpid(pid, 0)
     print("parent: my pid", os.getpid(), "| child was", pid, "| exit code", os.waitstatus_to_exitcode(status), "| x =", x)</code></pre></div>
     <p><code>python3 fork.py</code> — আমার Mac-এ:</p>
-    <div class="codewrap"><pre><code>child : my pid 97478 | x = 99
+    <div class="codewrap"><pre class="out"><code>child : my pid 97478 | x = 99
 parent: my pid 97477 | child was 97478 | exit code 7 | x = 1</code></pre></div>
   </div>
   <p>একটা <code>fork()</code> call, দুইটা ফেরত — দুইটা আলাদা process-এ। Child <code>x</code>-কে ৯৯ বানাল, parent-এর <code>x</code> তবু ১: copy মানে আলাদা memory (Chapter 9-এর দুই page table)। আর parent child-এর exit code ৭ হাতে পেল।</p>
   <p>কিন্তু parent যদি কয়েক GB memory ধরে থাকে, সেটা copy করতে তো অনেক সময়? এখানেই Chapter 9-এর <strong>copy-on-write</strong>: kernel কিছুই copy করে না, শুধু child-এর page table-এ parent-এর frame গুলোই বসায়, আর দুইজনের জন্যই "লেখা নিষেধ" চিহ্ন দেয়। কেউ কোনো page-এ লিখতে গেলে page fault — তখন শুধু সেই page-টা copy।</p>
-  <div class="codewrap"><pre><code>python3 -c "
+  <div class="codewrap"><pre class="cmd"><code>python3 -c "
 import os, time
 big = bytearray(1024 * 1024 * 1024)            # ১ GB
 for i in range(0, len(big), 16384): big[i] = 1 # সত্যিই ছুঁয়ে দিলাম — RSS ~১ GB
@@ -193,11 +193,11 @@ print(f'fork of a process holding 1 GB took {ms:.1f} ms')"</code></pre></div>
   <p>দুই ধাপ আলাদা কেন, এক syscall-এ "এই program চালাও" কেন না? কারণ <code>fork</code> আর <code>exec</code>-এর মাঝখানের মুহূর্তটা সোনার খনি: child তখনো shell-এর code চালাচ্ছে, কিন্তু আলাদা process — সে নিজের খোলা file, folder, environment ইচ্ছামতো সাজিয়ে নিতে পারে, তারপর নতুন program হয়। নতুন program সেই সাজানো অবস্থাই উত্তরাধিকার হিসেবে পায়, কিছু না জেনেই। <code>ls / &gt; out.txt</code> ঠিক এভাবে কাজ করে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — shell-এর ভেতরে</div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
   strace -f -e trace=clone,execve,openat,dup3,wait4 bash -c "ls / &gt; /tmp/out.txt; true" 2&gt;&amp;1 | grep -E "clone|out.txt|dup3|execve|wait4"'</code></pre></div>
     <p>আমার output (একটু ছেঁটে; <code>[pid 129]</code> হলো child):</p>
-    <div class="codewrap"><pre><code>execve("/usr/bin/bash", ["bash", "-c", "ls / &gt; /tmp/out.txt; true"], ...) = 0
+    <div class="codewrap"><pre class="out"><code>execve("/usr/bin/bash", ["bash", "-c", "ls / &gt; /tmp/out.txt; true"], ...) = 0
 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, ...) = 129
 [pid   128] wait4(-1,  &lt;unfinished ...&gt;
 [pid   129] openat(AT_FDCWD, "/tmp/out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3
@@ -254,21 +254,21 @@ clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, .
   <p>উল্টো ঘটনাও ঘটে: parent আগে মারা গেলে child হয়ে যায় <strong>অনাথ</strong> (orphan)। তখন kernel তাকে PID 1-এর হাতে তুলে দেয় (Chapter 3-এর গাছের গোড়া), আর PID 1-এর দায়িত্ব এমন দত্তক child-দের মৃত্যুর পরে <code>wait</code> করা। <code>systemd</code> বা <code>launchd</code> এটা জানে। কিন্তু Docker container-এ PID 1 হয় container-এর প্রথম command — প্রায়ই <code>node</code> নিজে, যে এই দায়িত্বের কথা জানেই না:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Docker) — pid1.js</div>
-    <div class="codewrap"><pre><code>const { spawn, execSync } = require('child_process');
+    <div class="codewrap"><pre class="lang-js"><code>const { spawn, execSync } = require('child_process');
 console.log('my pid:', process.pid);
 // sh একটা background sleep চালিয়েই শেষ হয়ে যায় → sleep অনাথ হয়ে PID 1-এর কাছে যায়
 spawn('sh', ['-c', 'sleep 1 &amp;']);
 setTimeout(() =&gt; console.log(execSync('ps -o pid,ppid,stat,comm').toString()), 3000);</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm        -v "$PWD":/w node:22-alpine node /w/pid1.js
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm        -v "$PWD":/w node:22-alpine node /w/pid1.js
 docker run --rm --init -v "$PWD":/w node:22-alpine node /w/pid1.js</code></pre></div>
     <p>আমার output — প্রথমটা:</p>
-    <div class="codewrap"><pre><code>my pid: 1
+    <div class="codewrap"><pre class="out"><code>my pid: 1
 PID   PPID  STAT COMMAND
     1     0 S    node
    15     1 Z    sleep
    16     1 R    ps</code></pre></div>
     <p>দ্বিতীয়টা (<code>--init</code>):</p>
-    <div class="codewrap"><pre><code>my pid: 7
+    <div class="codewrap"><pre class="out"><code>my pid: 7
 PID   PPID  STAT COMMAND
     1     0 S    docker-init
     7     1 S    node

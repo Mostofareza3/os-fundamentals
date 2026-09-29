@@ -12,7 +12,7 @@
     <li><strong>sys</strong> — CPU kernel mode-এ এই process-এর হয়ে কাজ করেছে কতক্ষণ: syscall, page fault।</li>
   </ul>
   <p>তিনটা মিলিয়েই প্রথম রোগ নির্ণয়। যদি user + sys প্রায় real-এর সমান হয়, তাহলে পুরো সময়টা CPU ব্যস্ত ছিল এই program নিয়ে। আর real যদি অনেক বড় হয়, তাহলে বাকিটা সময় program CPU-তে ছিলই না, কিছুর অপেক্ষায় ঘুমিয়ে ছিল। তিনটা ইচ্ছাকৃত ধীর program দিয়ে দেখা যাক:</p>
-  <div class="codewrap"><pre><code>// sick.js — তিনটা ধীর program; কোনটার রোগ কী, time বলে দেবে
+  <div class="codewrap"><pre class="lang-js"><code>// sick.js — তিনটা ধীর program; কোনটার রোগ কী, time বলে দেবে
 const fs = require('fs');
 const mode = process.argv[2];
 if (mode === 'cpu') {                          // হিসাবের কাজ: প্রতিবার পুরো list-এর deep copy
@@ -28,13 +28,13 @@ if (mode === 'wait') {                         // প্রতিটা order �
   const fd = fs.openSync('/tmp/orders.log', 'w');
   for (let i = 0; i &lt; 2000; i++) { fs.writeSync(fd, `order ${i}\n`); fs.fsyncSync(fd); }
 }</code></pre></div>
-  <div class="codewrap"><pre><code># triad.sh — তিন রোগ, প্রতিটার time
+  <div class="codewrap"><pre class="lang-sh"><code># triad.sh — তিন রোগ, প্রতিটার time
 for mode in cpu syscalls wait; do
   echo "--- $mode"
   { time node sick.js $mode; } 2&gt;&amp;1 | grep -E 'real|user|sys'
 done</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash triad.sh</code></pre></div>
-  <div class="codewrap"><pre><code>--- cpu
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash triad.sh</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>--- cpu
 real	0m0.859s
 user	0m0.837s
 sys	0m0.039s
@@ -48,8 +48,8 @@ user	0m0.013s
 sys	0m0.018s</code></pre></div>
   <p>তিনটা আলাদা ছবি। <strong>cpu</strong>-তে user প্রায় পুরো real: সময়টা গেছে আমাদের নিজের code-এ। (user + sys এখানে real-এর চেয়ে সামান্য বেশি, কারণ garbage collector-এর thread পাশাপাশি অন্য core-এ চলেছে; সব thread-এর CPU time যোগ হয়।) <strong>syscalls</strong>-এ sys প্রায় অর্ধেক। একটা সুস্থ program-এ sys সাধারণত কয়েক শতাংশ, তাই এত বড় sys মানে kernel-কে দিয়ে অনেক কাজ করানো হচ্ছে। <strong>wait</strong>-এ user আর sys মিলিয়ে ৩১ ms, অথচ real ৫৮৬ ms। বাকি ৯৫% সময় program CPU-তে ছিলই না, disk-এর উত্তরের অপেক্ষায় ঘুমিয়ে ছিল।</p>
   <p>অপেক্ষা মানে সবসময় disk বা network না। CPU-র জন্যও অপেক্ষা হয়। প্রথম program-টাই আবার চালাই, এবার container-কে আধখানা CPU দিয়ে (Chapter 36):</p>
-  <div class="codewrap"><pre><code>docker run --rm --cpus 0.5 -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '{ time node sick.js cpu; } 2&gt;&amp;1 | grep -E "real|user|sys"'</code></pre></div>
-  <div class="codewrap"><pre><code>real	0m1.893s
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cpus 0.5 -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '{ time node sick.js cpu; } 2&gt;&amp;1 | grep -E "real|user|sys"'</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>real	0m1.893s
 user	0m0.914s
 sys	0m0.029s</code></pre></div>
   <p>কাজ একই, user একই (০.৯ s), কিন্তু real দ্বিগুণ। বাকি ০.৯৫ s program runnable ছিল, মানে চলতে তৈরি, কিন্তু CPU পায়নি: cgroup-এর কোটা শেষ হয়ে গিয়েছিল। ভিড় করা machine-এ, অন্য process-এর সাথে কাড়াকাড়িতেও (Chapter 17) বা cloud-এ অন্য VM-এর কারণে (steal, Chapter 35) একই ছবি আসে। তাই "real ≫ user + sys" মানে "অপেক্ষা", কিন্তু কিসের অপেক্ষা, সেটা পরের প্রশ্ন।</p>
@@ -104,7 +104,7 @@ sys	0m0.029s</code></pre></div>
   <h3>প্রতিটা উত্তরের পরের প্রশ্ন</h3>
   <p><code>time</code> বলে দেয় কোন দিকে খুঁজতে হবে। প্রতিটা দিকের জন্য আলাদা tool:</p>
   <p><strong>user বেশি: কোন function?</strong> CPU কোন function-এ সময় কাটাচ্ছে, সেটা বলে profiler। Node-এর নিজের একটা আছে: <code>--cpu-prof</code> চালু থাকলে প্রতি ~১ ms-এ V8 দেখে নেয় এই মুহূর্তে কোন function চলছে, আর শেষে একটা <code>.cpuprofile</code> file লেখে। File-টা Chrome DevTools-এর Performance tab-এ খোলা যায়। এখানে ছোট একটা script দিয়ে গুনে নিচ্ছি:</p>
-  <div class="codewrap"><pre><code>// top.js — node --cpu-prof-এর file থেকে: কোন function নিজে কত % CPU নিল
+  <div class="codewrap"><pre class="lang-js"><code>// top.js — node --cpu-prof-এর file থেকে: কোন function নিজে কত % CPU নিল
 const prof = JSON.parse(require('fs').readFileSync(process.argv[2]));
 const nodes = new Map(prof.nodes.map(n =&gt; [n.id, n.callFrame]));
 const count = new Map();
@@ -115,20 +115,20 @@ for (const id of prof.samples) {                       // প্রতি ~১ m
 }
 for (const [name, n] of [...count].sort((a, b) =&gt; b[1] - a[1]).slice(0, 5))
   console.log(`${(100 * n / prof.samples.length).toFixed(1).padStart(5)}%  ${name}`);</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   node --cpu-prof --cpu-prof-dir=/tmp/prof sick.js cpu &amp;&amp; node top.js /tmp/prof/*.cpuprofile'</code></pre></div>
-  <div class="codewrap"><pre><code> 95.4%  clone sick.js:6
+  <div class="codewrap"><pre class="out"><code> 95.4%  clone sick.js:6
   3.7%  (garbage collector)
   0.5%  (anonymous) sick.js:1
   0.2%  (program)
   0.2%  getNearestParentPackageJSONType </code></pre></div>
   <p>৯৫% সময় <code>clone</code>-এ, ৬ নম্বর লাইনে। সারাদিন অনুমান করার দরকার নেই। (শেষের লাইনটা চিনতে পারো? Chapter 37-এর <code>package.json</code> খোঁজা।)</p>
   <p><strong>sys বেশি: কোন syscall, কতবার?</strong> এর উত্তর দেয় <code>strace -c</code> (Chapter 1, 32)। <strong>অপেক্ষা: কিসে আটকে আছে?</strong> এর উত্তর <code>strace -c -w</code>। <code>-w</code> মানে প্রতিটা syscall-এর ভেতরে ঘড়ির যে সময় কেটেছে তার হিসাব, ঘুমানো সময়সহ। <code>-f</code> দিইনি, তাই শুধু main thread গোনা হচ্ছে; নইলে V8-এর ঘুমন্ত helper thread-দের <code>futex</code> পুরো হিসাব দখল করত। দুটো একসাথে:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
   strace -c -o /tmp/s.txt node sick.js syscalls; head -4 /tmp/s.txt
   strace -c -w -o /tmp/w.txt node sick.js wait; head -5 /tmp/w.txt'</code></pre></div>
-  <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+  <div class="codewrap"><pre class="out"><code>% time     seconds  usecs/call     calls    errors syscall
 ------ ----------- ----------- --------- --------- ------------------
  99.94    4.089459           4   1000003           write
   0.01    0.000597           7        75           munmap
@@ -196,7 +196,7 @@ for (const [name, n] of [...count].sort((a, b) =&gt; b[1] - a[1]).slice(0, 5))
   </ul>
   <p>শুধু utilization দেখলে ভুল হয়। ১০০% ব্যস্ত CPU ঠিক আছে, যদি কেউ লাইনে না দাঁড়ায়; সমস্যা শুরু হয় লাইন থেকে। "Memory ৯০% used" প্রায়ই কোনো সমস্যাই না, কারণ তার বড় অংশ page cache (Chapter 23)। আসল বিপদ হলো swap-এ page যাওয়া-আসা, মানে saturation। তাই প্রথম প্রশ্নটা সবসময় saturation নিয়ে।</p>
   <p>Linux-এ তিনটার প্রাথমিক উত্তর একটা command-এ: <code>vmstat 1</code>, প্রতি সেকেন্ডে পুরো machine-এর এক লাইন। নিচের script vmstat চালু রেখে তিনটা ঝামেলা ঘটায়, প্রতিটা ৩ সেকেন্ড করে। প্রথমটা ১২টা CPU-র জন্য ২৪টা busy loop। দ্বিতীয়টা দুই thread-এর মধ্যে একটা বল চালাচালি, যেখানে প্রতিবার ঘুম আর জাগা (Chapter 17-এর pingpong)। তৃতীয়টা ২০০ MB-র সীমার container-এ ৩০০ MB-র ওপর বারবার ঘোরা (Chapter 10-এর swap):</p>
-  <div class="codewrap"><pre><code>// storm.js — দুই thread একটা বল চালাচালি করে, প্রতিবার kernel-এ ঘুমিয়ে আর জেগে (Chapter 17)
+  <div class="codewrap"><pre class="lang-js"><code>// storm.js — দুই thread একটা বল চালাচালি করে, প্রতিবার kernel-এ ঘুমিয়ে আর জেগে (Chapter 17)
 const { Worker, isMainThread, workerData } = require('worker_threads');
 if (isMainThread) {
   const s = new Int32Array(new SharedArrayBuffer(4));
@@ -210,23 +210,23 @@ if (isMainThread) {
   const s = workerData;
   for (;;) { Atomics.wait(s, 0, 0); Atomics.store(s, 0, 0); Atomics.notify(s, 0); }
 }</code></pre></div>
-  <div class="codewrap"><pre><code>// swap.js — 300 MB-এর working set: প্রতিটা page বারবার ছোঁয়া, ৩ সেকেন্ড ধরে (Chapter 10)
+  <div class="codewrap"><pre class="lang-js"><code>// swap.js — 300 MB-এর working set: প্রতিটা page বারবার ছোঁয়া, ৩ সেকেন্ড ধরে (Chapter 10)
 const b = Buffer.alloc(300 * 2 ** 20);
 const end = Date.now() + 3000;
 let passes = 0;
 while (Date.now() &lt; end) { for (let i = 0; i &lt; b.length; i += 4096) b[i]++; passes++; }
 console.error(`swap: ${passes} passes over 300 MB in 3 s`);</code></pre></div>
-  <div class="codewrap"><pre><code># use.sh — vmstat চালু রেখে তিনটা ঝামেলা, প্রতিটা ৩ সেকেন্ড
+  <div class="codewrap"><pre class="lang-sh"><code># use.sh — vmstat চালু রেখে তিনটা ঝামেলা, প্রতিটা ৩ সেকেন্ড
 vmstat 1 13 &amp;
 sleep 1.5
 for i in $(seq 24); do timeout 3 sh -c 'while :; do :; done' &amp; done; sleep 3.2   # ১) ১২টা CPU-তে ২৪টা busy loop
 node storm.js 2&gt;&gt; /tmp/notes                                                     # ২) context switch-এর ঝড়
 node swap.js 2&gt;&gt; /tmp/notes                                                      # ৩) container-এর memory-সীমা ছাড়ানো
 wait; cat /tmp/notes</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm --memory 200m --memory-swap 1g -v "$PWD":/w:ro -w /w node:22-alpine sh -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --memory 200m --memory-swap 1g -v "$PWD":/w:ro -w /w node:22-alpine sh -c '
   apk add -q procps-ng &gt; /dev/null 2&gt;&amp;1
   sh use.sh'</code></pre></div>
-  <div class="codewrap"><pre><code>procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+  <div class="codewrap"><pre class="out"><code>procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
  r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
  1  0    960 6523740 274348 763872 3996 4290 4732  4716 18159  29  1  1 98  0  0  0
  0  0    960 6526704 274348 763876   0    0     0     0  220  273  0  0 100 0  0  0
@@ -271,7 +271,7 @@ swap: 6 passes over 300 MB in 3 s</code></pre></div>
   <h3>Node-এর নিজস্ব resource: event loop</h3>
   <p>শেষ সারিটা Node-এর জন্য আলাদা করে। Event loop একটাই thread (Chapter 29)। সে কোনো sync কাজে ১ ms আটকে থাকলে, সেই ১ ms-এ আসা প্রতিটা request অপেক্ষা করে। Machine-এর হিসাবে এটা কোথাও saturation হিসেবে দেখা যায় না: ১২ core-এর machine-এ একটা thread পুরো ব্যস্ত মানে machine-এর CPU মাত্র ৮%। তাই Node নিজেই এই saturation মাপার ব্যবস্থা রাখে: <code>monitorEventLoopDelay</code>। একটা timer বারবার বসিয়ে দেখে, সেটা সময়মতো ফুটল কি না; দেরির পরিমাণই event loop-এর লাইনে কাজ আটকে থাকার মাপ।</p>
   <p>একটা চেনা ঘটনা দিয়ে দেখি। একটা server-এর <code>/login</code> password hash করে, যেটা ইচ্ছে করেই ধীর একটা কাজ (এখানে ~৫০ ms), আর <code>/ping</code> সাথে সাথে উত্তর দেয়। একবার hash হবে main thread-এ, <code>pbkdf2Sync</code> দিয়ে; আরেকবার libuv-এর thread pool-এ (Chapter 19):</p>
-  <div class="codewrap"><pre><code>// app.js — দুটো endpoint: /ping সাথে সাথে উত্তর দেয়; /login password hash করে (~৫০ ms CPU)
+  <div class="codewrap"><pre class="lang-js"><code>// app.js — দুটো endpoint: /ping সাথে সাথে উত্তর দেয়; /login password hash করে (~৫০ ms CPU)
 const http = require('http'), crypto = require('crypto');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const lag = monitorEventLoopDelay({ resolution: 1 });    // event loop কতটা দেরিতে ঘুরছে, ms-এর ঘরে মাপা
@@ -288,7 +288,7 @@ process.on('SIGTERM', () =&gt; {
   console.log(`event loop delay: p50 ${ms(lag.percentile(50))} ms, p99 ${ms(lag.percentile(99))} ms, max ${ms(lag.max)} ms`);
   process.exit();
 });</code></pre></div>
-  <div class="codewrap"><pre><code>// load.js — ৩ সেকেন্ড ধরে: প্রতি ১০ ms-এ একটা /ping, প্রতি ১০০ ms-এ একটা /login; /ping-এর latency মাপা
+  <div class="codewrap"><pre class="lang-js"><code>// load.js — ৩ সেকেন্ড ধরে: প্রতি ১০ ms-এ একটা /ping, প্রতি ১০০ ms-এ একটা /login; /ping-এর latency মাপা
 const http = require('http');
 const pings = [];
 const get = (path, done) =&gt; {
@@ -303,15 +303,15 @@ setTimeout(() =&gt; {
   const p = q =&gt; pings[Math.floor(q * (pings.length - 1))].toFixed(1);
   console.log(`/ping: ${pings.length} requests, p50 ${p(0.5)} ms, p99 ${p(0.99)} ms, max ${p(1)} ms`);
 }, 3000);</code></pre></div>
-  <div class="codewrap"><pre><code># lag.sh — একই load, দুইবার: hash main thread-এ (SYNC=1), আর thread pool-এ
+  <div class="codewrap"><pre class="lang-sh"><code># lag.sh — একই load, দুইবার: hash main thread-এ (SYNC=1), আর thread pool-এ
 for sync in 1 ""; do
   echo "--- SYNC=${sync:-no}"
   SYNC=$sync node app.js &amp; sleep 0.5
   node load.js; sleep 0.2
   kill $!; wait
 done</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash lag.sh</code></pre></div>
-  <div class="codewrap"><pre><code>--- SYNC=1
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash lag.sh</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>--- SYNC=1
 /ping: 256 requests, p50 0.7 ms, p99 56.0 ms, max 71.9 ms
 event loop delay: p50 2.0 ms, p99 54.6 ms, max 73.0 ms
 --- SYNC=no

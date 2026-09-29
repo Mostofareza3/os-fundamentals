@@ -6,9 +6,9 @@
 
   <h3>একটা ধাঁধা দিয়ে শুরু</h3>
   <p>দুইটা terminal খোলো, দুটোতেই এই এক লাইন চালাও:</p>
-  <div class="codewrap"><pre><code>node -e "let count = 0; setInterval(() =&gt; console.log(process.pid, ++count), 1000)"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "let count = 0; setInterval(() =&gt; console.log(process.pid, ++count), 1000)"</code></pre></div>
   <p>দ্বিতীয়টা কয়েক সেকেন্ড পরে চালালে এরকম কিছু দেখবে:</p>
-  <div class="codewrap"><pre><code># terminal 1            # terminal 2
+  <div class="codewrap"><pre class="out"><code># terminal 1            # terminal 2
 4101 1                  4187 1
 4101 2                  4187 2
 4101 3                  4187 3
@@ -24,7 +24,7 @@
     <li><strong>Header</strong> — file-এর একদম শুরুতে বসানো তথ্য: এটা কোন ধরনের file, কোন CPU-র জন্য, কোন instruction থেকে চালানো শুরু করতে হবে।</li>
   </ul>
   <p>Program-এর সবচেয়ে গুরুত্বপূর্ণ বৈশিষ্ট্য: সে <strong>passive</strong>। কিছুই করে না, কিছুই বদলায় না। শুধু byte, disk-এ পড়ে থাকে। নিজে দেখো:</p>
-  <div class="codewrap"><pre><code>ls -lh $(which node)       # file-টা কত বড়
+  <div class="codewrap"><pre class="cmd"><code>ls -lh $(which node)       # file-টা কত বড়
 file $(which node)         # OS-এর চোখে এটা কী
 xxd -l 16 $(which node)    # প্রথম ১৬ byte, hex-এ</code></pre></div>
   <p>আমার Mac-এ <code>node</code> ১০৪ MB-এর একটা file, <code>file</code> বলছে <code>Mach-O 64-bit executable arm64</code>, আর প্রথম চার byte <code>cffa edfe</code>। Linux-এ (Docker-এর <code>node:22-alpine</code>-এ) একই পরীক্ষায় প্রথম চার byte <code>7f 45 4c 46</code> — শেষের তিনটা ASCII-তে (অক্ষরকে সংখ্যা দিয়ে লেখার প্রচলিত তালিকা) <code>E</code>, <code>L</code>, <code>F</code>। এই শুরুর byte গুলোকে বলে <strong>magic number</strong>: kernel এগুলো দেখেই চেনে file-টা কোন format-এর executable। macOS-এর format-এর নাম Mach-O, Linux-এর ELF। দুটোর ভেতরে কী থাকে, Chapter 4-এ খুলব।</p>
@@ -123,9 +123,9 @@ xxd -l 16 $(which node)    # প্রথম ১৬ byte, hex-এ</code></pre></
   <p>Record-টার একটা অংশ নিজের চোখে দেখো। Linux kernel প্রতিটা process-এর তথ্য <code>/proc/&lt;PID&gt;/</code> folder-এ file হিসেবে দেখায়, আর <code>/proc/self</code> মানে "যে process পড়ছে, সে নিজে":</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
-    <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "process.stdout.write(require('fs').readFileSync('/proc/self/status', 'utf8'))"</code></pre></div>
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-alpine node -e "process.stdout.write(require('fs').readFileSync('/proc/self/status', 'utf8'))"</code></pre></div>
     <p>লম্বা output-এর ভেতর থেকে কয়েকটা লাইন (আমার চালানোয়):</p>
-    <div class="codewrap"><pre><code>Name:    node
+    <div class="codewrap"><pre class="out"><code>Name:    node
 State:   R (running)
 Pid:     17
 PPid:    1
@@ -145,12 +145,12 @@ Threads: 7</code></pre></div>
   <p>Process যখন একটা file খোলে, তারপর প্রতিটা <code>read</code> বা <code>write</code>-এ kernel-কে বলতে হয় কোন file-এর কথা বলছে। প্রতিবার পুরো path পাঠানো ধীর আর বিপজ্জনক — মাঝখানে কেউ file-টার নাম বদলে দিলে বা সরিয়ে দিলে কী হবে? আর kernel-কেও প্রতিবার path থেকে file খুঁজতে হবে।</p>
   <p>তাই kernel খোলার সময় একবারই কাজটা করে, আর process-কে একটা ছোট integer ফেরত দেয়। এর নাম <strong>file descriptor</strong> (fd)। এরপর process শুধু সেই নম্বর দিয়ে কথা বলে: "fd 17 থেকে ১৪ byte পড়ো"। Chapter 1-এর <code>strace</code> output মনে করো: <code>openat(...) = 17</code>, তারপর <code>read(17, ...)</code>, <code>close(17)</code>। নম্বরটা kernel-এর কাছে ওই process-এর file descriptor table-এর একটা index — table-এর প্রতিটা ঘরে লেখা থাকে কোন file, কোন mode-এ খোলা, এখন কত byte পর্যন্ত পড়া হয়েছে।</p>
   <p>তিনটা নম্বর প্রায় সব process-এ আগে থেকেই খোলা থাকে: <code>0</code> = <strong>stdin</strong> (input আসে এখান দিয়ে), <code>1</code> = <strong>stdout</strong> (স্বাভাবিক output — <code>console.log</code> এখানে লেখে), <code>2</code> = <strong>stderr</strong> (error output — <code>console.error</code>)। Terminal থেকে চালালে তিনটাই terminal-এর দিকে যায়।</p>
-  <div class="codewrap"><pre><code>node -e "const fs = require('fs'); console.log(fs.openSync('/etc/hosts', 'r'), fs.openSync('/etc/hosts', 'r'))"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "const fs = require('fs'); console.log(fs.openSync('/etc/hosts', 'r'), fs.openSync('/etc/hosts', 'r'))"</code></pre></div>
   <p>আমার Mac-এ output <code>14 15</code>। নতুন খোলা file সবচেয়ে ছোট খালি নম্বর পায়; ৩ না পেয়ে ১৪ পেল কারণ Node নিজে চালু হওয়ার সময় ৩ থেকে ১৩ পর্যন্ত নম্বর নিজের কাজে খুলে রেখেছে। একটা চলমান process-এর সব fd দেখতে: macOS-এ <code>lsof -p &lt;PID&gt;</code> (<code>FD</code> column-এ <code>0r</code>, <code>1w</code>, <code>2w</code>… — অক্ষরটা mode: read/write), Linux-এ <code>ls -l /proc/&lt;PID&gt;/fd</code>।</p>
 
   <h3>একই program, অনেক process — আর isolation</h3>
   <p>শুরুর ধাঁধার উত্তর এখন দেওয়া যায়। দুই terminal-এ <code>node</code> চালানোয় kernel দুইটা আলাদা process বানিয়েছে: আলাদা PID, আলাদা address space। <code>count</code> variable প্রতিটার নিজের address space-এ আছে, তাই একটার <code>++count</code> অন্যটার কিছুই ছোঁয় না। আর এই আলাদা থাকা শুধু variable-এ সীমাবদ্ধ না — একটা মরে গেলেও অন্যটা বাঁচে। শুরুর দুই loop চলা অবস্থায় তৃতীয় terminal থেকে চালাও (<code>kill</code> command একটা PID-কে থামার সংকেত পাঠায়):</p>
-  <div class="codewrap"><pre><code>kill 4101      # তোমার terminal 1-এ যে PID print হচ্ছে, সেটা বসাও</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>kill 4101      # তোমার terminal 1-এ যে PID print হচ্ছে, সেটা বসাও</code></pre></div>
   <p>Terminal 1-এর loop থেমে যাবে; terminal 2 নির্বিকারে গুনে চলবে। এটাই Chapter 1-এর <strong>isolation</strong>, এবার process-এর ভাষায়: kernel প্রতিটা process-কে আলাদা খাঁচায় রাখে।</p>
 
   <div class="box warn">
@@ -161,12 +161,12 @@ Threads: 7</code></pre></div>
   <h3>Process-এর বংশ: parent আর child</h3>
   <p>Process আকাশ থেকে পড়ে না। নতুন process তৈরি করতে হলে একটা <em>আগে থেকে চলমান</em> process-কে kernel-এর কাছে syscall দিয়ে অনুরোধ করতে হয়। যে অনুরোধ করে সে <strong>parent</strong>, নতুনটা <strong>child</strong>। Kernel child-এর PCB-তে parent-এর PID লিখে রাখে — একে বলে <strong>PPID</strong>।</p>
   <p>এই সম্পর্ক রাখার কারণ আছে: child শেষ হলে সে সফল হলো কি না — একটা ছোট সংখ্যা, যার নাম <strong>exit code</strong> (০ মানে সফল, অন্য যেকোনো মান মানে কোনো সমস্যা) — সেটা কাউকে জানাতে হবে। Kernel সেটা parent-কে জানায়। তোমার shell ঠিক এভাবেই জানে একটা command fail করেছে কি না, আর CI pipeline এভাবেই জানে <code>npm test</code> fail করেছে।</p>
-  <div class="codewrap"><pre><code>echo $$                                               # shell-এর নিজের PID
+  <div class="codewrap"><pre class="cmd"><code>echo $$                                               # shell-এর নিজের PID
 node -e "console.log(process.pid, process.ppid)"      # node-এর PID আর তার parent
 node -e "process.exit(3)"; echo "exit code: $?"      # child-এর exit code parent পেল</code></pre></div>
   <p>আমার চালানোয় shell-এর PID <code>85530</code>, আর node print করল <code>85532 85530</code> — node-এর parent সেই shell-ই। শেষ লাইন print করল <code>exit code: 3</code>।</p>
   <p>তোমার Node code-ও parent হতে পারে। <code>child_process</code> module ঠিক এই কাজ করে:</p>
-  <div class="codewrap"><pre><code>const { spawnSync } = require('child_process');
+  <div class="codewrap"><pre class="lang-js"><code>const { spawnSync } = require('child_process');
 console.log('parent pid:', process.pid);
 spawnSync('node', ['-e', 'console.log("child  pid:", process.pid, "| its parent:", process.ppid)'], { stdio: 'inherit' });</code></pre></div>
   <p>Output: <code>parent pid: 87154</code>, তারপর <code>child  pid: 87158 | its parent: 87154</code>। প্রতিটা process-এর parent আছে, তার parent আছে — পুরো গাছের গোড়ায় PID 1, যেটা kernel নিজে boot-এর শেষে চালু করে। <code>ps -p 1 -o comm</code> চালালে macOS-এ দেখবে <code>/sbin/launchd</code>, Linux-এ সাধারণত <code>systemd</code> বা <code>init</code> (Docker container-এর ভেতরে PID 1 হয় container-এর প্রথম command নিজেই — ওপরের experiment-এ <code>PPid: 1</code> ছিল সেজন্য)। Kernel ঠিক কোন syscall দিয়ে নতুন process বানায় (<code>fork</code>, <code>exec</code>), সেটা Chapter 15-এ।</p>

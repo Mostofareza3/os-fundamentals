@@ -5,7 +5,7 @@
   <p>Chapter 37-এ একটা process জন্ম থেকে মৃত্যু পর্যন্ত দেখেছি। Server-এর গল্প আলাদা: process আগে থেকেই চালু, বেশিরভাগ সময় ঘুমিয়ে থাকে, আর প্রতিটা request-এ অল্প কিছুক্ষণ জাগে। এই জেগে ওঠা থেকে আবার ঘুমানো পর্যন্ত কী ঘটে, আর সময় কোথায় যায়, সেটাই এই chapter। আয়োজনটা ছোট, কিন্তু আসল জিনিসের মতো। তিনটা process থাকবে: client হিসেবে <code>curl</code>, একটা Node HTTP server, আর database-এর জায়গায় আলাদা process-এ একটা নকল DB, যে প্রতিটা query-র উত্তর দেয় ৫ ms পরে। Packet ধরবে tcpdump (Chapter 26), syscall ধরবে strace। তিনটা tool-ই একই kernel-এর ঘড়ি দেখে সময় লেখে, তাই সব লাইন সময় ধরে সাজালে একটাই সময়রেখা পাওয়া যায়।</p>
 
   <h3>তিনটা process, একটা request</h3>
-  <div class="codewrap"><pre><code>// db.js — নকল database: আলাদা process, port 5432; প্রতিটা query-র উত্তর দেয় ৫ ms পরে
+  <div class="codewrap"><pre class="lang-js"><code>// db.js — নকল database: আলাদা process, port 5432; প্রতিটা query-র উত্তর দেয় ৫ ms পরে
 const net = require('net'), readline = require('readline');
 net.createServer(sock =&gt; {
   if (process.env.NODELAY) sock.setNoDelay(true);        // এখন না; কেন লাগে, chapter-এর শেষে
@@ -14,7 +14,7 @@ net.createServer(sock =&gt; {
     setTimeout(() =&gt; sock.write(JSON.stringify({ id, name: 'Rahim' }) + '\n'), 5);   // disk আর query-র ভান
   });
 }).listen(5432, '127.0.0.1');</code></pre></div>
-  <div class="codewrap"><pre><code>// server.js — HTTP server; প্রতিটা request-এ db.js-কে একটা query, তারপর JSON উত্তর
+  <div class="codewrap"><pre class="lang-js"><code>// server.js — HTTP server; প্রতিটা request-এ db.js-কে একটা query, তারপর JSON উত্তর
 const http = require('http'), net = require('net'), readline = require('readline');
 const db = net.connect(5432, '127.0.0.1');               // একটাই connection, আগে থেকে খোলা (pool-এর মতো)
 if (process.env.NODELAY) db.setNoDelay(true);            // এখন না; কেন লাগে, chapter-এর শেষে
@@ -34,7 +34,7 @@ http.createServer(async (req, res) =&gt; {
   console.error(`handler JS ${(t1 - t0 + t3 - t2).toFixed(2)} ms, waiting for db ${(t2 - t1).toFixed(2)} ms`);
 }).listen(3000, '127.0.0.1');</code></pre></div>
   <p>DB-র সাথে যোগাযোগ একটা সাধারণ TCP connection-এ, প্রতি লাইনে একটা query, প্রতি লাইনে একটা উত্তর। আসল database driver-ও মূলত এটাই করে, শুধু protocol-টা আরও জটিল। TCP message-এর সীমানা রাখে না (Chapter 27), তাই দুই দিকেই <code>readline</code> byte-এর স্রোত থেকে লাইন কেটে দেয়। Handler নিজের JS-এ কতটা সময় নিল আর DB-র জন্য কতক্ষণ অপেক্ষা করল, সেটা আলাদা করে লিখে রাখে। এবার trace:</p>
-  <div class="codewrap"><pre><code># request.sh — একটা HTTP request: tcpdump-এ packet, strace-এ দুই process-এর syscall, এক সময়রেখায়
+  <div class="codewrap"><pre class="lang-sh"><code># request.sh — একটা HTTP request: tcpdump-এ packet, strace-এ দুই process-এর syscall, এক সময়রেখায়
 node db.js &amp; sleep 0.3
 node server.js 2&gt; handler.txt &amp; sleep 0.5
 tcpdump -i lo -n -tt -l 'tcp port 3000 or tcp port 5432' &gt; packets.txt 2&gt; /dev/null &amp;
@@ -48,10 +48,10 @@ sleep 0.5; kill $(jobs -p); wait 2&gt; /dev/null
   awk '$1 == "net" &amp;&amp; !t0 { t0 = $2 }
        t0 { printf "%-4s %6.2f  %s\n", $1, ($2 - t0) * 1000, substr($0, index($0, $3)) }' &gt; together.txt
 wc -l &lt; together.txt</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace tcpdump curl procps &gt;/dev/null 2&gt;&amp;1
   bash request.sh'</code></pre></div>
-  <div class="codewrap"><pre><code>{"user":{"id":42,"name":"Rahim"},"path":"/user/42"}
+  <div class="codewrap"><pre class="out"><code>{"user":{"id":42,"name":"Rahim"},"path":"/user/42"}
 45</code></pre></div>
   <p>এবার <code>strace -p</code>-কে একটা আগে থেকে চালু process-এ জুড়ে দিয়েছি (<code>-p</code> = attach), আর <code>-f</code> দিইনি, তাই শুধু main thread-এর syscall এসেছে। <code>-e trace=</code> দিয়ে শুধু দরকারি syscall-গুলো বেছেছি। শেষের pipeline-এ সেই লাইনগুলো বাদ দিয়েছি, যেগুলো কাজ শেষে strace থামানোর সময় মাঝপথে কাটা পড়ে (<code>EINTR</code>)। Mac-এর terminal-এ <code>cut -c1-100 together.txt</code> চালিয়ে পুরো সময়রেখা দেখো; নিচে সেটা তিন ভাগে ভেঙে পড়ছি, আগে পুরো ছবিটা:</p>
 
@@ -125,7 +125,7 @@ wc -l &lt; together.txt</code></pre></div>
   <p class="diagram-caption">একটা request, সময় ওপর থেকে নিচে। নীল তীর একটা syscall: user mode থেকে kernel-এ কিছু দেওয়া। Amber তীর kernel কাউকে জাগিয়ে data দিচ্ছে। দুই "kernel" কলাম এখানে আসলে একই kernel, কারণ তিনটা process এক container-এ, loopback-এ। আলাদা machine হলে প্রতিটা পাশে নিজের kernel থাকত, মাঝে network।</p>
 
   <h3>Node জাগার আগেই: handshake</h3>
-  <div class="codewrap"><pre><code>net    0.00  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [S], seq 1511807736, win 65495, options [mss
+  <div class="codewrap"><pre class="out"><code>net    0.00  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [S], seq 1511807736, win 65495, options [mss
 net    0.02  IP 127.0.0.1.3000 &gt; 127.0.0.1.39244: Flags [S.], seq 1978473728, ack 1511807737, win 65
 net    0.04  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [.], ack 1, win 512, options [nop,nop,TS val
 net    0.11  IP 127.0.0.1.39244 &gt; 127.0.0.1.3000: Flags [P.], seq 1:86, ack 1, win 512, options [nop
@@ -139,7 +139,7 @@ node   2.89  read(20, "GET /user/42 HTTP/1.1\r\nHost: 127"..., 65536) = 85</code
   <p>(strace-এর নিচে সব সময় ফুলে যায়, Chapter 37-এ দেখেছ। এখানে ক্রমটা দেখো; আসল সময় পরে মাপব।)</p>
 
   <h3>Handler থামে, event loop থামে না</h3>
-  <div class="codewrap"><pre><code>node   5.05  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
+  <div class="codewrap"><pre class="cmd"><code>node   5.05  write(16, "\1\0\0\0\0\0\0\0", 8) = 8
 node   5.85  write(18, "user 42\n", 8) = 8
 net    6.01  IP 127.0.0.1.39076 &gt; 127.0.0.1.5432: Flags [P.], seq 3860823399:3860823407, ack 2050728
 net    6.04  IP 127.0.0.1.5432 &gt; 127.0.0.1.39076: Flags [.], ack 8, win 512, options [nop,nop,TS val
@@ -165,7 +165,7 @@ node  14.00  read(18, "{\"id\":42,\"name\":\"Rahim\"}\n", 65536) = 25</code></pr
   <p>এই chapter-এর সবচেয়ে জরুরি কথা এই অংশে। <code>await</code> মানে thread আটকে থাকা না (Chapter 19)। Handler থেমে আছে, কিন্তু main thread kernel-কে বলে দিয়েছে "এই fd-গুলোর যেকোনোটায় কিছু এলে জাগিও" (Chapter 29), তারপর ঘুমিয়েছে। এই ফাঁকে অন্য কোনো request এলে সে সেটা ধরত। Thread-per-request server-এ (Chapter 28) এই পুরো সময়টা একটা thread শুধু বসে থাকত।</p>
 
   <h3>উত্তর, আর বিদায়</h3>
-  <div class="codewrap"><pre><code>node  15.62  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 114
+  <div class="codewrap"><pre class="cmd"><code>node  15.62  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 114
 node  15.97  read(21, "TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"..., 4096) = 60
 node  16.20  close(21)             = 0
 node  17.60  writev(20, [{iov_base="HTTP/1.1 200 OK\r\ncontent-type: a"..., iov_len=206}, {iov_base=
@@ -185,7 +185,7 @@ node  22.25  close(20)             = 0</code></pre></div>
 
   <h3>সময় কোথায় যায়</h3>
   <p>এবার strace আর tcpdump ছাড়া মাপা যাক। পাঁচটা request, একটার পর একটা। curl মাপে মোট সময়, আর server-এর নিজের লাইন বলে তার JS কতক্ষণ চলল:</p>
-  <div class="codewrap"><pre><code># timing.sh — strace আর tcpdump ছাড়া: পাঁচটা request, একটার পর একটা
+  <div class="codewrap"><pre class="lang-sh"><code># timing.sh — strace আর tcpdump ছাড়া: পাঁচটা request, একটার পর একটা
 node db.js &amp; sleep 0.3
 node server.js 2&gt; handler.txt &amp; sleep 0.5
 for i in 1 2 3 4 5; do
@@ -193,10 +193,10 @@ for i in 1 2 3 4 5; do
   sleep 0.1; echo " | $(tail -1 handler.txt)"
 done
 kill $(jobs -p)</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq curl &gt;/dev/null 2&gt;&amp;1
   bash timing.sh'</code></pre></div>
-  <div class="codewrap"><pre><code>total 0.015258s | handler JS 2.02 ms, waiting for db 9.17 ms
+  <div class="codewrap"><pre class="out"><code>total 0.015258s | handler JS 2.02 ms, waiting for db 9.17 ms
 total 0.007861s | handler JS 0.24 ms, waiting for db 6.76 ms
 total 0.008050s | handler JS 0.50 ms, waiting for db 6.88 ms
 total 0.007949s | handler JS 0.29 ms, waiting for db 6.69 ms
@@ -256,7 +256,7 @@ total 0.008891s | handler JS 0.43 ms, waiting for db 7.60 ms</code></pre></div>
 
   <h3>২০টা একসাথে: Chapter 27-এর ফাঁদ, নিজে থেকেই</h3>
   <p>Event loop DB-র অপেক্ষার সময় মুক্ত থাকে। তাহলে ২০টা request একসাথে এলে সবার অপেক্ষা একসাথে চলার কথা, আর মোট সময় একটা request-এর কাছাকাছি হওয়ার কথা। মেপে দেখি:</p>
-  <div class="codewrap"><pre><code>// burst.js — একই request ২০টা, একসাথে; আগে একটা একা, তুলনার জন্য
+  <div class="codewrap"><pre class="lang-js"><code>// burst.js — একই request ২০টা, একসাথে; আগে একটা একা, তুলনার জন্য
 const http = require('http');
 const get = () =&gt; new Promise(done =&gt; http.get('http://127.0.0.1:3000/user/42', r =&gt; r.resume().on('end', done)));
 (async () =&gt; {
@@ -268,17 +268,17 @@ const get = () =&gt; new Promise(done =&gt; http.get('http://127.0.0.1:3000/user
   await Promise.all(Array.from({ length: 20 }, get));
   console.log(`20 requests at once:  ${(performance.now() - t).toFixed(1)} ms`);
 })();</code></pre></div>
-  <div class="codewrap"><pre><code># burst.sh — ২০টা request একসাথে, সাথে db connection-এর packet
+  <div class="codewrap"><pre class="lang-sh"><code># burst.sh — ২০টা request একসাথে, সাথে db connection-এর packet
 node db.js &amp; sleep 0.3
 node server.js 2&gt; /dev/null &amp; sleep 0.5
 tcpdump -i lo -n -tt -l 'tcp port 5432' &gt; db-packets.txt 2&gt; /dev/null &amp; sleep 0.5
 node burst.js
 sleep 0.2; kill $(jobs -p); wait 2&gt; /dev/null
 awk '/ IP / { if (!t0) t0 = $1; printf "%7.2f ms  %s %s %s %-5s length %s\n", ($1 - t0) * 1000, $3, $4, $5, $7, $NF }' db-packets.txt</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null 2&gt;&amp;1
   bash burst.sh'</code></pre></div>
-  <div class="codewrap"><pre><code>1 request:            7.2 ms
+  <div class="codewrap"><pre class="out"><code>1 request:            7.2 ms
 20 requests at once:  60.9 ms
    0.00 ms  127.0.0.1.46524 &gt; 127.0.0.1.5432: [P.], length 8
    0.01 ms  127.0.0.1.5432 &gt; 127.0.0.1.46524: [.],  length 0
@@ -301,10 +301,10 @@ awk '/ IP / { if (!t0) t0 = $1; printf "%7.2f ms  %s %s %s %-5s length %s\n", ($
     <li><strong>৭৬.৭০</strong> — ৪২ ms পরে, server-এর kernel-এর একটা খালি ACK। সাথে সাথে বাকি ১৮টা উত্তর একসাথে আসে, ১৮ × ২৫ = ৪৫০ byte।</li>
   </ul>
   <p>এটা Chapter 27-এর Nagle আর delayed ACK। প্রেরকের kernel ছোট টুকরো আটকে রাখে, যতক্ষণ আগেরটার ACK না আসে (Nagle)। গ্রাহকের kernel ACK পাঠাতে দেরি করে, এই আশায় যে app উত্তর লিখলে ACK সেটার সাথে যাবে (delayed ACK, Linux-এ ~৪০ ms)। একজন ACK-এর অপেক্ষায়, অন্যজন ACK দিতে দেরি করছে, আর মাঝে ৪২ ms নষ্ট। Chapter 27-এ দেখেছিলাম <code>http</code> server নিজেই প্রতিটা connection-এ Nagle বন্ধ করে দেয় (<code>TCP_NODELAY</code>)। কিন্তু DB-র connection-টা আমাদের নিজের বানানো <code>net</code> connection, আর <code>net</code>-এ Nagle চালু থাকে। একা request-এ ধরা পড়ে না, কারণ তখন আটকে থাকা পরের টুকরো থাকেই না। একসাথে অনেকগুলো query গেলেই ফাঁদটা খোলে। সমাধান দুই দিকে এক লাইন, যেটা আগে থেকেই code-এ বসানো আছে, শুধু চালু করা বাকি:</p>
-  <div class="codewrap"><pre><code>docker run --rm -e NODELAY=1 -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -e NODELAY=1 -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null 2&gt;&amp;1
   bash burst.sh | head -2'</code></pre></div>
-  <div class="codewrap"><pre><code>1 request:            7.8 ms
+  <div class="codewrap"><pre class="out"><code>1 request:            7.8 ms
 20 requests at once:  13.1 ms</code></pre></div>
   <p>৬১ ms থেকে ১৩ ms। এবার ২০টা request-এর অপেক্ষা সত্যিই একসাথে চলেছে। একই test আমার Mac-এ, Docker ছাড়া, NODELAY ছাড়াই ১০–১৪ ms এসেছে: macOS-এর delayed ACK-এর নিয়ম আলাদা (Chapter 27)। মানে এই bug developer-এর Mac-এ লুকিয়ে থাকে, আর বেরোয় production-এর Linux-এ, load আসার পর। নিজে TCP-র উপর কিছু বানালে, বা কোনো database বা cache-এর client library ব্যবহার করলে, দেখে নিও সেটা noDelay চালু করে কি না।</p>
 

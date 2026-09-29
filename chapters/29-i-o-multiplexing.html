@@ -17,7 +17,7 @@
   <p>জাদুটা ঘটে Chapter 27-এর আসার পথে: TCP যখন একটা socket-এর receive buffer-এ data রাখে আর "অপেক্ষায় থাকা কাউকে জাগাও" ধাপে পৌঁছায়, তখন epoll-এর নজরে থাকা socket হলে kernel সেটাকে একটা <strong>ready list</strong>-এ টুকে রাখে, আর <code>epoll_wait</code>-এ ঘুমন্ত thread-কে জাগায়। <code>epoll_wait</code> শুধু ready list-টা ফেরত দেয়। ফলে খরচ মোট connection-এর সংখ্যার উপর না, যতগুলো ready হয়েছে তার উপর নির্ভর করে। মেপে দেখি — N-টা চুপচাপ socket, যার মধ্যে শুধু একটায় data আছে; প্রতিটা পদ্ধতিতে "কে ready?" জিজ্ঞেস করার দাম:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — watchcost.py</div>
-    <div class="codewrap"><pre><code># watchcost.py (Linux) — N টা চুপচাপ socket-এর উপর নজর: select, poll আর epoll-এর দাম
+    <div class="codewrap"><pre class="lang-py"><code># watchcost.py (Linux) — N টা চুপচাপ socket-এর উপর নজর: select, poll আর epoll-এর দাম
 import select, socket, time
 
 def cost(n):
@@ -44,8 +44,8 @@ def cost(n):
 
 for n in (10, 100, 1000, 10000):
     cost(n)</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/watchcost.py</code></pre></div>
-    <div class="codewrap"><pre><code>    10 sockets:  poll      0.5 µs   epoll    0.3 µs   select ok
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/watchcost.py</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>    10 sockets:  poll      0.5 µs   epoll    0.3 µs   select ok
    100 sockets:  poll      2.9 µs   epoll    0.3 µs   select ok
   1000 sockets:  poll     46.9 µs   epoll    0.3 µs   select: filedescriptor out of range in select()
  10000 sockets:  poll    944.7 µs   epoll    0.3 µs   select: filedescriptor out of range in select()</code></pre></div>
@@ -91,7 +91,7 @@ for n in (10, 100, 1000, 10000):
   <p>এবার নিজে একটা event loop বানাই। Python-এর <code>selectors</code> module OS দেখে সবচেয়ে ভালো ব্যবস্থা বেছে নেয় — Linux-এ epoll, Mac-এ kqueue (আমার Mac-এ <code>KqueueSelector</code>):</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — tiny_loop.py</div>
-    <div class="codewrap"><pre><code># tiny_loop.py — এক thread, এক event loop, হাজারো connection (Linux-এ ভেতরে epoll, Mac-এ kqueue)
+    <div class="codewrap"><pre class="lang-py"><code># tiny_loop.py — এক thread, এক event loop, হাজারো connection (Linux-এ ভেতরে epoll, Mac-এ kqueue)
 import selectors, socket
 
 sel = selectors.DefaultSelector()
@@ -115,14 +115,14 @@ while True:
             else:
                 sel.unregister(key.fileobj); key.fileobj.close()</code></pre></div>
     <p>Chapter 28-এর <code>burst_clients.js</code> দিয়ে একই ১০০০ connection × ১০ দফা:</p>
-    <div class="codewrap"><pre><code># loopdemo.sh
+    <div class="codewrap"><pre class="lang-sh"><code># loopdemo.sh
 python3 tiny_loop.py &amp; PY=$!
 sleep 1
 node burst_clients.js 9002 1000 &amp; C=$!
 sleep 2.5
 echo "tiny_loop.py: $(awk '/^Threads/ {print $2}' /proc/$PY/status) thread(s)"
 wait $C; kill $PY</code></pre></div>
-    <div class="codewrap"><pre><code>selector: EpollSelector
+    <div class="codewrap"><pre class="out"><code>selector: EpollSelector
 :9002 10 rounds x 1000 echoes in 52 ms
 tiny_loop.py: 1 thread(s)</code></pre></div>
   </div>
@@ -132,17 +132,17 @@ tiny_loop.py: 1 thread(s)</code></pre></div>
   <p>Node-এর event loop (libuv) ঠিক এই কাঠামো, কয়েকটা বাড়তি ধাপ সহ। প্রতিটা পাক মোটামুটি এরকম: সময় হয়ে যাওয়া timer-এর callback চালাও → epoll-এ ঘুমাও, কিন্তু বড়জোর পরের timer পর্যন্ত (তাই <code>setTimeout</code> সময়মতো চলে) → জেগে ready fd-দের callback চালাও → <code>setImmediate</code>-এর callback → বন্ধ হওয়া জিনিসের callback → আবার। আর Chapter 24 থেকে মনে রাখো: file-এর কাজ epoll-এ যায় না, thread pool-এ যায়; pool শেষ হলে eventfd-তে লেখে, আর সেই eventfd-ও epoll-এর নজরে — তাই file-এর খবরও একই ঘুম ভাঙায়। Node server-এর উপর একই burst চালিয়ে system call গুনি:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — stracenode.sh</div>
-    <div class="codewrap"><pre><code># stracenode.sh — Node server-এর system call গুনে দেখো, ১০০০ connection × ১০ দফা echo-র সময়
+    <div class="codewrap"><pre class="lang-sh"><code># stracenode.sh — Node server-এর system call গুনে দেখো, ১০০০ connection × ১০ দফা echo-র সময়
 strace -f -c -o /tmp/sc.txt -e trace=epoll_wait,epoll_pwait,epoll_ctl,accept4,read,write,writev \
   node -e "require('net').createServer(c =&gt; c.pipe(c)).listen(9001, '127.0.0.1', 4096);
            setTimeout(() =&gt; process.exit(0), 6000)" &amp;
 sleep 1
 node burst_clients.js 9001 1000
 wait; cat /tmp/sc.txt</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   bash stracenode.sh'</code></pre></div>
-    <div class="codewrap"><pre><code>:9001 10 rounds x 1000 echoes in 1371 ms
+    <div class="codewrap"><pre class="out"><code>:9001 10 rounds x 1000 echoes in 1371 ms
 % time     seconds  usecs/call     calls    errors syscall
 ------ ----------- ----------- --------- --------- ----------------
  71.68    0.341974         330      1036           epoll_pwait

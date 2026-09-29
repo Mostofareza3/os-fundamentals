@@ -73,14 +73,14 @@
   <p>Syscall দরজা Chapter 1 থেকে strace-এ বহুবার দেখেছি। বাকি দুটো নিজের চোখে দেখা যাক। প্রথমে interrupt: দুটো program নেব, যারা kernel-এর কাছে কিছুই চায় না — শুধু গোনে — আর দুটোকেই একটা মাত্র CPU core-এ বেঁধে দেব। তারপর দেখব kernel তাদের মাঝে CPU ভাগ করতে পারে কিনা।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — interrupt দরজা</div>
-    <div class="codewrap"><pre><code>// spin.js — শুধু গোনা; kernel-এর কাছে কিছুই চায় না
+    <div class="codewrap"><pre class="lang-js"><code>// spin.js — শুধু গোনা; kernel-এর কাছে কিছুই চায় না
 let x = 0;
 for (let i = 0; i &lt; 3e9; i++) x += i;
 const r = process.resourceUsage();
 console.log(`pid ${process.pid}: user ${(r.userCPUTime / 1e3).toFixed(0)} ms, ` +
             `sys ${(r.systemCPUTime / 1e3).toFixed(0)} ms, ` +
             `involuntary switches ${r.involuntaryContextSwitches}`);</code></pre></div>
-    <div class="codewrap"><pre><code># twospin.sh
+    <div class="codewrap"><pre class="lang-sh"><code># twospin.sh
 # CPU0-র timer interrupt কতবার এসেছে (ARM-এ লাইনের নাম arch_timer, Intel/AMD-এ LOC)
 timer() { awk '/arch_timer|LOC:/ {print $2; exit}' /proc/interrupts; }
 t0=$(timer)
@@ -91,9 +91,9 @@ time {
 }
 t1=$(timer)
 echo "CPU0 timer interrupts: $((t1 - t0))"</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --security-opt systempaths=unconfined -v "$PWD":/w:ro -w /w \
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --security-opt systempaths=unconfined -v "$PWD":/w:ro -w /w \
   node:22-bookworm-slim bash twospin.sh</code></pre></div>
-    <div class="codewrap"><pre><code>pid 10: user 1930 ms, sys 7 ms, involuntary switches 541
+    <div class="codewrap"><pre class="out"><code>pid 10: user 1930 ms, sys 7 ms, involuntary switches 541
 pid 9: user 1934 ms, sys 6 ms, involuntary switches 538
 
 real	0m3.887s
@@ -103,11 +103,11 @@ CPU0 timer interrupts: 3887</code></pre></div>
   </div>
   <p>দুটো নতুন জিনিস। <code>taskset -c 0</code> process-কে শুধু CPU0-তে চলতে দেয়। আর Docker কিছু <code>/proc</code> file লুকিয়ে রাখে, <code>/proc/interrupts</code>-ও (Chapter 2-এ এটা পাইনি); <code>--security-opt systempaths=unconfined</code> সেগুলো খুলে দেয়।</p>
   <p>এবার সংখ্যাগুলো পড়ো। মোট সময় ৩.৯ সেকেন্ড, আর প্রত্যেকে CPU পেয়েছে ১.৯ সেকেন্ড — অর্ধেক অর্ধেক। প্রত্যেককে kernel প্রায় ৫৪০ বার জোর করে নামিয়েছে। এর নাম involuntary switch: process চলতে চাইছিল, kernel তাকে সরিয়ে দিয়েছে (Chapter 17)। অথচ কেউ kernel-কে ডাকেনি। প্রমাণ চাইলে loop চলার সময় strace লাগিয়ে গুনে দেখো:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   node spin.js &amp; sleep 0.5
   timeout 1 strace -q -c -f -p $!; wait'</code></pre></div>
-  <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+  <div class="codewrap"><pre class="out"><code>% time     seconds  usecs/call     calls    errors syscall
 ------ ----------- ----------- --------- --------- ------------------
  87.93    0.000772          45        17         1 futex
   5.47    0.000048          12         4           mprotect
@@ -119,26 +119,26 @@ pid 135: user 1914 ms, sys 4 ms, involuntary switches 12</code></pre></div>
   <p>এক সেকেন্ডে ২৬টা syscall। এগুলো V8-এর নিজের ঘরোয়া কাজ (background thread-এর <code>futex</code>, JIT-এর বানানো code-এর <code>mprotect</code>), loop-এর না। ওই এক সেকেন্ডে loop প্রায় ১৫০ কোটি বার ঘুরেছে, একবারও kernel-কে ডাকেনি। তাহলে kernel CPU কেড়ে নিল কীভাবে? উত্তর শেষ লাইনে: ৩.৮৮৭ সেকেন্ডে CPU0-তে ৩৮৮৭টা timer interrupt, মানে প্রতি millisecond-এ একটা। প্রতিটা tick-এ CPU loop-এর মাঝখানে থেমে interrupt দরজা দিয়ে kernel-এ ঢোকে। Kernel তখন ঠিক করে একই process চলবে নাকি অন্যজন। এখানে গড়ে ৩–৪ tick পরপর পালা বদলেছে।</p>
 
   <p>এবার exception দরজা। এর দুই রকম পরিণতি আছে। Chapter 9-এর page fault মনে করো: process-এর চাওয়া memory kernel আগে থেকে বসায় না, প্রথম ছোঁয়ায় বসায়। প্রতিটা প্রথম ছোঁয়া আসলে একটা exception:</p>
-  <div class="codewrap"><pre><code>// fault.js — memory ছুঁলেই exception দরজা
+  <div class="codewrap"><pre class="lang-js"><code>// fault.js — memory ছুঁলেই exception দরজা
 const before = process.resourceUsage().minorPageFault;
 const buf = Buffer.allocUnsafeSlow(100 * 1024 * 1024);   // ১০০ MB চাওয়া
 const mid = process.resourceUsage().minorPageFault;
 buf.fill(1);                                             // এবার প্রতিটা byte ছোঁয়া
 const after = process.resourceUsage().minorPageFault;
 console.log(`চাওয়ার সময় page fault: ${mid - before}, ছোঁয়ার সময়: ${after - mid}`);</code></pre></div>
-  <div class="codewrap"><pre><code>চাওয়ার সময় page fault: 28, ছোঁয়ার সময়: 6412</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>চাওয়ার সময় page fault: 28, ছোঁয়ার সময়: 6412</code></pre></div>
   <p>আমার Mac-এ page-এর মাপ ১৬ KB, আর ১০০ MB ÷ ১৬ KB = ৬৪০০। প্রায় প্রতিটা page-এর প্রথম ছোঁয়ায় CPU থেমেছে, exception দরজা দিয়ে kernel-এ ঢুকেছে। Kernel একটা খালি frame বসিয়ে instruction-টা আবার চালিয়েছে, আর program কিছু টেরই পায়নি। (Docker-এর Linux-এ একই script-এ আসে মাত্র ৬০-এর মতো, কারণ সেখানে Transparent Huge Pages চালু, তাই এক fault-এ ২ MB বসে — Chapter 10।)</p>
   <p>দ্বিতীয় পরিণতি মারাত্মক। Kernel দেখে ঠিকানাটা আসলেই অবৈধ, তখন আর বসানোর কিছু নেই। JS থেকে এটা ঘটানো কঠিন, কারণ V8 তোমাকে সাধারণত অবৈধ memory-র কাছেই যেতে দেয় না। তবে একটা ফাঁক আছে। V8 নিজের stack-এর মাপ নিজে হিসাব রাখে (default এক MB-র মতো); সীমা পেরোলে সে নিজেই <code>RangeError</code> দেয়, kernel জানতেই পারে না। <code>--stack-size</code> দিয়ে V8-কে যদি মিথ্যা বলি যে stack ৫০ MB, অথচ আসল stack মাত্র ৮ MB:</p>
-  <div class="codewrap"><pre><code>node -e "function f(){ f() } f()" 2&gt;&amp;1 | grep RangeError    # V8 নিজেই ধরে ফেলে
+  <div class="codewrap"><pre class="cmd"><code>node -e "function f(){ f() } f()" 2&gt;&amp;1 | grep RangeError    # V8 নিজেই ধরে ফেলে
 node --stack-size=50000 -e "function f(){ f() } f()"          # V8-কে বলা হলো stack ৫০ MB
 echo "exit $?"</code></pre></div>
-  <div class="codewrap"><pre><code>RangeError: Maximum call stack size exceeded
+  <div class="codewrap"><pre class="out"><code>RangeError: Maximum call stack size exceeded
 exit 139</code></pre></div>
   <p>দ্বিতীয়বার V8 থামেনি। Stack-এর শেষ সীমা পেরিয়ে সে এমন ঠিকানায় লিখতে গেছে যেটা map করাই নেই, সেখানে exception। Kernel দেখল ঠিকানাটা কোনো বৈধ এলাকার মধ্যে পড়ে না, তাই process-কে <code>SIGSEGV</code> পাঠিয়ে মেরে ফেলল। Exit code ১৩৯ = ১২৮ + ১১, আর ১১ হলো SIGSEGV-এর নম্বর (Chapter 16)। Linux-এ strace দিয়ে দেখলে kernel নিজেই কারণটা লিখে দেয়:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   strace -e trace=none node --stack-size=50000 -e "function f(){ f() } f()"'</code></pre></div>
-  <div class="codewrap"><pre><code>--- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0xffffe02caff0} ---
+  <div class="codewrap"><pre class="out"><code>--- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0xffffe02caff0} ---
 --- SIGSEGV {si_signo=SIGSEGV, si_code=SI_KERNEL, si_addr=NULL} ---
 +++ killed by SIGSEGV +++</code></pre></div>
   <p><code>SEGV_MAPERR</code> মানে "এই ঠিকানায় কিছু map করা নেই", আর <code>si_addr</code> সেই ঠিকানা — stack-এর ঠিক নিচে। দ্বিতীয় লাইনটা একটা খুঁটিনাটি: Node নিজের একটা SIGSEGV handler বসিয়ে রাখে। কিন্তু সেটা চালাতে stack-এ একটু জায়গা লাগে, আর stack তো ভরা। তাই kernel জোর করে default কাজটাই করেছে: মেরে ফেলা।</p>
@@ -164,7 +164,7 @@ exit 139</code></pre></div>
     <tr><td><code>SIGSTOP</code></td><td>19</td><td><code>kill -STOP</code></td><td>থামিয়ে রাখা</td><td>না</td></tr>
   </table></div>
   <p>Signal-এ মরলে shell exit code দেখায় ১২৮ + signal-এর নম্বর। মিলিয়ে দেখো (Mac-এ, bash দিয়ে):</p>
-  <div class="codewrap"><pre><code># kills.sh
+  <div class="codewrap"><pre class="lang-sh"><code># kills.sh
 # ১) কোনো handler নেই: SIGTERM-এর default কাজ — মৃত্যু
 node -e "setInterval(() =&gt; {}, 1000)" &amp;
 sleep 0.3; kill -TERM $!; wait $! 2&gt;/dev/null; echo "no handler, SIGTERM -&gt; exit $?"
@@ -174,13 +174,13 @@ node -e "process.on('SIGTERM', () =&gt; {}); setInterval(() =&gt; {}, 1000)" &am
 sleep 0.3; kill -TERM $!; sleep 0.3
 kill -0 $! &amp;&amp; echo "SIGTERM caught, still alive"      # -0: শুধু জিজ্ঞেস, বেঁচে আছে?
 kill -KILL $!; wait $! 2&gt;/dev/null; echo "SIGKILL -&gt; exit $?"</code></pre></div>
-  <div class="codewrap"><pre><code>no handler, SIGTERM -&gt; exit 143
+  <div class="codewrap"><pre class="out"><code>no handler, SIGTERM -&gt; exit 143
 SIGTERM caught, still alive
 SIGKILL -&gt; exit 137</code></pre></div>
   <p>১৪৩ = ১২৮ + ১৫, আর ১৩৭ = ১২৮ + ৯। Container "137 দিয়ে বেরিয়েছে" দেখলে বুঝবে কেউ SIGKILL দিয়েছে: হয় OOM killer, নয়তো grace period শেষে Docker বা Kubernetes। দ্বিতীয় process-টা খেয়াল করো। Handler বসানো মানেই default কাজটা (মৃত্যু) বাতিল। Handler নিজে <code>exit</code> না করলে process দিব্যি বেঁচে থাকে, আর তখন একমাত্র উপায় SIGKILL। SIGKILL-এর handler বসাতে চাইলে kernel নিজেই মানা করে; প্রমাণ পরের section-এ।</p>
 
   <p>এবার Node-এর একটা ব্যাপার, যেটা production-এ ঝামেলা বাধায়। নিচের script-এ SIGTERM handler আছে, কিন্তু main thread একটা ৩ সেকেন্ডের হিসাবে ব্যস্ত (যেমন একটা বড় JSON parse, বা একটা ভারী report):</p>
-  <div class="codewrap"><pre><code>// sigtrap.js — SIGTERM handler আছে, কিন্তু main thread ব্যস্ত
+  <div class="codewrap"><pre class="lang-js"><code>// sigtrap.js — SIGTERM handler আছে, কিন্তু main thread ব্যস্ত
 const t0 = Date.now();
 const log = (m) =&gt; console.log(`${String(Date.now() - t0).padStart(5)} ms  ${m}`);
 
@@ -191,11 +191,11 @@ log(`pid ${process.pid}, ৩ সেকেন্ডের হিসাব শু�
 const end = Date.now() + 3000;
 while (Date.now() &lt; end);                 // event loop আটকে আছে
 log('হিসাব শেষ');</code></pre></div>
-  <div class="codewrap"><pre><code># sig.sh
+  <div class="codewrap"><pre class="lang-sh"><code># sig.sh
 node sigtrap.js &amp; pid=$!
 sleep 0.5; echo "  500 ms  shell: kill -TERM $pid"; kill -TERM $pid
 wait $pid; echo "exit code $?"</code></pre></div>
-  <div class="codewrap"><pre><code>    0 ms  pid 30012, ৩ সেকেন্ডের হিসাব শুরু
+  <div class="codewrap"><pre class="out"><code>    0 ms  pid 30012, ৩ সেকেন্ডের হিসাব শুরু
   500 ms  shell: kill -TERM 30012
  3001 ms  হিসাব শেষ
  3001 ms  JS SIGTERM handler: cleanup, exit
@@ -203,12 +203,12 @@ exit code 0</code></pre></div>
   <p>Signal গেছে ৫০০ ms-এ, handler চলেছে ৩০০১ ms-এ। মাঝের আড়াই সেকেন্ড signal কোথায় ছিল? Linux-এ strace দিয়ে দেখা যাক। <code>-r</code> প্রতিটা লাইনের আগে আগের লাইন থেকে কত সময় গেছে সেটা দেখায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — signal কীভাবে পৌঁছায়</div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   strace -f -r -e trace=read,write,rt_sigreturn -o /tmp/s.txt node sigtrap.js &amp;
   sleep 0.7; kill -TERM $(pidof node); wait
   sed -n "/--- SIGTERM/,\$p" /tmp/s.txt | head -9'</code></pre></div>
-    <div class="codewrap"><pre><code>    0 ms  pid 129, ৩ সেকেন্ডের হিসাব শুরু
+    <div class="codewrap"><pre class="out"><code>    0 ms  pid 129, ৩ সেকেন্ডের হিসাব শুরু
  3003 ms  হিসাব শেষ
  3003 ms  JS SIGTERM handler: cleanup, exit
 129        0.669575 --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=1, si_uid=0} ---
@@ -287,7 +287,7 @@ exit code 0</code></pre></div>
   <p>Syscall-এর প্রতিটা argument আসে user mode-এর code থেকে, আর সেই code buggy হতে পারে, এমনকি ইচ্ছে করে বিপজ্জনকও হতে পারে। <code>read(fd, buffer, n)</code> ধরো। এখানে <code>buffer</code> হলো একটা ঠিকানা (address): memory-র কোন ঘর থেকে data বসানো শুরু হবে তার নম্বর (Chapter 7)। Kernel mode-এ kernel সব memory ছুঁতে পারে। সে যদি যাচাই না করেই তোমার দেওয়া ঠিকানায় লিখে দিত, তাহলে <code>read()</code> দিয়ে একটা file-এর data kernel-এর নিজের memory-র উপর লেখানো যেত। তখন যেকোনো user পুরো machine দখল করতে পারত।</p>
   <p>তাই kernel প্রতিটা argument যাচাই করে। Fd-টা কি বৈধ, আর এই process-এর? Permission আছে? ঠিকানাটা কি user-এর ভাগের memory-র মধ্যে পড়ে, আর সেখানে কিছু map করা আছে? User memory-তে লিখতে kernel বিশেষ copy function ব্যবহার করে (Linux-এ <code>copy_to_user</code>)। এই function আগে ঠিকানার সীমা দেখে, আর মাঝপথে fault হলেও crash করে না, error ফেরত দেয়।</p>
   <p>JS থেকে এটা পরীক্ষা করা যায় না: Node-এর <code>Buffer</code> ঠিকানা লুকিয়ে রাখে, ভুল ঠিকানা দেওয়ার কোনো উপায়ই নেই। Python-এর <code>ctypes</code> দিয়ে পারা যায়। এটা C library-র <code>read()</code> সরাসরি ডাকতে দেয়, আর buffer-এর জায়গায় যেকোনো সংখ্যা বসাতে দেয়:</p>
-  <div class="codewrap"><pre><code># badptr.py — kernel-কে আজেবাজে address দিলে কী হয়, আর নিজে ছুঁলে কী হয়
+  <div class="codewrap"><pre class="lang-py"><code># badptr.py — kernel-কে আজেবাজে address দিলে কী হয়, আর নিজে ছুঁলে কী হয়
 import ctypes, os
 libc = ctypes.CDLL(None, use_errno=True)       # C library-র read() সরাসরি ডাকার উপায়
 fd = os.open('badptr.py', os.O_RDONLY)
@@ -302,8 +302,8 @@ for name, addr in [('a real buffer', ctypes.addressof(ctypes.create_string_buffe
 print('এবার নিজেই address 16-এ লিখছি...', flush=True)
 ctypes.memset(16, 0, 1)
 print('এই লাইন কখনো print হবে না')</code></pre></div>
-  <div class="codewrap"><pre><code>python3 badptr.py; echo "exit $?"</code></pre></div>
-  <div class="codewrap"><pre><code>read() into a real buffer    -&gt;  100  ok
+  <div class="codewrap"><pre class="cmd"><code>python3 badptr.py; echo "exit $?"</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>read() into a real buffer    -&gt;  100  ok
 read() into address 16       -&gt;   -1  Bad address
 read() into a kernel address -&gt;   -1  Bad address
 এবার নিজেই address 16-এ লিখছি...
@@ -312,7 +312,7 @@ exit 139</code></pre></div>
   <p>বাকি যাচাইগুলো Node থেকেই দেখা যায়। এবার একজন সাধারণ user হিসেবে চালাব (Node-এর Docker image-এ <code>node</code> নামে একটা user আছে, uid 1000):</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — validate.js</div>
-    <div class="codewrap"><pre><code>// validate.js — kernel-এর কাছে তিনটা আজেবাজে অনুরোধ
+    <div class="codewrap"><pre class="lang-js"><code>// validate.js — kernel-এর কাছে তিনটা আজেবাজে অনুরোধ
 const fs = require('fs');
 const tries = [
   ['fd 999 থেকে পড়ো',        () =&gt; fs.readSync(999, Buffer.alloc(10))],
@@ -323,11 +323,11 @@ for (const [what, fn] of tries) {
   try { fn(); console.log(`${what} -&gt; ok`); }
   catch (e) { console.log(`${what} -&gt; ${e.code ?? e.message}`); }
 }</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   runuser -u node -- strace -f -e trace=read,openat,rt_sigaction -o /tmp/v.txt node validate.js
   grep -E "EBADF|EACCES|EINVAL" /tmp/v.txt'</code></pre></div>
-    <div class="codewrap"><pre><code>fd 999 থেকে পড়ো -&gt; EBADF
+    <div class="codewrap"><pre class="out"><code>fd 999 থেকে পড়ো -&gt; EBADF
 /etc/shadow খোলো -&gt; EACCES
 SIGKILL-এর handler বসাও -&gt; EINVAL
 129   read(999, 0x37138850, 10)         = -1 EBADF (Bad file descriptor)
@@ -342,14 +342,14 @@ SIGKILL-এর handler বসাও -&gt; EINVAL
     <p>"<code>sudo</code> দিলে program kernel-এর ক্ষমতা পায়, kernel mode-এ চলে।" না। root মানে process-এর user id (uid) ০। এটা process-এর PCB-তে লেখা একটা সংখ্যা মাত্র, আর CPU-র mode এই সংখ্যার কথা জানেই না। root-এর process user mode-এই চলে, আর বাকি সবার মতোই syscall দিয়ে kernel-এর কাছে চায়। পার্থক্য শুধু একটা: kernel যখন যাচাই করে "এই process কি এটা করতে পারে?", তখন root বেশিরভাগ যাচাই পার হয়ে যায়। Privileged instruction root চালালেও একই exception, একই signal।</p>
   </div>
   <p>প্রমাণটা সহজ। Docker container-এ default user root, সেখানে <code>spin.js</code> চালাও:</p>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'echo "uid: $(id -u)"; node spin.js'</code></pre></div>
-  <div class="codewrap"><pre><code>uid: 0
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'echo "uid: $(id -u)"; node spin.js'</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>uid: 0
 pid 1: user 1938 ms, sys 8 ms, involuntary switches 27</code></pre></div>
   <p>root-এর loop-ও পুরোটাই user time, ঠিক আগের মতো। Kernel mode-এ code চলে শুধু ওই তিন দরজা দিয়ে ঢুকে, আর দরজার ওপাশে চলে kernel-এর নিজের code।</p>
   <p>তবে "root সব যাচাই পার হয়" কথাটাও পুরো সত্যি না। পুরনো Unix-এ root ছিল all-or-nothing, আর তাতে একটা সমস্যা ছিল। যে web server-এর শুধু port 80 দরকার, root হতে গিয়ে সে kernel module load করার ক্ষমতাও পেয়ে যেত, আর তার একটা bug মানে পুরো machine হাতছাড়া। তাই Linux root-এর ক্ষমতাকে ৪১টা আলাদা টুকরোয় ভেঙেছে, নাম <strong>capabilities</strong>। যেমন <code>CAP_NET_BIND_SERVICE</code> (১০২৪-এর নিচের port), <code>CAP_NET_ADMIN</code> (network সাজানো), <code>CAP_SYS_PTRACE</code> (অন্যের process-এ ptrace লাগানো, strace যেটা ব্যবহার করে), <code>CAP_SYS_ADMIN</code> (hostname বদলানো সহ অনেক কিছু)। বেশিরভাগ কাজে kernel uid ০ দেখে না, দেখে নির্দিষ্ট capability-টা আছে কিনা। আর Docker container-এর root পায় মাত্র ১৪টা:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — root.sh</div>
-    <div class="codewrap"><pre><code># root.sh
+    <div class="codewrap"><pre class="lang-sh"><code># root.sh
 apt-get update -qq &amp;&amp; apt-get install -y -qq strace iproute2 &gt; /dev/null
 echo "uid: $(id -u)"                        # 0 মানে root
 head -c 12 /etc/shadow; echo                # সাধারণ user পারে না, root পারে
@@ -357,9 +357,9 @@ hostname demo                               # machine-এর নাম বদল
 ip link add dummy0 type dummy               # নতুন network interface বানানো
 setpriv --reuid 1000 --regid 1000 --clear-groups sleep 5 &amp;   # অন্য user-এর একটা process
 sleep 0.2; timeout 1 strace -p $! 2&gt;&amp;1 | head -1             # তাতে strace লাগানো</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w debian:bookworm-slim bash root.sh
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w debian:bookworm-slim bash root.sh
 docker run --rm --cap-add NET_ADMIN --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w debian:bookworm-slim bash root.sh</code></pre></div>
-    <div class="codewrap"><pre><code>uid: 0
+    <div class="codewrap"><pre class="out"><code>uid: 0
 root:*:20714
 hostname: you must be root to change the host name
 RTNETLINK answers: Operation not permitted
@@ -373,7 +373,7 @@ strace: Process 358 attached</code></pre></div>
   <p>প্রথম container-এ uid ০, <code>/etc/shadow</code>-ও পড়া গেল। অথচ <code>hostname</code> বলছে "you must be root"! Tool-টা ধরে নিয়েছে যে "অনুমতি নেই" মানে "root না"। আসলে kernel <code>EPERM</code> দিয়েছে <code>CAP_SYS_ADMIN</code> না থাকায়। Network interface বানানো আর অন্য user-এর process-এ strace লাগানোও আটকে গেছে। দ্বিতীয় container-এ ঠিক দুটো capability যোগ করেছি, আর ঠিক ওই দুটো কাজই খুলে গেছে; hostname এখনো বন্ধ। একটা container-এর নিজের capability-র তালিকা দেখতে <code>grep CapEff /proc/self/status</code> চালাও। সেটা একটা hex সংখ্যা দেয়, আর <code>capsh --decode=&lt;সেই সংখ্যা&gt;</code> তাকে নামে বদলায়।</p>
   <p>এবার বইয়ের একটা পুরনো ঋণ শোধ করি। Chapter 1 থেকে strace-এর আগে <code>--cap-add SYS_PTRACE</code> দিয়ে আসছি। strace <code>ptrace</code> নামের একটা syscall দিয়ে অন্য process-এর syscall দেখে। নতুন Docker-এ নিজের চালানো child-কে strace করতে এই flag আর লাগে না, কিন্তু পুরনো Docker-এ ptrace পুরোপুরি আটকানো থাকত। আর উপরে যেমন দেখলে, অন্য user-এর process-এ লাগাতে এখনো লাগে। তাই নিরাপদ থাকতে flag-টা সবসময় দিয়েছি। উল্টো দিকে <code>--privileged</code> দিলে container পায় ৪১টার সবগুলো, আর অনেক নিষেধও উঠে যায়। তখন container-এর root প্রায় host-এর root-এর সমান, তাই এটা হালকাভাবে দিও না।</p>
   <p>JS developer-এর চেনা একটা উদাহরণ: আসল Linux server-এ সাধারণ user হিসেবে <code>listen(80)</code> করলে আসে <code>EACCES</code>। পুরো root না দিয়ে শুধু ওই একটা ক্ষমতা দেওয়া যায়:</p>
-  <div class="codewrap"><pre><code>node -e "require('net').createServer().listen(80).on('error', e =&gt; console.log(e.code))"
+  <div class="codewrap"><pre class="cmd"><code>node -e "require('net').createServer().listen(80).on('error', e =&gt; console.log(e.code))"
 # EACCES
 sudo setcap cap_net_bind_service=+ep "$(readlink -f "$(which node)")"
 # এবার একই command চলে — root ছাড়াই</code></pre></div>
@@ -381,7 +381,7 @@ sudo setcap cap_net_bind_service=+ep "$(readlink -f "$(which node)")"
 
   <h3>দুই পাহারাদার: CPU mode আর page table</h3>
   <p>এখন পর্যন্ত "পাহারা" বলতে একটা জিনিস বুঝিয়েছি, কিন্তু আসলে পাহারাদার দুইজন, আর তারা আলাদা জিনিস আগলায়। বুঝতে একটা জিনিস দরকার: প্রতিটা process-এর virtual address-এর নম্বর দুই ভাগে ভাগ করা। নিচের অর্ধেক user-এর: x86-64 Linux-এ <code>0x00007fff_ffffffff</code> পর্যন্ত, ARM64-এ <code>0x0000ffff_ffffffff</code> পর্যন্ত। উপরের অর্ধেক, <code>0xffff...</code> দিয়ে শুরু হওয়া ঠিকানাগুলো, kernel-এর। Chapter 9-এর কথা মনে করো: প্রতিটা process-এর নিজের page table আছে, আর প্রতিটা memory access-এ MMU সেই table দেখে virtual ঠিকানাকে RAM-এর frame-এ বদলায়।</p>
-  <div class="codewrap"><pre><code># guards.py — নিজের memory পড়া যায়; kernel-এর ভাগের address না
+  <div class="codewrap"><pre class="lang-py"><code># guards.py — নিজের memory পড়া যায়; kernel-এর ভাগের address না
 import ctypes
 mine = ctypes.create_string_buffer(b'hello')          # আমার process-এর ৬ byte
 addr = ctypes.addressof(mine)
@@ -391,8 +391,8 @@ kernel = 0xffff800000001000                          # 64-bit ঠিকানা
 print(f'{kernel:#018x}  (kernel half) -&gt; ...', flush=True)
 ctypes.string_at(kernel, 1)
 print('এই লাইন আসবে না')</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w python:3.12-slim bash -c 'python3 guards.py; echo "exit $?"'</code></pre></div>
-  <div class="codewrap"><pre><code>0x0000ffff98bf0320  (user half)   -&gt; b'hello'
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w python:3.12-slim bash -c 'python3 guards.py; echo "exit $?"'</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>0x0000ffff98bf0320  (user half)   -&gt; b'hello'
 0xffff800000001000  (kernel half) -&gt; ...
 exit 139
 bash: line 1:     7 Segmentation fault      python3 guards.py</code></pre></div>
@@ -510,8 +510,8 @@ bash: line 1:     7 Segmentation fault      python3 guards.py</code></pre></div>
   <p class="diagram-caption">বাঁয়ে পুরনো ব্যবস্থা: একটা table, kernel-এর অর্ধেক সবসময় map করা, পাহারা শুধু "kernel-only" চিহ্ন, আর Meltdown সেটাই আন্দাজে পড়েছিল। ডানে KPTI: user mode-এর table-এ kernel প্রায় নেই, আর kernel-এ ঢোকার সময় পুরো table-এ বদল হয়। নিরাপত্তা বাড়ল, প্রতিটা দরজা একটু দামি হলো।</p>
 
   <p>তোমার machine-এর CPU আক্রান্ত কিনা, আর kernel কী ব্যবস্থা নিয়েছে, Linux সেটা একটা file-এ লিখে রাখে:</p>
-  <div class="codewrap"><pre><code>docker run --rm alpine sh -c 'cd /sys/devices/system/cpu/vulnerabilities; grep . meltdown spectre_v1 spectre_v2'</code></pre></div>
-  <div class="codewrap"><pre><code>meltdown:Not affected
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm alpine sh -c 'cd /sys/devices/system/cpu/vulnerabilities; grep . meltdown spectre_v1 spectre_v2'</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>meltdown:Not affected
 spectre_v1:Mitigation: __user pointer sanitization
 spectre_v2:Not affected</code></pre></div>
   <p>Apple Silicon-এর উপর চলা এই VM-এর CPU-কে kernel Meltdown-এ আক্রান্ত মনে করে না, তাই KPTI বন্ধ রেখেছে। আক্রান্ত Intel server-এ লেখা থাকত <code>Mitigation: PTI</code>। দ্বিতীয় লাইনটা দেখো: <code>__user pointer sanitization</code>। Kernel শুধু তোমার দেওয়া ঠিকানা যাচাই করেই থামে না; যাচাই শেষ হওয়ার আগে CPU যেন আন্দাজেও সেই ঠিকানা ব্যবহার করতে না পারে, সেটাও নিশ্চিত করে। "Kernel কাউকে বিশ্বাস করে না" কথাটা এই পর্যন্ত যায়।</p>

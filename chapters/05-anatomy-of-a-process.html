@@ -10,9 +10,9 @@
   <p>তাই প্রতিটা process-এর address space একটা প্রচলিত নকশা মেনে কয়েকটা <strong>region</strong>-এ ভাগ করা হয় — প্রতিটা region-এ একই ধরনের জিনিস, একই জীবনকাল, একই permission। Linux-এ যেকোনো process-এর region গুলো দেখা যায় <code>/proc/&lt;PID&gt;/maps</code> file পড়ে। সবচেয়ে পরিষ্কার উদাহরণ ছোট একটা program — <code>cat</code> নিজের map নিজেই পড়ুক:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
-    <div class="codewrap"><pre><code>docker run --rm alpine cat /proc/self/maps</code></pre></div>
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm alpine cat /proc/self/maps</code></pre></div>
     <p>আমার output (তোমার address আলাদা হবে — kernel প্রতিবার region গুলো একটু এলোমেলো জায়গায় বসায়, যাতে আক্রমণকারী আগে থেকে address আন্দাজ করতে না পারে):</p>
-    <div class="codewrap"><pre><code>aaaabb3d0000-aaaabb4a0000 r-xp 00000000 00:40 1073111   /bin/busybox
+    <div class="codewrap"><pre class="out"><code>aaaabb3d0000-aaaabb4a0000 r-xp 00000000 00:40 1073111   /bin/busybox
 aaaabb4ac000-aaaabb4b0000 r--p 000dc000 00:40 1073111   /bin/busybox
 aaaabb4b0000-aaaabb4b1000 rw-p 000e0000 00:40 1073111   /bin/busybox
 aaaac20c8000-aaaac20c9000 ---p 00000000 00:00 0         [heap]
@@ -107,7 +107,7 @@ ffffffee8000-fffffff09000 rw-p 00000000 00:00 0         [stack]</code></pre></di
   <h3>Permission: কোন region-এ কী করা যায়</h3>
   <p>প্রতিটা region-এ permission আলাদা রাখার কারণ দুইটা বিপদ। এক, একটা bug ভুল address-এ লিখে program-এর নিজের machine code নষ্ট করে ফেলতে পারে — তারপর CPU কী চালাবে কেউ জানে না। দুই, আক্রমণকারী যদি input হিসেবে machine code পাঠিয়ে সেটা stack বা heap-এ ঢুকিয়ে দিতে পারে, আর CPU যদি সেটা চালিয়ে দেয় — তাহলে তোমার server-এ সে যা খুশি চালাতে পারবে। পুরনো দিনের অনেক বড় hack ঠিক এভাবে হয়েছিল।</p>
   <p>সমাধান: code region <code>r-x</code> (লেখা নিষেধ), আর data, heap, stack <code>rw-</code> (চালানো নিষেধ)। এই নিয়ম পাহারা দেয় CPU নিজে, প্রতিটা memory access-এ (কীভাবে, Chapter 9-এর page table-এর গল্প)। নিয়ম ভাঙলে ঠিক সেটাই ঘটে যা Chapter 1-এ বলেছিলাম: CPU থামে, kernel-কে ডাকে, kernel process-টাকে মেরে ফেলে। নিজে দেখতে চাইলে এই ছোট C program — Chapter 4-এর মতোই compile করো:</p>
-  <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
+  <div class="codewrap"><pre class="lang-c"><code>#include &lt;stdio.h&gt;
 
 int main(void) {
     printf("main-এর code আছে এই address-এ: %p\n", (void *)main);
@@ -116,7 +116,7 @@ int main(void) {
     return 0;
 }</code></pre></div>
   <p>C না জানলে শুধু মাঝের লাইনটা বোঝো: <code>(char *)main</code> মানে "<code>main</code> function-এর machine code যে address-এ শুরু", আর <code>*... = 0</code> মানে "সেই address-এ ০ লেখো"। (Address নিয়ে সরাসরি কাজ করার এই ক্ষমতার নাম pointer — Chapter 6।) <code>cc writecode.c -o writecode &amp;&amp; ./writecode</code> চালালে:</p>
-  <div class="codewrap"><pre><code># macOS
+  <div class="codewrap"><pre class="out"><code># macOS
 main-এর code আছে এই address-এ: 0x104158460
 zsh: bus error  ./writecode
 
@@ -140,7 +140,7 @@ Segmentation fault</code></pre></div>
     <li>Function শেষ হলে frame থেকে return address তুলে নেয়, SP-তে সেই byte গুলো আবার যোগ করে দেয় — frame মুক্ত — আর return address-এ লাফ দেয়।</li>
   </ul>
   <p>এটা কোনো তত্ত্ব না — Chapter 4-এর <code>hello</code>-র <code>main</code> ঠিক এটাই করছিল। <code>otool -tvj hello</code>-এর output আবার দেখো, এবার শুরু আর শেষটা:</p>
-  <div class="codewrap"><pre><code>0000000100000460   d10083ff   sub  sp, sp, #0x20          ; frame বানাও: SP থেকে 32 byte বিয়োগ
+  <div class="codewrap"><pre class="lang-asm"><code>0000000100000460   d10083ff   sub  sp, sp, #0x20          ; frame বানাও: SP থেকে 32 byte বিয়োগ
 0000000100000464   a9017bfd   stp  x29, x30, [sp, #0x10]  ; x30 (ফেরার ঠিকানা) frame-এ সেভ
 ...
 0000000100000494   a9417bfd   ldp  x29, x30, [sp, #0x10]  ; ফেরার ঠিকানা frame থেকে তোলো
@@ -149,7 +149,7 @@ Segmentation fault</code></pre></div>
   <p>ARM-এ <code>x30</code> হলো সেই register যেখানে <code>bl</code> ফেরার ঠিকানা রাখে; <code>main</code> নিজেও <code>printf</code>-কে ডাকবে বলে <code>x30</code>-এর পুরনো মান আগে নিজের frame-এ সেভ করে রাখছে — ঠিক ওপরের সমস্যার সমাধান। (Intel/AMD-এর x86-64-এ <code>call</code> instruction ফেরার ঠিকানা নিজেই stack-এ push করে, আর <code>ret</code> সেখান থেকে তোলে — পথ আলাদা, ধারণা এক।) লক্ষ করো, stack-এ জায়গা নেওয়া মানে একটা বিয়োগ, ফেরত দেওয়া মানে একটা যোগ — কাউকে জিজ্ঞেস করতে হয় না, কিছু খুঁজতে হয় না। এই কথাটা Chapter 6-এ বড় ভূমিকা রাখবে।</p>
 
   <p>JS-এ একই জিনিস দেখা যাক। V8 তোমার JS function গুলোর frame-ও এই একই process stack-এ রাখে:</p>
-  <div class="codewrap"><pre><code>function bar() { const z = 3; console.trace('এখানে stack কেমন?'); }
+  <div class="codewrap"><pre class="lang-js"><code>function bar() { const z = 3; console.trace('এখানে stack কেমন?'); }
 function foo() { const y = 2; bar(); }
 function main() { const x = 1; foo(); }
 main();</code></pre></div>
@@ -208,7 +208,7 @@ main();</code></pre></div>
 
   <h3>Stack trace আর stack overflow</h3>
   <p>ওপরের script চালালে <code>console.trace</code> print করে (path ছোট করে দেখাচ্ছি):</p>
-  <div class="codewrap"><pre><code>Trace: এখানে stack কেমন?
+  <div class="codewrap"><pre class="out"><code>Trace: এখানে stack কেমন?
     at bar (trace.js:1:26)
     at foo (trace.js:2:18)
     at main (trace.js:3:19)
@@ -217,14 +217,14 @@ main();</code></pre></div>
     ...</code></pre></div>
   <p>এটাই <strong>stack trace</strong>: stack-এ এই মুহূর্তে যত frame জমা আছে, তাদের তালিকা — সবচেয়ে নতুন (<code>bar</code>) উপরে, সবচেয়ে পুরনো নিচে। প্রতিটা frame-এর return address থেকে runtime বের করে কোন function-এর কোন লাইন থেকে ডাকা হয়েছিল। তুমি প্রতিদিন error-এর সাথে যে stack trace দেখো, সেটা ওপরের ছবির তৃতীয় column-এর লিখিত রূপ। (নিচের <code>Module._compile</code> ইত্যাদি Node-এর নিজের function, যারা তোমার file load করে চালিয়েছে।)</p>
   <p>এবার সীমার কথা। Stack region-এর মাপ নির্দিষ্ট। Main thread-এর stack-এর সর্বোচ্চ মাপ দেখো:</p>
-  <div class="codewrap"><pre><code>ulimit -s     # KB-তে; আমার Mac-এ 8176, Linux-এ সাধারণত 8192 (প্রায় ৮ MB)</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>ulimit -s     # KB-তে; আমার Mac-এ 8176, Linux-এ সাধারণত 8192 (প্রায় ৮ MB)</code></pre></div>
   <p>Stack-এর ঠিক নিচে kernel একটা নিষিদ্ধ অংশ (<strong>guard page</strong>) রেখে দেয়। Frame জমতে জমতে stack সেখানে পৌঁছালেই permission ভাঙে, আর process মারা যায় — এটাই <strong>stack overflow</strong>। সবচেয়ে সাধারণ কারণ: শেষ-না-হওয়া বা খুব গভীর recursion।</p>
   <p>V8 এই মৃত্যুর আগেই নিজে থামে: সে নিজের জন্য প্রায় ১ MB-র একটা সীমা রাখে, আর সেখানে পৌঁছালে একটা সাধারণ JS error ছুড়ে দেয়, যেটা তুমি <code>catch</code> করতে পারো:</p>
-  <div class="codewrap"><pre><code>node -e "function f(n) { return f(n + 1) } f(0)"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "function f(n) { return f(n + 1) } f(0)"</code></pre></div>
   <p>Output: <code>RangeError: Maximum call stack size exceeded</code>। এখন একটা মজার পরীক্ষা, যেটা দেখায় frame-এর আসলেই একটা মাপ আছে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — depth.js</div>
-    <div class="codewrap"><pre><code>let depth = 0;
+    <div class="codewrap"><pre class="lang-js"><code>let depth = 0;
 function small() { depth++; small(); }
 try { small(); } catch (e) { console.log('small frame depth:', depth); }
 

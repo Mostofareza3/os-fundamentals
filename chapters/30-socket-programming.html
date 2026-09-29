@@ -19,7 +19,7 @@
     <tr><td><code>socket.setNoDelay(true)</code></td><td><code>setsockopt(TCP_NODELAY)</code></td><td>Nagle বন্ধ (Chapter 27)</td></tr>
   </table></div>
   <p>শেষের তিনটার প্রমাণ — একটা connection-এ server <code>write</code> করে <code>end()</code>, আরেকটায় client <code>resetAndDestroy()</code>:</p>
-  <div class="codewrap"><pre><code>[pid   129] write(20, "hi", 2)          = 2
+  <div class="codewrap"><pre class="out"><code>[pid   129] write(20, "hi", 2)          = 2
 [pid   129] shutdown(20, SHUT_WR)       = 0
 [pid   129] setsockopt(21, SOL_SOCKET, SO_LINGER, {l_onoff=1, l_linger=0}, 8) = 0
 [pid   129] close(21)                   = 0</code></pre></div>
@@ -88,7 +88,7 @@
   <p>HTTP/1.1 একটা text protocol: TCP-র byte-এর স্রোতের উপর কয়েকটা লাইন, প্রতিটা <code>\r\n</code>-এ শেষ। প্রথম লাইনে method আর path, তারপর header, তারপর একটা খালি লাইন, তারপর body। Framework ছাড়া, শুধু <code>net</code> দিয়ে একটা HTTP server:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — mini-http.js</div>
-    <div class="codewrap"><pre><code>// mini-http.js — express বা http module ছাড়া, শুধু net দিয়ে একটা HTTP server
+    <div class="codewrap"><pre class="lang-js"><code>// mini-http.js — express বা http module ছাড়া, শুধু net দিয়ে একটা HTTP server
 const net = require('net');
 
 net.createServer(sock =&gt; {
@@ -111,14 +111,14 @@ net.createServer(sock =&gt; {
   });
 }).listen(8080, '127.0.0.1', () =&gt; console.log('listening on 8080'));</code></pre></div>
     <p>এক terminal-এ <code>node mini-http.js</code>, আরেকটায় <code>curl -s -i http://127.0.0.1:8080/users/42</code>:</p>
-    <div class="codewrap"><pre><code>HTTP/1.1 200 OK
+    <div class="codewrap"><pre class="out"><code>HTTP/1.1 200 OK
 Content-Type: application/json
 Content-Length: 44
 Connection: close
 
 {"hello":"from raw TCP","path":"/users/42"}</code></pre></div>
     <p>Server-এর দিকে: <code>request line: "GET /users/42 HTTP/1.1"</code> আর <code>headers : 3 lines, e.g. "Host: 127.0.0.1:8080"</code>। এমনকি request নিজে হাতে লিখেও পাঠানো যায় — <code>nc</code> (netcat) শুধু stdin-এর byte একটা TCP connection-এ ঢেলে দেয়:</p>
-    <div class="codewrap"><pre><code>printf 'GET /by-hand HTTP/1.1\r\nHost: me\r\n\r\n' | nc 127.0.0.1 8080</code></pre></div>
+    <div class="codewrap"><pre class="cmd"><code>printf 'GET /by-hand HTTP/1.1\r\nHost: me\r\n\r\n' | nc 127.0.0.1 8080</code></pre></div>
     <p>উত্তর আসে <code>{"hello":"from raw TCP","path":"/by-hand"}</code> সহ একই header।</p>
   </div>
   <p>curl সন্তুষ্ট, কারণ HTTP-র চাহিদা এটুকুই: ঠিক ক্রমে ঠিক byte। বাকি সব — URL-এর query ভাঙা, header-এর case, chunked body, keep-alive, <code>Content-Length</code> না মিললে কী করা — Node-এর <code>http</code> module-এর কাজ, আর তার উপরে Express-এর routing। কিন্তু নিচে যা আছে তা এই: একটা socket, কিছু byte, আর framing।</p>
@@ -127,7 +127,7 @@ Connection: close
   <p>Network error-এর নামগুলো kernel-এর দেওয়া, আর প্রতিটা আগের chapter-গুলোর কোনো একটা ঘটনার নাম। পাঁচটা নিজেরাই ঘটাই:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — errors.js</div>
-    <div class="codewrap"><pre><code>// errors.js — চেনা network error গুলো, একটা একটা করে ঘটিয়ে
+    <div class="codewrap"><pre class="lang-js"><code>// errors.js — চেনা network error গুলো, একটা একটা করে ঘটিয়ে
 const net = require('net');
 const once = (emitter, ev) =&gt; new Promise(r =&gt; emitter.once(ev, r));
 const log = (name, e) =&gt; console.log(name.padEnd(28), e ? e.code : 'no error');
@@ -160,8 +160,8 @@ const log = (name, e) =&gt; console.log(name.padEnd(28), e ? e.code : 'no error'
   log(`nobody answers (${((Date.now() - t0) / 1000).toFixed(1)} s):`, e);
   process.exit(0);
 })();</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --sysctl net.ipv4.tcp_syn_retries=1 -v "$PWD":/w:ro node:22-bookworm-slim node /w/errors.js</code></pre></div>
-    <div class="codewrap"><pre><code>listen twice on 8080:        EADDRINUSE
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --sysctl net.ipv4.tcp_syn_retries=1 -v "$PWD":/w:ro node:22-bookworm-slim node /w/errors.js</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>listen twice on 8080:        EADDRINUSE
 connect to closed port:      ECONNREFUSED
 peer sends RST:              ECONNRESET
 write after peer closed:     EPIPE
@@ -179,7 +179,7 @@ nobody answers (3.1 s):      ETIMEDOUT</code></pre></div>
   <p>প্রতিটা socket একটা fd, আর প্রতিটা process-এর খোলা fd-র একটা সীমা আছে — <code>ulimit -n</code>। Server-এর দিকে প্রতিটা connection একটা fd, client-এর দিকেও একটা। সীমা ছুঁলে কী হয়, ইচ্ছা করে ছোট সীমা বসিয়ে দেখি:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — emfile.js</div>
-    <div class="codewrap"><pre><code>// emfile.js — প্রতিটা connection একটা fd; fd-র সীমা ছুঁলে কী হয়
+    <div class="codewrap"><pre class="lang-js"><code>// emfile.js — প্রতিটা connection একটা fd; fd-র সীমা ছুঁলে কী হয়
 const net = require('net');
 const fs = require('fs');
 console.log('fds already open at start:', fs.readdirSync('/proc/self/fd').length);
@@ -189,10 +189,10 @@ for (let i = 1; i &lt;= 100; i++) {
     process.exit(0);
   });
 }</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
   node -e "require(\"net\").createServer(() =&gt; {}).listen(8080)" &amp; sleep 0.5
   ulimit -n 64; node /w/emfile.js'</code></pre></div>
-    <div class="codewrap"><pre><code>fds already open at start: 18
+    <div class="codewrap"><pre class="out"><code>fds already open at start: 18
 connection #47: EMFILE</code></pre></div>
   </div>
   <p>Node নিজেই শুরুতে ১৭টা fd খোলা রাখে (stdin/stdout/stderr, epoll, eventfd, pipe…; ১৮-র একটা <code>readdirSync</code>-এর নিজের), তাই ৬৪-র সীমায় ৪৬টা connection-এর পরে ৪৭তমটায় <code>EMFILE</code> — "too many open files"। Docker-এ default সীমা <code>1048576</code>, কিন্তু সব জায়গায় এত না: আমার Mac-এ <code>launchctl limit maxfiles</code> দেখায় soft সীমা ২৫৬। Production-এ <code>EMFILE</code> প্রায়ই আসে fd leak থেকে: বন্ধ না করা socket (Chapter 26-এর CLOSE-WAIT), বন্ধ না করা file। <code>ls /proc/&lt;pid&gt;/fd | wc -l</code> সময়ের সাথে শুধু বাড়তে থাকলে leak খোঁজো।</p>
@@ -201,7 +201,7 @@ connection #47: EMFILE</code></pre></div>
   <p>Deploy-এর সময় পুরনো process বন্ধ হয়। হঠাৎ <code>process.exit()</code> করলে চলমান request গুলো মাঝপথে কাটা পড়ে — client পায় <code>ECONNRESET</code>। ভদ্র উপায় (<strong>graceful shutdown</strong>): নতুন connection নেওয়া বন্ধ করো, চলমানগুলো শেষ হতে দাও, তারপর বেরোও। <code>server.close()</code> ঠিক এটাই করে — listening socket বন্ধ করে, কিন্তু accepted socket গুলো ছোঁয় না:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — graceful.js</div>
-    <div class="codewrap"><pre><code>// graceful.js — server.close(): নতুন দরজা বন্ধ, কিন্তু চলমান কাজ শেষ হতে দাও
+    <div class="codewrap"><pre class="lang-js"><code>// graceful.js — server.close(): নতুন দরজা বন্ধ, কিন্তু চলমান কাজ শেষ হতে দাও
 const net = require('net');
 const t0 = Date.now();
 const log = msg =&gt; console.log(`${String(Date.now() - t0).padStart(5)} ms  ${msg}`);
@@ -220,7 +220,7 @@ server.listen(8080, '127.0.0.1', () =&gt; {
     net.connect(8080, '127.0.0.1').on('error', e =&gt; log(`client B (new): ${e.code}`));
   }, 200);
 });</code></pre></div>
-    <div class="codewrap"><pre><code>    5 ms  server: request in, working for 1 s...
+    <div class="codewrap"><pre class="out"><code>    5 ms  server: request in, working for 1 s...
   207 ms  SIGTERM-এর মতো: server.close()
   210 ms  client B (new): ECONNREFUSED
  1009 ms  client A got: done

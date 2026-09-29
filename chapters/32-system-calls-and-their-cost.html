@@ -63,7 +63,7 @@
   <p class="diagram-caption">একটা syscall-এর পুরো পথ। উপরের নীল সারিতে user mode-এর প্রস্তুতি, নিচের amber সারিতে kernel-এর কাজ। দুইবার দরজা পেরোনো, register সেভ করা আর ফেরানো, আর KPTI থাকলে দুইবার page table বদল। ফেরার পরেও cache আর TLB-তে kernel-এর ছাপ থেকে যায়।</p>
 
   <p>মাপা যাক। নিচের script-এ চারটা জিনিস বিশ লাখ বার করে ডাকা হয়েছে। <code>process.uptime()</code> আর <code>process.ppid</code> দুটোই JS থেকে Node-এর C++-এ যায়, কিন্তু দ্বিতীয়টা সেখান থেকে <code>getppid</code> syscall-ও করে (parent process-এর PID জানতে চায়; Node এটা মনে রাখে না, প্রতিবার kernel-কে জিজ্ঞেস করে)। তাই দুটোর পার্থক্যই মোটামুটি kernel-এ একবার ঢুকে বেরোনোর দাম।</p>
-  <div class="codewrap"><pre><code>// cost.js — kernel-এ একবার ঢুকে বেরোতে কত সময় লাগে?
+  <div class="codewrap"><pre class="lang-js"><code>// cost.js — kernel-এ একবার ঢুকে বেরোতে কত সময় লাগে?
 const N = 2e6;
 function bench(name, fn) {
   for (let i = 0; i &lt; 2e5; i++) fn();                      // আগে গরম করে নেওয়া (JIT)
@@ -77,9 +77,9 @@ bench('JS function            (no kernel)', () =&gt; { x++; });
 bench('process.uptime()       (C++, no syscall)', () =&gt; process.uptime());
 bench('Date.now()             (vDSO)', () =&gt; Date.now());
 bench('process.ppid           (getppid syscall)', () =&gt; process.ppid);</code></pre></div>
-  <div class="codewrap"><pre><code>node cost.js                                                              # Mac
+  <div class="codewrap"><pre class="cmd"><code>node cost.js                                                              # Mac
 docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim node cost.js  # Linux</code></pre></div>
-  <div class="codewrap"><pre><code># Mac (Apple Silicon)
+  <div class="codewrap"><pre class="out"><code># Mac (Apple Silicon)
 JS function            (no kernel)          1.2 ns
 process.uptime()       (C++, no syscall)   37.1 ns
 Date.now()             (vDSO)              23.2 ns
@@ -93,7 +93,7 @@ process.ppid           (getppid syscall)  155.3 ns</code></pre></div>
 
   <h3>ছোট ছোট কাজে দাম জমে যায়</h3>
   <p>প্রতিটা syscall-এর একটা নির্দিষ্ট দাম আছে, যত byte-ই সে সরাক না কেন। তাই একটা syscall-এ কতটা কাজ হয়, সেটাই আসল প্রশ্ন। একই ৩২ MB file (page cache-এ, তাই disk-এর প্রশ্ন নেই — Chapter 23) পাঁচ রকম মাপের <code>read()</code> দিয়ে পড়া যাক:</p>
-  <div class="codewrap"><pre><code>// chunks.js — একই ৩২ MB file, আলাদা আলাদা মাপের read() দিয়ে পড়া
+  <div class="codewrap"><pre class="lang-js"><code>// chunks.js — একই ৩২ MB file, আলাদা আলাদা মাপের read() দিয়ে পড়া
 const fs = require('fs');
 const FILE = '/tmp/chunks.bin', SIZE = 32 * 1024 * 1024;
 fs.writeFileSync(FILE, Buffer.alloc(SIZE, 7));             // একবার লিখে রাখা, এখন page cache-এ
@@ -110,7 +110,7 @@ for (const chunk of [16, 256, 4096, 65536, 1048576]) {
               `${ms.toFixed(1).padStart(6)} ms  ${(SIZE / 2 ** 20 / (ms / 1e3)).toFixed(0).padStart(5)} MB/s  ` +
               `${(ms * 1e6 / calls).toFixed(0).padStart(6)} ns/call`);
 }</code></pre></div>
-  <div class="codewrap"><pre><code>chunk      16 B: 2097152 read()  779.2 ms     41 MB/s     372 ns/call
+  <div class="codewrap"><pre class="out"><code>chunk      16 B: 2097152 read()  779.2 ms     41 MB/s     372 ns/call
 chunk     256 B:  131072 read()   50.2 ms    638 MB/s     383 ns/call
 chunk    4096 B:    8192 read()    4.1 ms   7756 MB/s     504 ns/call
 chunk   65536 B:     512 read()    1.5 ms  20950 MB/s   2983 ns/call
@@ -154,17 +154,17 @@ chunk 1048576 B:      32 read()    1.4 ms  23235 MB/s  43038 ns/call</code></pre
   <p class="diagram-caption">chunks.js-এর মাপ (Mac), দুই axis-ই log scale। ছোট chunk-এ রেখাটা dashed কর্ণ ধরে চলে: গতি ঠিক করে প্রতি call-এর নির্দিষ্ট দাম। ৬৪ KB-র পরে রেখা সমতল হয়ে যায়, কারণ তখন সীমা byte copy করার গতি। প্রতিটা বিন্দুর উপর mouse রাখলে সংখ্যা দেখাবে।</p>
 
   <p>একই কথা <code>dd</code> দিয়েও দেখা যায়। dd হলো block ধরে ধরে copy করার পুরনো Unix tool; <code>bs</code> প্রতিটা <code>read</code>/<code>write</code>-এর মাপ ঠিক করে দেয়:</p>
-  <div class="codewrap"><pre><code># dd.sh
+  <div class="codewrap"><pre class="lang-sh"><code># dd.sh
 dd if=/dev/zero of=/dev/null bs=1 count=1048576      # ১ MB, এক byte করে
 dd if=/dev/zero of=/dev/null bs=65536 count=16       # একই ১ MB, ৬৪ KB করে</code></pre></div>
-  <div class="codewrap"><pre><code>1048576 bytes transferred in 0.606343 secs (1729345 bytes/sec)
+  <div class="codewrap"><pre class="out"><code>1048576 bytes transferred in 0.606343 secs (1729345 bytes/sec)
 1048576 bytes transferred in 0.000024 secs (43690666667 bytes/sec)</code></pre></div>
   <p>(আমার Mac-এ, <code>bash dd.sh</code>; records in/out লাইন বাদ দিয়েছি।) ০.৬ সেকেন্ড বনাম ২৪ microsecond — পঁচিশ হাজার গুণ। Linux-এ strace দিয়ে গুনলে কারণটা সংখ্যায় পাওয়া যায়। এখানে ১ লাখ byte নিয়েছি, কারণ strace প্রতিটা syscall-এ program থামিয়ে দেখে, তাতে ১০ লাখ call-এ দেড় মিনিট লেগে যায়:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   strace -c dd if=/dev/zero of=/dev/null bs=1 count=100000 2&gt;&amp;1 | grep -E " read$| write$"
   strace -c dd if=/dev/zero of=/dev/null bs=100000 count=1 2&gt;&amp;1 | grep -E " read$| write$"'</code></pre></div>
-  <div class="codewrap"><pre><code> 50.20    0.423554           4    100001           read
+  <div class="codewrap"><pre class="out"><code> 50.20    0.423554           4    100001           read
  49.80    0.420191           4    100003           write
   0.00    0.000000           0         2           read
   0.00    0.000000           0         4           write</code></pre></div>
@@ -185,14 +185,14 @@ dd if=/dev/zero of=/dev/null bs=65536 count=16       # একই ১ MB, ৬৪ 
   <p>libc <code>clock_gettime</code> ডাকলে আসলে এই vDSO function চলে। প্রমাণ — দশ লাখ <code>Date.now()</code> আর দশ লাখ <code>process.ppid</code>, একসাথে strace-এ:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — Date.now() কি kernel-এ যায়?</div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   strace -f -c -e trace=clock_gettime,gettimeofday,getppid -o /tmp/v node -e "
     let s = 0;
     for (let i = 0; i &lt; 1e6; i++) s += Date.now();       // সময় জানা, ১০ লাখ বার
     for (let i = 0; i &lt; 1e6; i++) s += process.ppid;     // parent-এর pid, ১০ লাখ বার
   "; cat /tmp/v'</code></pre></div>
-    <div class="codewrap"><pre><code>% time     seconds  usecs/call     calls    errors syscall
+    <div class="codewrap"><pre class="out"><code>% time     seconds  usecs/call     calls    errors syscall
 ------ ----------- ----------- --------- --------- ----------------
 100.00    3.541324           3   1000000           getppid
 ------ ----------- ----------- --------- --------- ----------------
@@ -248,33 +248,33 @@ dd if=/dev/zero of=/dev/null bs=65536 count=16       # একই ১ MB, ৬৪ 
 
   <h3>Batching: কম পারাপারে বেশি কাজ</h3>
   <p>নির্দিষ্ট দাম কমানোর একটাই উপায়: একবার দরজা পেরিয়ে বেশি কাজ করা। JS developer-এর রোজকার সবচেয়ে বড় উদাহরণ হলো logging। দশ লাখ লাইন file-এ লেখা, তিনভাবে:</p>
-  <div class="codewrap"><pre><code># logs.sh — ১০ লাখ লাইন file-এ লেখা, তিনভাবে
+  <div class="codewrap"><pre class="lang-sh"><code># logs.sh — ১০ লাখ লাইন file-এ লেখা, তিনভাবে
 time node -e "for (let i = 0; i &lt; 1e6; i++) console.log(i)" &gt; /tmp/a.txt
 time node -e "const out = []; for (let i = 0; i &lt; 1e6; i++) out.push(i); console.log(out.join('\n'))" &gt; /tmp/b.txt
 time python3 -c "for i in range(10**6): print(i)" &gt; /tmp/c.txt</code></pre></div>
-  <div class="codewrap"><pre><code>bash logs.sh 2&gt;&amp;1 | grep real       # Mac
+  <div class="codewrap"><pre class="cmd"><code>bash logs.sh 2&gt;&amp;1 | grep real       # Mac
 real	0m1.647s
 real	0m0.079s
 real	0m0.188s</code></pre></div>
   <p>একই output, অথচ প্রথমটা দ্বিতীয়টার চেয়ে কুড়ি গুণ ধীর। (Docker-এর Linux-এ ০.৯২, ০.১০ আর ০.১২ সেকেন্ড।) কারণ গুনে দেখো, এবার ১০ হাজার লাইনে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — writes.sh</div>
-    <div class="codewrap"><pre><code># writes.sh — ১০ হাজার লাইন file-এ লিখতে কয়টা write syscall লাগে?
+    <div class="codewrap"><pre class="lang-sh"><code># writes.sh — ১০ হাজার লাইন file-এ লিখতে কয়টা write syscall লাগে?
 count() { strace -f -c -e trace=write,writev -o /tmp/s "$@" &gt; /tmp/out.txt; awk '/total/ {print $4}' /tmp/s; }
 echo "console.log per line : $(count node -e 'for (let i = 0; i &lt; 1e4; i++) console.log(i)')"
 echo "join, then one log   : $(count node -e 'const o = []; for (let i = 0; i &lt; 1e4; i++) o.push(i); console.log(o.join("\n"))')"
 echo "python print per line: $(count python3 -c 'for i in range(10**4): print(i)')"</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace python3 &gt;/dev/null
   bash writes.sh'</code></pre></div>
-    <div class="codewrap"><pre><code>console.log per line : 10003
+    <div class="codewrap"><pre class="out"><code>console.log per line : 10003
 join, then one log   : 4
 python print per line: 6</code></pre></div>
   </div>
   <p>Node-এর <code>console.log</code> প্রতিটা লাইনের জন্য আলাদা একটা <code>write</code> করে। stdout file বা terminal হলে Node কিছু জমিয়ে রাখে না, সাথে সাথে লেখে। এর একটা লাভ আছে: process হঠাৎ মরলেও আগে লেখা লাইন হারায় না। Python-এর <code>print</code> উল্টো: stdout যখন terminal না, তখন সে ৮ KB-র একটা buffer ভরে তারপর এক <code>write</code>-এ পাঠায়, তাই দশ হাজার লাইনে মাত্র ৬টা syscall। এর দামও আছে: Python crash করলে buffer-এ আটকে থাকা শেষ লাইনগুলো হারায় (তাই Chapter 31-এ <code>flush=True</code> দিয়েছি)। Hot loop-এ প্রতি iteration-এ log করা তাই শুধু output-এর ঝামেলা না, সরাসরি syscall-এর দাম। Production logger-রা এজন্যই ইচ্ছেমতো লেখা জমিয়ে পাঠানোর option রাখে।</p>
 
   <p>Socket-এও একই কৌশল। একটা HTTP response প্রায়ই কয়েক টুকরায় তৈরি হয়: status line, header, body। আলাদা আলাদা <code>write()</code> দিলে প্রতিটা আলাদা syscall, আর network-এ ছোট ছোট আলাদা packet হওয়ার সম্ভাবনা (Nagle-এর গল্প, Chapter 27)। <code>cork()</code> বলে "এখনই পাঠিও না, জমাও"; <code>uncork()</code> সব একসাথে এক <code>writev</code>-এ পাঠায়। <code>writev</code> হলো এমন একটা syscall, যেটা memory-র কয়েকটা আলাদা টুকরা এক call-এ লিখে দেয়:</p>
-  <div class="codewrap"><pre><code>// cork.js — একটা response-এর তিন টুকরা: আলাদা write বনাম cork করে একসাথে
+  <div class="codewrap"><pre class="lang-js"><code>// cork.js — একটা response-এর তিন টুকরা: আলাদা write বনাম cork করে একসাথে
 const net = require('net');
 const server = net.createServer((sock) =&gt; {
   sock.write('HTTP/1.1 200 OK\r\n');                 // ১) cork ছাড়া: তিনটা আলাদা write
@@ -291,10 +291,10 @@ const server = net.createServer((sock) =&gt; {
 server.listen(9100, '127.0.0.1', () =&gt; {
   net.connect(9100, '127.0.0.1').on('data', () =&gt; {}).on('end', () =&gt; server.close());
 });</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   strace -f -e trace=write,writev node cork.js 2&gt;&amp;1 | grep -E "HTTP|Content|hi\""'</code></pre></div>
-  <div class="codewrap"><pre><code>[pid   129] write(20, "HTTP/1.1 200 OK\r\n", 17) = 17
+  <div class="codewrap"><pre class="out"><code>[pid   129] write(20, "HTTP/1.1 200 OK\r\n", 17) = 17
 [pid   129] write(20, "Content-Length: 2\r\n\r\n", 21) = 21
 [pid   129] write(20, "hi", 2)          = 2
 [pid   129] writev(20, [{iov_base="HTTP/1.1 200 OK\r\n", iov_len=17}, {iov_base="Content-Length: 2\r\n\r\n", iov_len=21}, {iov_base="hi", iov_len=2}], 3) = 40</code></pre></div>

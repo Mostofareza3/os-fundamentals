@@ -17,14 +17,14 @@
   <p>এটা এখনই নিজের চোখে দেখা যায়। V8 সাধারণত নিজের heap এলোমেলো একটা জায়গায় বসায়, কিন্তু <code>--random-seed</code> দিয়ে এলোমেলোর বীজ বেঁধে দিলে দুইটা আলাদা process ঠিক একই virtual address বেছে নেয়। তখন দুইটা process একসাথে চালাও, আলাদা মান দিয়ে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — same-address.js</div>
-    <div class="codewrap"><pre><code>// চালাও: node --allow-natives-syntax --random-seed=42 same-address.js 111
+    <div class="codewrap"><pre class="lang-js"><code>// চালাও: node --allow-natives-syntax --random-seed=42 same-address.js 111
 const box = { value: Number(process.argv[2]) };
 %DebugPrint(box);                       // box কোন address-এ আছে
 setTimeout(() =&gt; {
   console.log(`pid ${process.pid}: 2 সেকেন্ড পরেও box.value = ${box.value}`);
 }, 2000);</code></pre></div>
     <p>দুইটা terminal-এ প্রায় একসাথে চালাও — একটায় শেষে <code>111</code>, আরেকটায় <code>222</code>। আমার Mac-এ (লম্বা output থেকে দরকারি লাইন):</p>
-    <div class="codewrap"><pre><code># terminal 1
+    <div class="codewrap"><pre class="out"><code># terminal 1
 DebugPrint: 0x23143ad24b49: [JS_OBJECT_TYPE]
 pid 93215: 2 সেকেন্ড পরেও box.value = 111
 
@@ -41,9 +41,9 @@ pid 93223: 2 সেকেন্ড পরেও box.value = 222</code></pre></di
     <li><strong>Frame</strong> (বা page frame) — physical RAM-এর একই মাপের একটা টুকরো।</li>
     <li><strong>Page table</strong> — প্রতিটা process-এর নিজস্ব তালিকা: কোন page কোন frame-এ বসানো, আর সেই page-এর permission কী (পড়া, লেখা, চালানো যাবে কি না; user mode থেকে ছোঁয়া যাবে কি না)। Kernel এটা বানায় আর বদলায়; process নিজে এটা ছুঁতে পারে না।</li>
   </ul>
-  <div class="codewrap"><pre><code>getconf PAGESIZE</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>getconf PAGESIZE</code></pre></div>
   <p>আমার Mac-এ <code>16384</code> (১৬ KB — Apple Silicon-এর মাপ), Docker-এর Linux-এ <code>4096</code> (৪ KB — বেশিরভাগ Linux machine-এর মাপ)। এখন একটা address-কে দুই ভাগে ভাঙা যায়। ১৬ KB = ২<sup>১৪</sup> byte, তাই address-এর নিচের ১৪টা bit হলো page-এর ভেতরে কত দূরে (<strong>offset</strong>), আর বাকি উপরের bit গুলো হলো <strong>page number</strong>। ওপরের <code>box</code>-এর address দিয়ে Node-এই হিসাব করো:</p>
-  <div class="codewrap"><pre><code>node -e "
+  <div class="codewrap"><pre class="cmd"><code>node -e "
 const addr = 0x23143ad24b49n;
 console.log('page number:', '0x' + (addr &gt;&gt; 14n).toString(16));
 console.log('offset     :', '0x' + (addr &amp; 0x3fffn).toString(16));"</code></pre></div>
@@ -156,7 +156,7 @@ console.log('offset     :', '0x' + (addr &amp; 0x3fffn).toString(16));"</code></
   <div class="box lab">
     <div class="box-title">EXPERIMENT — lazy.js</div>
     <p><code>process.resourceUsage().minorPageFault</code> বলে এই process-এ এ পর্যন্ত কতগুলো minor fault হয়েছে; RSS (Chapter 6) বলে কতটা RAM আসলে দখলে।</p>
-    <div class="codewrap"><pre><code>const mb = n =&gt; (n / 2 ** 20).toFixed(0).padStart(5) + ' MB';
+    <div class="codewrap"><pre class="lang-js"><code>const mb = n =&gt; (n / 2 ** 20).toFixed(0).padStart(5) + ' MB';
 const faults = () =&gt; process.resourceUsage().minorPageFault;
 const PAGE = 16384;                                  // macOS-এ 16 KB; Linux-এ 4096 দাও
 
@@ -166,13 +166,13 @@ console.log('after alloc    rss', mb(process.memoryUsage().rss), '| minor faults
 for (let i = 0; i &lt; buf.length; i += PAGE) buf[i] = 1; // প্রতিটা page-এ মাত্র ১ byte লিখলাম
 console.log('after touching rss', mb(process.memoryUsage().rss), '| minor faults', faults());</code></pre></div>
     <p>আমার Mac-এ:</p>
-    <div class="codewrap"><pre><code>start          rss    36 MB | minor faults 2655
+    <div class="codewrap"><pre class="out"><code>start          rss    36 MB | minor faults 2655
 after alloc    rss    38 MB | minor faults 2754
 after touching rss  1066 MB | minor faults 68586</code></pre></div>
   </div>
   <p>১ GB চাওয়ার পরেও RSS বাড়ল মাত্র ২ MB — kernel শুধু প্রতিশ্রুতি লিখেছে। তারপর প্রতিটা page-এ একটা করে byte লেখায় RSS লাফিয়ে ১ GB, আর minor fault বাড়ল ৬৫,৮৩২টা। হিসাব মেলাও: ১ GB ÷ ১৬ KB = ৬৫,৫৩৬ page — প্রায় প্রতিটা page-এর প্রথম ছোঁয়ায় একটা করে fault, kernel-এর একটা করে frame বসানো। (Linux-এ একই পরীক্ষায় fault অনেক কম আসে — কারণটা Chapter 10-এর huge page।)</p>
   <p>একই কারণে প্রায় প্রতিটা process-এর "চাওয়া" memory তার "পাওয়া" memory-র চেয়ে অনেক বড়। Linux-এ দুটো পাশাপাশি দেখা যায়:</p>
-  <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "console.log(require('fs').readFileSync('/proc/self/status','utf8').match(/^Vm(Size|RSS).*$/gm).join('\n'))"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-alpine node -e "console.log(require('fs').readFileSync('/proc/self/status','utf8').match(/^Vm(Size|RSS).*$/gm).join('\n'))"</code></pre></div>
   <p>আমার output: <code>VmSize: 421312 kB</code> (virtual address space-এ মোট বৈধ করা range) আর <code>VmRSS: 49816 kB</code> (আসলে frame পাওয়া অংশ) — আটগুণের বেশি পার্থক্য। <code>ps</code>-এর <code>VSZ</code> আর <code>RSS</code> column-ও এই দুই জিনিস।</p>
 
   <h3>এই design থেকে ফাউ পাওয়া সুবিধা</h3>
@@ -185,7 +185,7 @@ after touching rss  1066 MB | minor faults 68586</code></pre></div>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — shared frame-এর প্রমাণ</div>
     <p>Linux প্রতিটা mapping-এর জন্য <code>/proc/&lt;PID&gt;/smaps</code>-এ দুইটা সংখ্যা দেয়: <code>Rss</code> (এই mapping-এর কতটা RAM-এ আছে) আর <code>Pss</code> (proportional set size — shared page-এর দাম যতজন share করছে তাদের মধ্যে ভাগ করে দেখানো)। একটা <code>sleep</code>-এর libc code দেখো, তারপর আরও তিনটা <code>sleep</code> চালিয়ে আবার দেখো:</p>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim sh -c '
   sleep 100 &amp; P=$!; sleep 0.3
   awk "/libc.so.6/ &amp;&amp; /r-xp/ {f=1} f &amp;&amp; /^(Rss|Pss):/ {print} f &amp;&amp; /^Pss/ {exit}" /proc/$P/smaps
   for i in 1 2 3; do sleep 100 &amp; done; sleep 0.3

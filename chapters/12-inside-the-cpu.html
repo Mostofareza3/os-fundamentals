@@ -10,7 +10,7 @@
   <p>তোমার CPU-র clock মোটামুটি মাপা যায় JS দিয়েই। কৌশলটা: এমন একটা শিকল বানাও যেখানে প্রতিটা যোগ আগের যোগের ফলাফলের জন্য অপেক্ষা করে। একটা integer যোগ কমপক্ষে এক cycle নেয়, আর শিকলের যোগ গুলো পাশাপাশি চালানো যায় না — তাই প্রতি ধাপ কমপক্ষে এক cycle।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — clock.js</div>
-    <div class="codewrap"><pre><code>// প্রতিটা যোগ আগের যোগের ফলাফলের উপর নির্ভর করে,
+    <div class="codewrap"><pre class="lang-js"><code>// প্রতিটা যোগ আগের যোগের ফলাফলের উপর নির্ভর করে,
 // তাই CPU এগুলো একসাথে চালাতে পারে না — প্রতি ধাপে কমপক্ষে এক cycle।
 function chain(n) { let x = 0; for (let i = 0; i &lt; n; i++) x = (x + i) | 0; return x; }
 chain(1e7);                                  // JIT গরম করো
@@ -36,7 +36,7 @@ console.log(`${(ns / N).toFixed(3)} ns per step  →  clock is at least ~${(N / 
   <p>Chapter 4-এর <code>hello</code>-র instruction গুলো মনে করো: <code>mov x8, #0x2a</code> আর <code>add x0, x0, #0x4ac</code> যায় ALU-তে; <code>str x8, [x9]</code> আর <code>ldr w0, [sp, #0x8]</code> যায় load/store unit-এ; <code>bl _printf</code> যায় branch unit-এ। আর আলাদা unit মানে আলাদা গতি — নিজে মাপো:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — units.js</div>
-    <div class="codewrap"><pre><code>// দুইটা শিকল: একটায় integer যোগ (ALU), আরেকটায় দশমিক যোগ (floating-point unit)
+    <div class="codewrap"><pre class="lang-js"><code>// দুইটা শিকল: একটায় integer যোগ (ALU), আরেকটায় দশমিক যোগ (floating-point unit)
 function intChain(n)   { let x = 0;   for (let i = 0; i &lt; n; i++) x = (x + i) | 0; return x; }
 function floatChain(n) { let x = 0.5; for (let i = 0; i &lt; n; i++) x = x + 0.25;    return x; }
 const N = 1e9;
@@ -125,9 +125,9 @@ for (const [label, fn] of [['integer add', intChain], ['float add  ', floatChain
     <li>একটা <strong>conditional branch</strong> instruction flags দেখে: শর্ত মিললে branch unit PC-তে লাফের গন্তব্য বসায়; না মিললে PC স্বাভাবিকভাবে পরের instruction-এ যায়।</li>
   </ol>
   <p><code>if</code>, <code>else</code>, <code>for</code>, <code>while</code>, <code>switch</code>, <code>&amp;&amp;</code> — সব শেষে এই দুই ধাপে নামে। Loop মানে শুধু একটা পেছনের দিকে লাফ, যতক্ষণ শর্ত মেলে। তোমার JS-এ এটা দেখা যায় V8-এর <strong>bytecode</strong>-এ — V8-এর নিজের বানানো একটা instruction set, যেটা তার interpreter চালায় (Chapter 4), দেখতে অনেকটা CPU-র instruction-এর মতো:</p>
-  <div class="codewrap"><pre><code>node --print-bytecode --print-bytecode-filter=check -e "function check(x) { if (x &gt; 5) return 'big'; return 'small'; } check(7)"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node --print-bytecode --print-bytecode-filter=check -e "function check(x) { if (x &gt; 5) return 'big'; return 'small'; } check(7)"</code></pre></div>
   <p>লম্বা output-এর মাঝখানে <code>check</code>-এর পুরো দেহ (address গুলো ছেঁটে):</p>
-  <div class="codewrap"><pre><code>@ 0 : LdaSmi [5]                 ; 5 নাও
+  <div class="codewrap"><pre class="lang-asm"><code>@ 0 : LdaSmi [5]                 ; 5 নাও
 @ 2 : TestGreaterThan a0, [0]    ; argument x কি 5-এর চেয়ে বড়? ফলাফল রাখো
 @ 5 : JumpIfFalse [5] (@ 10)     ; না হলে @10-এ লাফ দাও
 @ 7 : LdaConstant [0]            ; 'big'
@@ -139,9 +139,9 @@ for (const [label, fn] of [['integer add', intChain], ['float add  ', floatChain
   <h3>এক chip-এ দুই রকম core</h3>
   <p>দ্রুত core বানাতে বড় circuit, উঁচু clock, আর প্রচুর বিদ্যুৎ লাগে। অথচ laptop বা phone-এর বেশিরভাগ কাজ — mail sync, backup, index বানানো — তাড়ার কিছু না। সব কাজ বড় core-এ চালালে battery অকারণে শেষ হয়।</p>
   <p>তাই আজকের অনেক chip-এ দুই রকম core থাকে: <strong>performance core</strong> (P-core — বড়, দ্রুত, বেশি বিদ্যুৎ খায়) আর <strong>efficiency core</strong> (E-core — ছোট, ধীর, খুব কম বিদ্যুৎ)। Apple Silicon, Intel-এর নতুন chip, আর phone-এর ARM chip — সবাই এই পথে। কোন কাজ কোন core-এ যাবে, সেটা ঠিক করে OS-এর scheduler (Chapter 15)।</p>
-  <div class="codewrap"><pre><code>sysctl hw.perflevel0.name hw.perflevel0.physicalcpu hw.perflevel1.name hw.perflevel1.physicalcpu</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>sysctl hw.perflevel0.name hw.perflevel0.physicalcpu hw.perflevel1.name hw.perflevel1.physicalcpu</code></pre></div>
   <p>আমার Mac-এ: <code>Performance 8</code>, <code>Efficiency 4</code>। দুই দলের cache-ও আলাদা মাপের: P-core-এর L1 data cache ১২৮ KB, E-core-এর ৬৪ KB; P-core-দের ভাগ করা L2 ১৬ MB, E-core-দের ৪ MB। macOS-এ একটা command দিয়ে কোনো process-কে "background" চিহ্ন দেওয়া যায় — তখন সে E-core-এ চলে। একই <code>clock.js</code> দুইভাবে চালাও:</p>
-  <div class="codewrap"><pre><code>time node clock.js                  # সাধারণ — P-core-এ
+  <div class="codewrap"><pre class="cmd"><code>time node clock.js                  # সাধারণ — P-core-এ
 time taskpolicy -b node clock.js    # background — E-core-এ</code></pre></div>
   <p>আমার Mac-এ প্রথমটা <code>0.225 ns per step</code>, মোট <code>0.245 total</code>; দ্বিতীয়টা <code>2.046 ns per step</code>, মোট <code>2.166 total</code>। একই code, একই machine — প্রায় নয় গুণ ধীর, কারণ কাজটা ছোট core-এ গেছে, যে কম clock-এ আর কম শক্তিতে চলে। (Linux-এ hybrid Intel chip থাকলে <code>lscpu -e</code>-তে দেখবে বিভিন্ন CPU-র <code>MAXMHZ</code> আলাদা।) Benchmark চালানোর সময় এটা মনে রেখো: তোমার কাজ কোন core-এ পড়ল, তার উপর ফল বদলে যেতে পারে।</p>
 

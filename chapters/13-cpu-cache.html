@@ -6,7 +6,7 @@
 
   <h3>এক স্তর না, কয়েক স্তর কেন</h3>
   <p>একটা বিশাল দ্রুত cache বানালেই তো হতো? হয় না, কারণ physics। SRAM যত বড়, তার ভেতরে খুঁজতে তত বেশি circuit পেরোতে হয়, তারও লম্বা হয় — আর signal-এর যাতায়াতে সময় লাগে। বড় cache তাই অনিবার্যভাবে ধীর, আর বেশি জায়গা ও বিদ্যুৎ খায়। সমাধান হলো সিঁড়ি: core-এর একদম পাশে খুব ছোট আর খুব দ্রুত স্তর, তার পেছনে একটু বড় আর একটু ধীর, তার পেছনে আরও বড়। প্রতিটা স্তর আগের স্তরের বেশিরভাগ miss ধরে ফেলে, তাই RAM পর্যন্ত যেতে হয় কম।</p>
-  <div class="codewrap"><pre><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize hw.perflevel1.l1dcachesize hw.perflevel1.l2cachesize   # macOS
+  <div class="codewrap"><pre class="cmd"><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize hw.perflevel1.l1dcachesize hw.perflevel1.l2cachesize   # macOS
 lscpu --caches                                                                                                     # Linux</code></pre></div>
   <p>আমার M4 Pro-তে: প্রতিটা performance core-এর নিজস্ব L1 data cache ১২৮ KB (efficiency core-এর ৬৪ KB); আটটা performance core মিলে একটা ১৬ MB-র L2 ভাগ করে (চারটা efficiency core-এর নিজেদের ৪ MB)। তার পেছনে পুরো chip-এর একটা SLC (system level cache) — Apple যার মাপ প্রকাশ করে না — তারপর RAM। Intel/AMD-এ সাধারণত L1 আর L2 core-প্রতি, আর সবার ভাগের একটা বড় L3।</p>
 
@@ -14,7 +14,7 @@ lscpu --caches                                                                  
   <p>Chapter 7-এর pointer chase মনে করো — এলোমেলো একটা শিকল, যেখানে প্রতিটা ধাপ আগের ফলাফলের উপর নির্ভর করে, তাই প্রতিটা access-এর পুরো দেরি মাপা যায়। এবার শিকলের মাপ ছোট থেকে বড় করতে থাকো। যতক্ষণ পুরো শিকলটা কোনো একটা স্তরে আঁটে, access-এর দাম সেই স্তরের দাম; আঁটা বন্ধ হলেই দাম লাফিয়ে পরের স্তরে।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — staircase.js (কয়েক মিনিট লাগে)</div>
-    <div class="codewrap"><pre><code>function chase(bytes, steps) {
+    <div class="codewrap"><pre class="lang-js"><code>function chase(bytes, steps) {
   const n = bytes / 4;
   const next = new Int32Array(n), order = new Int32Array(n);
   for (let i = 0; i &lt; n; i++) order[i] = i;
@@ -145,7 +145,7 @@ for (const kb of sizesKB) console.log(kb, 'KB', chase(kb * 1024, 20_000_000).toF
   <p>একই data, একই হিসাব, শুধু পড়ার ক্রম বদলে দেখো locality কতটা গুরুত্বপূর্ণ। একটা বড় 2D grid memory-তে থাকে সারির পর সারি পাশাপাশি — <code>[row][col]</code> আসলে <code>grid[row * N + col]</code>:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — grid2d.js</div>
-    <div class="codewrap"><pre><code>const N = 4096;                                   // 4096 × 4096 টা সংখ্যা = 128 MB
+    <div class="codewrap"><pre class="lang-js"><code>const N = 4096;                                   // 4096 × 4096 টা সংখ্যা = 128 MB
 const grid = new Float64Array(N * N).fill(1);     // সারির পর সারি, পাশাপাশি রাখা: [row][col] = grid[row * N + col]
 
 function byRows() {                               // এক সারি শেষ করে পরের সারি
@@ -180,7 +180,7 @@ for (const [label, fn] of [['row by row      ', byRows], ['column by column', by
   <div class="box lab">
     <div class="box-title">EXPERIMENT — falseshare.js</div>
     <p>Node-এর <code>worker_threads</code> আলাদা thread-এ JS চালায় (Chapter 16); <code>SharedArrayBuffer</code> এমন memory যেটা সব worker একসাথে দেখে; <code>Atomics.add</code> একটা মান নিরাপদে বাড়ায়, যাতে একসাথে দুইজন বাড়ালেও কিছু হারায় না (Chapter 18)। চারটা worker, প্রত্যেকে <em>শুধু নিজের</em> counter ২ কোটি বার বাড়ায়:</p>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData } = require('worker_threads');
 const THREADS = 4, N = 20_000_000;
 
 if (isMainThread) {

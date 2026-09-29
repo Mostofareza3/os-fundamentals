@@ -11,7 +11,7 @@
     <li><strong>I/O-bound</strong> — সময় যাচ্ছে অপেক্ষায়: database query, HTTP call, disk। Process বেশিরভাগ সময় blocked, CPU অলস।</li>
   </ul>
   <p>কোনটা, সেটা আন্দাজ না করে মাপো — Chapter 1-এর <code>time</code> দিয়েই। মোট সময় (<code>real</code> বা <code>total</code>) আর CPU-র সময়ের (<code>user</code> + <code>system</code>) তুলনা করো:</p>
-  <div class="codewrap"><pre><code># ১) হিসাবের কাজ
+  <div class="codewrap"><pre class="cmd"><code># ১) হিসাবের কাজ
 time node -e "let s = 0; for (let i = 0; i &lt; 2e9; i++) s += i % 7;"
 
 # ২) অপেক্ষার কাজ — ৫০টা 'database query', প্রতিটা ৪০ ms (setTimeout দিয়ে নকল করা)
@@ -19,7 +19,7 @@ time node -e "
 const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
 (async () =&gt; { for (let i = 0; i &lt; 50; i++) await sleep(40); })();"</code></pre></div>
   <p>আমার Mac-এ:</p>
-  <div class="codewrap"><pre><code>5.42s user 0.11s system 96% cpu 5.711 total
+  <div class="codewrap"><pre class="out"><code>5.42s user 0.11s system 96% cpu 5.711 total
 0.02s user 0.01s system 1% cpu 2.070 total</code></pre></div>
   <p>প্রথমটায় CPU-র সময় প্রায় মোট সময়ের সমান (<code>96% cpu</code>) — CPU-bound। দ্বিতীয়টায় দুই সেকেন্ডের মধ্যে CPU খেটেছে ৩০ ms (<code>1% cpu</code>) — বাকি পুরো সময় অপেক্ষা। বেশিরভাগ web backend দ্বিতীয় দলের: একটা request-এর জীবনের সিংহভাগ কাটে database আর অন্য service-এর উত্তরের অপেক্ষায়। Production-এ একই প্রশ্ন করো উল্টো দিক থেকে: server ধীর, কিন্তু <code>top</code>-এ তার CPU কত? ১০০%-এর কাছে হলে CPU-bound; ১০%-এ পড়ে থাকলে সমস্যা অপেক্ষায় — আরও thread সেটা সারাবে না।</p>
 
@@ -27,7 +27,7 @@ const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
   <p>পুরনো ধাঁচের server-এর নকশা ছিল "প্রতিটা connection-এর জন্য একটা thread" — thread-টা query পাঠিয়ে blocked হয়ে বসে থাকে, উত্তর এলে জাগে। দশ হাজার connection মানে দশ হাজার thread, যাদের প্রায় সবাই ঘুমিয়ে, অথচ প্রত্যেকে নিজের stack-এর জায়গা আটকে রাখে, আর প্রত্যেকের জাগা-ঘুমানোয় context switch (Chapter 17)। Thread-এর স্ট্যাকের দামটা মাপো:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — ১০০০টা ঘুমন্ত thread</div>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c 'apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq python3 &gt;/dev/null 2&gt;&amp;1; python3 -c "
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim bash -c 'apt-get update -qq &gt;/dev/null 2&gt;&amp;1 &amp;&amp; apt-get install -y -qq python3 &gt;/dev/null 2&gt;&amp;1; python3 -c "
 import threading, re
 def vm():
     s = open(\"/proc/self/status\").read()
@@ -39,7 +39,7 @@ for t in ts: t.start()
 print(\"1000 idle threads:\", vm(), \"MB\")
 ev.set()"; ulimit -s'</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>before: {'VmSize': 13, 'VmRSS': 7} MB
+    <div class="codewrap"><pre class="out"><code>before: {'VmSize': 13, 'VmRSS': 7} MB
 1000 idle threads: {'VmSize': 14174, 'VmRSS': 27} MB
 8192</code></pre></div>
   </div>
@@ -50,7 +50,7 @@ ev.set()"; ulimit -s'</code></pre></div>
   <p>Event loop-এর একটা দুর্বলতা আছে: সব JS এক thread-এ, তাই একটা ভারী হিসাব চলার সময় আর কিছুই চলে না — অন্য সব request-এর callback লাইনে দাঁড়িয়ে থাকে। নিচের server-এ দুইটা route: <code>/hash</code> একটা ভারী password hash বানায়, <code>/ping</code> সঙ্গে সঙ্গে উত্তর দেয়। Server আলাদা process-এ চলে (যাতে মাপার code-ও আটকে না যায়); <code>/hash</code> শুরু হওয়ার ৫০ ms পরে <code>/ping</code> পাঠিয়ে দেখি উত্তর আসতে কত লাগে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — server.js</div>
-    <div class="codewrap"><pre><code>// একটা server: /hash ভারী CPU-র কাজ, /ping হালকা।
+    <div class="codewrap"><pre class="lang-js"><code>// একটা server: /hash ভারী CPU-র কাজ, /ping হালকা।
 // প্রশ্ন: /hash চলার সময় /ping কত দ্রুত উত্তর পায়?
 const http = require('http');
 const crypto = require('crypto');
@@ -84,7 +84,7 @@ if (process.argv[2] === 'serve') {                           // ---- server proc
   });
 }</code></pre></div>
     <p><code>node server.js sync</code> আর <code>node server.js async</code> — আমার Mac-এ:</p>
-    <div class="codewrap"><pre><code>sync : /ping answered in  432 ms
+    <div class="codewrap"><pre class="out"><code>sync : /ping answered in  432 ms
 async: /ping answered in    3 ms</code></pre></div>
   </div>
   <p>একই কাজ, একই server। <code>pbkdf2Sync</code> main thread-এ চলায় ওই পুরো সময় server কানে তুলো দিয়ে বসে ছিল — সবচেয়ে হালকা request-ও ৪৩২ ms অপেক্ষা করল। <code>pbkdf2</code>-এর async version কাজটা Node-এর thread pool-এর একটা thread-এ পাঠিয়ে দেয়; main thread মুক্ত, <code>/ping</code> ৩ ms-এ। একশো user-এর server-এ প্রথমটার মানে: একজনের login বাকি নিরানব্বই জনকে আটকে দেয়।</p>
@@ -94,7 +94,7 @@ async: /ping answered in    3 ms</code></pre></div>
   <p>Chapter 16-এ দেখেছিলে প্রথম <code>fs.readFile</code>-এর পরে চারটা <code>libuv-worker</code> thread হাজির হয়। Node-এর যেসব async কাজের পেছনে OS-এর কোনো "উত্তর এলে জানাও" ব্যবস্থা নেই — file system-এর কাজ, <code>dns.lookup</code>, <code>crypto</code>-র ভারী function, <code>zlib</code> — সেগুলো এই pool-এ blocking ভাবে চলে, আর শেষ হলে main thread-কে খবর দেয়। Pool-এর default মাপ ৪। পাঁচ নম্বর কাজকে তাহলে কী করতে হয়?</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — pool.js</div>
-    <div class="codewrap"><pre><code>const crypto = require('crypto');
+    <div class="codewrap"><pre class="lang-js"><code>const crypto = require('crypto');
 const t = performance.now();
 for (let i = 1; i &lt;= 8; i++) {                     // একসাথে ৮টা ভারী hash
   crypto.pbkdf2('secret', 'salt', 500_000, 64, 'sha512', () =&gt; {

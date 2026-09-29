@@ -13,7 +13,7 @@
   <p>Network socket-এর বেলায় এর একটা পরিচিত সমাধান আছে (Chapter 28–29-এ বিস্তারিত): fd-কে <strong>non-blocking</strong> করে দাও — data না থাকলে <code>read()</code> না ঘুমিয়ে সাথে সাথে <code>EAGAIN</code> ("এখন নেই, পরে এসো") error দিয়ে ফেরে। তারপর kernel-কে বলো "এই fd-তে data এলে আমাকে জাগিও" — Linux-এ এই ব্যবস্থার নাম <strong>epoll</strong>। Regular file-এ কি একই কৌশল চলে?</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — nonblock.py</div>
-    <div class="codewrap"><pre><code># nonblock.py (Linux) — pipe বনাম regular file, দুইটাই non-blocking
+    <div class="codewrap"><pre class="lang-py"><code># nonblock.py (Linux) — pipe বনাম regular file, দুইটাই non-blocking
 import os, select
 
 r, w = os.pipe()                       # pipe: এক পাশে লেখা, অন্য পাশে পড়া
@@ -33,8 +33,8 @@ try:
     ep.register(fd, select.EPOLLIN)
 except PermissionError as e:
     print('epoll + file:', e)</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/nonblock.py</code></pre></div>
-    <div class="codewrap"><pre><code>pipe read : [Errno 11] Resource temporarily unavailable
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/nonblock.py</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>pipe read : [Errno 11] Resource temporarily unavailable
 file read : b'43c8a9a3675b\n'
 epoll + pipe: registered
 epoll + file: [Errno 1] Operation not permitted</code></pre></div>
@@ -103,7 +103,7 @@ epoll + file: [Errno 1] Operation not permitted</code></pre></div>
   <p>প্রতিটার দাম মাপি। একই কাজ — ৫০০টা ১০০-byte-এর লাইন লেখা — ছয় রকমভাবে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — durability.js (macOS আর Linux)</div>
-    <div class="codewrap"><pre><code>// durability.js — 500টা 100-byte লেখা, durability-র আলাদা আলাদা দামে
+    <div class="codewrap"><pre class="lang-js"><code>// durability.js — 500টা 100-byte লেখা, durability-র আলাদা আলাদা দামে
 const fs = require('fs');
 const { O_WRONLY, O_CREAT, O_TRUNC, O_SYNC, O_DSYNC } = fs.constants;
 const line = 'x'.repeat(99) + '\n';
@@ -124,7 +124,7 @@ bench('fdatasync every write', 0, fd =&gt; fs.fdatasyncSync(fd));
 bench('fsync every write', 0, fd =&gt; fs.fsyncSync(fd));
 bench('fsync every 100 writes', 0, (fd, i) =&gt; { if (i % 100 === 99) fs.fsyncSync(fd); });
 fs.unlinkSync('d.log');</code></pre></div>
-    <div class="codewrap"><pre><code>node durability.js                                                               # macOS
+    <div class="codewrap"><pre class="cmd"><code>node durability.js                                                               # macOS
 docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim node /w/durability.js   # Linux</code></pre></div>
     <div class="table-wrap"><table>
       <tr><th>প্রতিটা write-এর দাম</th><th>macOS (Mac-এর SSD)</th><th>Linux (Docker VM-এর virtual disk)</th></tr>
@@ -148,7 +148,7 @@ docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim node /w/durabilit
   <p>বিনিময়ে কড়া শর্ত: device block ধরে কাজ করে, আর মাঝে page cache নেই যে টুকরো জুড়ে দেবে। তাই লেখার মাপ, file-এর মধ্যে অবস্থান, এমনকি তোমার buffer RAM-এর যে ঠিকানায় শুরু হয় — সবকিছু block-এর মাপের গুণিতক হতে হয় (এই disk-এ ৫১২ byte)। Node-এ buffer কোন ঠিকানায় বসবে সেটা ঠিক করার উপায় নেই, তাই একটা বড় buffer-এর ভেতরে শুরুর জায়গা ১৬ byte করে সরিয়ে সরিয়ে চেষ্টা করি:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — direct.js</div>
-    <div class="codewrap"><pre><code>// direct.js (Linux) — O_DIRECT-এর শর্ত: size আর memory-র ঠিকানা, দুটোই সাজানো
+    <div class="codewrap"><pre class="lang-js"><code>// direct.js (Linux) — O_DIRECT-এর শর্ত: size আর memory-র ঠিকানা, দুটোই সাজানো
 const fs = require('fs');
 const { O_WRONLY, O_CREAT, O_TRUNC, O_DIRECT } = fs.constants;
 const fd = fs.openSync('direct.bin', O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT);
@@ -162,8 +162,8 @@ for (let off = 0; off &lt; 4096; off += 16)
   if (tryWrite(big.subarray(off, off + 4096)) === 'ok') ok.push(off);
 console.log('4096 bytes, ok at   :', ok.join(', '));
 fs.closeSync(fd);</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim sh -c 'node /w/direct.js; fincore direct.bin'</code></pre></div>
-    <div class="codewrap"><pre><code>100 bytes           : EINVAL
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /root node:22-bookworm-slim sh -c 'node /w/direct.js; fincore direct.bin'</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>100 bytes           : EINVAL
 4096 bytes, ok at   : 496, 1008, 1520, 2032, 2544, 3056, 3568, 4080
 RES PAGES SIZE FILE
  0B     0   4K direct.bin</code></pre></div>

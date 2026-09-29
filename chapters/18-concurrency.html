@@ -6,7 +6,7 @@
 
   <h3>Concurrency বনাম parallelism</h3>
   <p>দুইটা শব্দ প্রায়ই গুলিয়ে যায়, অথচ সমস্যা আর সমাধান দুইটার আলাদা। <strong>Concurrency</strong> মানে একাধিক কাজ একই সময়-পরিসরে এগোচ্ছে — একটা core-এও সম্ভব, পালা করে (Chapter 15-এর scheduling timeline)। এটা কাজ <em>সাজানোর</em> ব্যাপার। <strong>Parallelism</strong> মানে একাধিক কাজ আক্ষরিক অর্থে একই মুহূর্তে চলছে — একাধিক core লাগবেই। এটা কাজ <em>চালানোর</em> ব্যাপার। একজন waiter দশটা টেবিল সামলাচ্ছে: concurrency। দশজন waiter: parallelism। এর বাস্তব রূপ তোমার Node-এই:</p>
-  <div class="codewrap"><pre><code>node -e "
+  <div class="codewrap"><pre class="cmd"><code>node -e "
 const t = performance.now();
 Promise.all(Array.from({ length: 1000 }, () =&gt; new Promise(r =&gt; setTimeout(r, 100))))
   .then(() =&gt; console.log('1000 waits of 100 ms each, one thread:', (performance.now() - t).toFixed(0), 'ms'));"</code></pre></div>
@@ -52,7 +52,7 @@ Promise.all(Array.from({ length: 1000 }, () =&gt; new Promise(r =&gt; setTimeout
   <div class="box lab">
     <div class="box-title">EXPERIMENT — race.js</div>
     <p>চারটা worker, প্রত্যেকে একই shared counter ১০ লাখবার বাড়ায় — তিনভাবে: সাধারণ <code>++</code>, <code>Atomics.add</code>, আর একটা নিজের বানানো lock দিয়ে (দুইটাই নিচের section-এ):</p>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData } = require('worker_threads');
 const WORKERS = 4, N = 1_000_000;
 
 // একটা খুব সরল lock: 0 = খোলা, 1 = কেউ ধরে আছে
@@ -86,7 +86,7 @@ if (isMainThread) {
   }
 }</code></pre></div>
     <p>আমার Mac-এ:</p>
-    <div class="codewrap"><pre><code>plain  counter = 1103127  (expected 4000000)  19 ms
+    <div class="codewrap"><pre class="out"><code>plain  counter = 1103127  (expected 4000000)  19 ms
 atomic counter = 4000000  (expected 4000000)  117 ms
 lock   counter = 4000000  (expected 4000000)  426 ms</code></pre></div>
   </div>
@@ -104,7 +104,7 @@ lock   counter = 4000000  (expected 4000000)  426 ms</code></pre></div>
   <p>একাধিক lock এলে নতুন বিপদ। Thread 1 lock A ধরে আছে আর lock B চায়; ঠিক তখন Thread 2 lock B ধরে আছে আর lock A চায়। কেউ নিজেরটা ছাড়বে না যতক্ষণ না অন্যেরটা পায় — দুজনেই চিরকাল ঘুমিয়ে। এর নাম <strong>deadlock</strong>।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — deadlock.js</div>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData } = require('worker_threads');
 
 function lock(m)   { while (Atomics.compareExchange(m, 0, 0, 1) !== 0) Atomics.wait(m, 0, 1); }
 function unlock(m) { Atomics.store(m, 0, 0); Atomics.notify(m, 0, 1); }
@@ -131,7 +131,7 @@ if (isMainThread) {
   unlock(second); unlock(first);
 }</code></pre></div>
     <p><code>node deadlock.js opposite</code> (T1 নেয় A তারপর B, T2 নেয় B তারপর A):</p>
-    <div class="codewrap"><pre><code>T1 holds its first lock
+    <div class="codewrap"><pre class="out"><code>T1 holds its first lock
 T2 holds its first lock
 DEADLOCK: after 2 s nobody has finished</code></pre></div>
     <p><code>node deadlock.js same</code> (দুজনেই আগে A, তারপর B): চারটা "holds/got" লাইন, তারপর <code>both finished</code>।</p>
@@ -175,7 +175,7 @@ DEADLOCK: after 2 s nobody has finished</code></pre></div>
   <p>কখনো "এক সময়ে একজন" না, দরকার "এক সময়ে সর্বোচ্চ N জন" — ধরো database-এর মাত্র ৩টা connection, অথচ একসাথে ১০টা request এসেছে। চতুর্থ request-কে কেউ একজন connection ফেরত না দেওয়া পর্যন্ত অপেক্ষা করতে হবে। এর হাতিয়ার <strong>semaphore</strong>: একটা counter-ওয়ালা lock — ঢোকার সময় counter এক কমাও (শূন্য হলে অপেক্ষা), বেরোনোর সময় এক বাড়াও। Mutex আসলে N = ১-এর semaphore। একই ধারণা async JS-এও কাজে লাগে — একসাথে কয়টা query বা HTTP call চলবে, সেটা বাঁধতে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — semaphore.js</div>
-    <div class="codewrap"><pre><code>// Semaphore: একসাথে সর্বোচ্চ N জন ঢুকতে পারবে — যেমন DB connection pool
+    <div class="codewrap"><pre class="lang-js"><code>// Semaphore: একসাথে সর্বোচ্চ N জন ঢুকতে পারবে — যেমন DB connection pool
 function semaphore(n) {
   const waiting = [];
   return {
@@ -206,7 +206,7 @@ async function query(i) {
   <p>ওপরের <code>counter++</code>-এর মতো memory-র স্তরের race তোমার সাধারণ Node code-এ হয় না, কারণ তোমার সব JS একটা thread-এ চলে — এক function চলার মাঝখানে আরেকটা ঢুকতে পারে না। কিন্তু একটা জায়গায় ঢুকতে পারে: <code>await</code>। প্রতিটা <code>await</code>-এ তোমার function থেমে যায়, আর event loop তখন অন্য request-এর code চালায়। পড়া আর লেখার মাঝখানে যদি একটা <code>await</code> থাকে, সেটাই ঠিক ওপরের LOAD আর STORE-এর মাঝের ফাঁক:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — withdraw.js</div>
-    <div class="codewrap"><pre><code>// একটা নকল database: পড়া আর লেখায় কিছুটা সময় লাগে (network-এর মতো)
+    <div class="codewrap"><pre class="lang-js"><code>// একটা নকল database: পড়া আর লেখায় কিছুটা সময় লাগে (network-এর মতো)
 const db = { balance: 1000 };
 const sleep = ms =&gt; new Promise(r =&gt; setTimeout(r, ms));
 async function getBalance()     { await sleep(10); return db.balance; }
@@ -226,7 +226,7 @@ async function withdraw(amount) {
   </div>
   <p>১০০০ টাকার account থেকে দুইবার ৭০০ তোলা হলো, আর balance দাঁড়াল ৩০০ — ব্যাংক ৭০০ টাকা হারাল। দুইটা request-ই প্রথম <code>await</code>-এ ১০০০ দেখেছে, দুটোই যাচাই পেরিয়েছে, দুটোই ৩০০ লিখেছে। Thread নেই, shared memory-র কারসাজি নেই — তবু হুবহু ওপরের lost update। Race-এর আসল কারণ thread না; কারণ <strong>ভাগাভাগি করা data-র উপর ভাঙা যায় এমন পড়ো-বদলাও-লেখো</strong>।</p>
   <p>সমাধানও একই পরিবারের। এক process-এর ভেতরে একটা async lock দিয়ে কাজ গুলোকে লাইনে দাঁড় করানো যায় — একই code, শুধু <code>withdraw</code>-কে এর ভেতরে মুড়ে:</p>
-  <div class="codewrap"><pre><code>let tail = Promise.resolve();
+  <div class="codewrap"><pre class="lang-js"><code>let tail = Promise.resolve();
 function withLock(fn) {
   const run = tail.then(fn);
   tail = run.catch(() =&gt; {});                // আগেরটা fail করলেও লাইন চলতে থাকুক

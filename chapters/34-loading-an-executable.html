@@ -9,7 +9,7 @@
   <p>উত্তর file-এর প্রথম লাইনে: <code>head -1 $(which npx)</code> চালালে দেখবে <code>#!/usr/bin/env node</code>। <code>#!</code> দিয়ে শুরু হওয়া এই লাইনের নাম <strong>shebang</strong>। <code>execve</code> file খুলে প্রথম দুই byte-এ <code>#!</code> পেলে kernel file-টা নিজে চালায় না। বরং লাইনের বাকিটা পড়ে সেই program চালায়, আর তোমার file-এর path argument হিসেবে দিয়ে দেয়। তিন রকম file দিয়ে দেখা যাক: ঠিক shebang, shebang নেই, আর Windows-এ লেখা file (লাইনের শেষে <code>\r\n</code>):</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — shebang.sh</div>
-    <div class="codewrap"><pre><code># shebang.sh
+    <div class="codewrap"><pre class="lang-sh"><code># shebang.sh
 printf '#!/usr/bin/env node\nconsole.log("hi from", process.argv.slice(0, 2));\n' &gt; hi.js
 printf 'console.log("no shebang here")\n' &gt; plain.js
 printf '#!/usr/bin/env node\r\nconsole.log("windows line endings")\r\n' &gt; crlf.js
@@ -21,10 +21,10 @@ echo "--- strace ./hi.js"
 strace -f -e trace=execve ./hi.js 2&gt;&amp;1 | grep -E "execve|hi from"
 echo "--- strace ./plain.js"
 strace -e trace=execve ./plain.js 2&gt;&amp;1 | head -2</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null
   bash shebang.sh'</code></pre></div>
-    <div class="codewrap"><pre><code>--- ./hi.js
+    <div class="codewrap"><pre class="out"><code>--- ./hi.js
 hi from [ '/usr/local/bin/node', '/w/hi.js' ]
 --- ./plain.js
 ./plain.js: line 1: syntax error near unexpected token `"no shebang here"'
@@ -108,20 +108,20 @@ strace: exec: Exec format error</code></pre></div>
 
   <h3>Interpreter নেই: Alpine-এর "not found"</h3>
   <p>Chapter 4-এ দেখেছি dynamically linked ELF-এর header-এ একটা path লেখা থাকে: "আমাকে চালাতে এই dynamic linker লাগবে" (<code>PT_INTERP</code>, <code>readelf</code>-এ "program interpreter")। এই path-টা libc-র সাথে বাঁধা। Debian, Ubuntu, Fedora-র মতো বেশিরভাগ Linux ব্যবহার করে <strong>glibc</strong> (GNU-র C library), যার dynamic linker <code>/lib/ld-linux-aarch64.so.1</code> (Intel/AMD-এ <code>ld-linux-x86-64.so.2</code>)। ছোট Docker image-এর জন্য জনপ্রিয় <strong>Alpine</strong> ব্যবহার করে <strong>musl</strong>, আরেকটা C library, যার dynamic linker অন্য নামের। Debian-এ build করা একটা program Alpine-এ নিয়ে যাও:</p>
-  <div class="codewrap"><pre><code># Debian-এ (glibc) build
+  <div class="codewrap"><pre class="cmd"><code># Debian-এ (glibc) build
 docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq gcc libc6-dev &gt;/dev/null
   gcc hello.c -o hello-glibc &amp;&amp; ./hello-glibc'
 # Alpine-এ (musl) চালানো
 docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-alpine sh alpine.sh</code></pre></div>
-  <div class="codewrap"><pre><code># alpine.sh — Debian-এ (glibc) বানানো binary Alpine-এ (musl)
+  <div class="codewrap"><pre class="lang-sh"><code># alpine.sh — Debian-এ (glibc) বানানো binary Alpine-এ (musl)
 ls -l hello-glibc | awk '{print $1, $5, $9}'
 ./hello-glibc; echo "exit $?"
 apk add -q file strace
 file hello-glibc | grep -o "interpreter [^,]*"
 ls /lib/ld-*
 strace -e trace=execve ./hello-glibc 2&gt;&amp;1 | head -1</code></pre></div>
-  <div class="codewrap"><pre><code>-rwxr-xr-x 70448 hello-glibc
+  <div class="codewrap"><pre class="out"><code>-rwxr-xr-x 70448 hello-glibc
 alpine.sh: line 3: ./hello-glibc: not found
 exit 127
 interpreter /lib/ld-linux-aarch64.so.1
@@ -129,7 +129,7 @@ interpreter /lib/ld-linux-aarch64.so.1
 execve("./hello-glibc", ["./hello-glibc"], 0xffffef15ffd0 /* 7 vars */) = -1 ENOENT (No such file or directory)</code></pre></div>
   <p>প্রথম লাইনে file-টা আছে, executable-ও (<code>x</code>)। অথচ চালাতে গেলে "not found"। Debugging-এ এটা সবচেয়ে বিভ্রান্তিকর error-গুলোর একটা, কারণ যে file "পাওয়া যাচ্ছে না" বলছে, সেটা তোমার file না। Header চায় <code>/lib/ld-linux-aarch64.so.1</code>, আর Alpine-এ আছে শুধু <code>/lib/ld-musl-aarch64.so.1</code>। Kernel interpreter খুলতে গিয়ে পায়নি, তাই পুরো <code>execve</code> ENOENT দিয়ে ফেরত এসেছে, আর shell সেটাকে "not found" বলে দেখিয়েছে।</p>
   <p>Node-এর native addon-এ (Chapter 33) ব্যাপারটা আরও গোলমেলে হতে পারে। নিচের addon C-র <code>snprintf</code> দিয়ে একটা string বানায়। অনেক build-এ default থাকা একটা নিরাপত্তা option (<code>_FORTIFY_SOURCE</code>) glibc-তে <code>snprintf</code>-কে বদলে দেয় তার সীমা-যাচাই করা রূপ <code>__snprintf_chk</code>-এ, আর এই function musl-এ নেই:</p>
-  <div class="codewrap"><pre><code>// label.c — label(n) → "item-&lt;n&gt;" (C-র snprintf দিয়ে string বানানো)
+  <div class="codewrap"><pre class="lang-c"><code>// label.c — label(n) → "item-&lt;n&gt;" (C-র snprintf দিয়ে string বানানো)
 #include &lt;node_api.h&gt;
 #include &lt;stdio.h&gt;
 
@@ -151,7 +151,7 @@ NAPI_MODULE_INIT() {
     napi_set_named_property(env, exports, "label", fn);
     return exports;
 }</code></pre></div>
-  <div class="codewrap"><pre><code># Debian-এ build আর চালানো
+  <div class="codewrap"><pre class="cmd"><code># Debian-এ build আর চালানো
 docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq gcc libc6-dev &gt;/dev/null
   gcc -O2 -D_FORTIFY_SOURCE=2 -shared -fPIC -I/usr/local/include/node label.c -o label.node
@@ -161,7 +161,7 @@ docker run --rm -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
 docker run --rm -v "$PWD":/w -w /w node:22-alpine sh -c '
   node -e "const m = require(\"./label.node\"); console.log(\"loaded fine\"); console.log(m.label(7))"
   echo "exit $?"'</code></pre></div>
-  <div class="codewrap"><pre><code>                 U __snprintf_chk@GLIBC_2.17
+  <div class="codewrap"><pre class="out"><code>                 U __snprintf_chk@GLIBC_2.17
 item-7
 
 loaded fine
@@ -172,7 +172,7 @@ exit 139</code></pre></div>
 
   <h3>Load মানে copy না: node-এর ১১৭ MB-এর কতটা RAM-এ আসে</h3>
   <p>Chapter 4-এ এক লাইনে বলেছিলাম: <code>execve</code> file-এর segment "map" করে, copy করে না। CPU যে page প্রথম ছোঁয়, page fault হয়ে সেটুকু আসে (Chapter 9)। এর নাম <strong>demand paging</strong>। এবার মেপে দেখা যাক, node binary-র কতটা শেষ পর্যন্ত আসে, আর page cache-এ (Chapter 23) না থাকলে কী হয়। <code>/proc/self/smaps</code> প্রতিটা mapping-এর Size (address space-এ কত বড়) আর Rss (এর মধ্যে কতটা এখন RAM-এ) দেয়:</p>
-  <div class="codewrap"><pre><code>// lazy.js — node binary-র কতটা আসলে RAM-এ এল?
+  <div class="codewrap"><pre class="lang-js"><code>// lazy.js — node binary-র কতটা আসলে RAM-এ এল?
 const fs = require('fs');
 const exe = fs.realpathSync(process.execPath);
 let size = 0, rss = 0, mine = false;
@@ -186,13 +186,13 @@ console.log(`node on disk: ${(fs.statSync(exe).size / 2 ** 20).toFixed(0)} MB, `
             `mapped: ${(size / 1024).toFixed(0)} MB, actually in RAM: ${(rss / 1024).toFixed(0)} MB`);
 console.log(`page faults so far: ${ru.minorPageFault} minor, ${ru.majorPageFault} major; ` +
             `${performance.now().toFixed(0)} ms since start`);</code></pre></div>
-  <div class="codewrap"><pre><code># cold.sh — একই lazy.js: page cache-এ node থাকলে, আর না থাকলে
+  <div class="codewrap"><pre class="lang-sh"><code># cold.sh — একই lazy.js: page cache-এ node থাকলে, আর না থাকলে
 node lazy.js &gt; /dev/null                                   # file-টা page cache-এ আনা
 echo "warm:"; node lazy.js
 dd if=/usr/local/bin/node iflag=nocache count=0 status=none  # node-এর page গুলো cache থেকে সরাও
 echo "cold:"; node lazy.js</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash cold.sh</code></pre></div>
-  <div class="codewrap"><pre><code>warm:
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash cold.sh</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>warm:
 node on disk: 117 MB, mapped: 99 MB, actually in RAM: 30 MB
 page faults so far: 2347 minor, 0 major; 11 ms since start
 cold:
@@ -227,14 +227,14 @@ page faults so far: 2169 minor, 303 major; 27 ms since start</code></pre></div>
   <h3>ASLR: প্রতিবার নতুন ঠিকানা</h3>
   <p>ধরো একটা program-এ bug আছে, আর আক্রমণকারী সেটা দিয়ে CPU-কে নিজের পছন্দের কোনো ঠিকানায় লাফ দেওয়াতে পারে। যেমন libc-র <code>system()</code> function-এ, যেটা যেকোনো shell command চালায়। এর জন্য তাকে জানতে হবে <code>system()</code> ঠিক কোন ঠিকানায় আছে। প্রতিবার সব একই ঠিকানায় বসলে এটা জানা সহজ: নিজের machine-এ একবার দেখে নিলেই হলো।</p>
   <p><strong>ASLR</strong> (Address Space Layout Randomization) এই অনুমান ভেঙে দেয়। প্রতিটা <code>execve</code>-তে kernel stack, heap, <code>ld.so</code>, আর libc-র মতো library-কে এলোমেলো ঠিকানায় বসায়। Program নিজেও PIE (position-independent executable) হিসেবে build করা থাকলে, যেমন Chapter 33-এর <code>file</code>-এ দেখা "pie executable", তার code-ও নড়ে। Chapter 4-এর <code>0x754</code>-এর মতো ঠিকানাগুলো তাই আসলে file-এর শুরু থেকে দূরত্ব, চলার সময়ের আসল ঠিকানা না।</p>
-  <div class="codewrap"><pre><code># aslr.sh — একই program তিনবার: libc-র code আর stack কোথায় বসল?
+  <div class="codewrap"><pre class="lang-sh"><code># aslr.sh — একই program তিনবার: libc-র code আর stack কোথায় বসল?
 where() { grep -E "r-xp .*libc\.so|\[stack\]" /proc/self/maps | awk '{print substr($1, 1, 12), $6}' | tr '\n' ' '; echo; }
 cat /proc/sys/kernel/randomize_va_space
 for i in 1 2 3; do where; done
 echo "--- setarch -R: randomization বন্ধ"
 for i in 1 2 3; do setarch -R bash -c "$(declare -f where); where"; done</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm --security-opt seccomp=unconfined -v "$PWD":/w -w /w node:22-bookworm-slim bash aslr.sh</code></pre></div>
-  <div class="codewrap"><pre><code>2
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --security-opt seccomp=unconfined -v "$PWD":/w -w /w node:22-bookworm-slim bash aslr.sh</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>2
 ffff99e00000 /usr/lib/aarch64-linux-gnu/libc.so.6 ffffcfff0000 [stack]
 ffff80670000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffff9c03000 [stack]
 ffff80660000 /usr/lib/aarch64-linux-gnu/libc.so.6 ffffd70c6000 [stack]
@@ -292,10 +292,10 @@ fffff7d60000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffffffdf000 [stack] </code></
 
   <h3>ld.so-র কাজ, আর node চালু হতে সময় কোথায় যায়</h3>
   <p>ELF-এর interpreter পাওয়া গেলে kernel তাকে map করে user mode-এ ফেরে, আর তারপর <code>ld.so</code> চলে। সে কী করে, সেটা <code>LD_DEBUG</code> environment variable দিয়ে glibc-র <code>ld.so</code>-কে জোরে বলতে বলা যায়:</p>
-  <div class="codewrap"><pre><code>docker run --rm node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-bookworm-slim bash -c '
   LD_DEBUG=libs node -e 0 2&gt;&amp;1 | grep -E "find library|calling init"
   LD_DEBUG=statistics node -e 0 2&gt;&amp;1 | grep "number of relocations:"'</code></pre></div>
-  <div class="codewrap"><pre><code>         8:	find library=libdl.so.2 [0]; searching
+  <div class="codewrap"><pre class="out"><code>         8:	find library=libdl.so.2 [0]; searching
          8:	find library=libstdc++.so.6 [0]; searching
          8:	find library=libm.so.6 [0]; searching
          8:	find library=libgcc_s.so.1 [0]; searching
@@ -312,23 +312,23 @@ fffff7d60000 /usr/lib/aarch64-linux-gnu/libc.so.6 fffffffdf000 [stack] </code></
         16:	           final number of relocations: 2482</code></pre></div>
   <p>(<code>8:</code> আর <code>16:</code> হলো দুই চালানোর process-এর PID।) তিন ধাপের কাজ। এক: node-এর header-এর তালিকা ধরে ছয়টা library খুঁজে map করা; <code>LD_DEBUG=libs</code>-এর পুরো output-এ কোন folder-এ খুঁজেছে তাও দেখায়। দুই: শুরুতেই ২৩৬৮টা relocation, মানে Chapter 33-এর ফাঁক ভরাট, এবার চলার সময়; process শেষ হওয়া পর্যন্ত মোট ২৪৮২টা, কারণ কিছু ফাঁক প্রথম ডাকের সময় ভরা হয়। তিন: প্রতিটা library-র init function চালানো, যার উপর যে নির্ভর করে তাকে আগে। তাই সবার আগে libc, সবার শেষে libdl।</p>
   <p>এরপর node-এর <code>main</code>। সেখান থেকে তোমার প্রথম লাইন পর্যন্ত যাওয়ার পথ Node নিজেই মেপে রাখে (<code>performance.nodeTiming</code>, process শুরু থেকে millisecond-এ):</p>
-  <div class="codewrap"><pre><code>// startup.js — node চালু হতে কোন ধাপে কত সময় গেল (process শুরু থেকে ms)
+  <div class="codewrap"><pre class="lang-js"><code>// startup.js — node চালু হতে কোন ধাপে কত সময় গেল (process শুরু থেকে ms)
 const t = performance.nodeTiming;
 console.log(`V8 ready        ${t.v8Start.toFixed(1).padStart(6)} ms`);
 console.log(`Node env ready  ${t.environment.toFixed(1).padStart(6)} ms`);
 console.log(`bootstrap done  ${t.bootstrapComplete.toFixed(1).padStart(6)} ms`);
 console.log(`your code runs  ${performance.now().toFixed(1).padStart(6)} ms`);</code></pre></div>
-  <div class="codewrap"><pre><code>V8 ready           3.0 ms
+  <div class="codewrap"><pre class="out"><code>V8 ready           3.0 ms
 Node env ready     5.6 ms
 bootstrap done     8.2 ms
 your code runs    10.3 ms</code></pre></div>
   <p>(আমার Mac-এ।) V8 engine তৈরি হতে ৩ ms, তারপর Node-এর নিজের JS দিয়ে লেখা ভেতরের অংশ (<code>require</code>, <code>process</code>, stream…) দাঁড় করাতে আরও ৫ ms। এত কম লাগে কারণ Node এই অংশের একটা তৈরি-করা ছবি (V8-এর heap snapshot) binary-র ভেতরেই রেখে দেয়, আর প্রতিবার সেখান থেকে ফুটিয়ে তোলে; শূন্য থেকে বানায় না। তুলনার জন্য Linux container-এ ২০ বার চালু করে গড়:</p>
-  <div class="codewrap"><pre><code># times.sh — ২০ বার চালু করে গড়
+  <div class="codewrap"><pre class="lang-sh"><code># times.sh — ২০ বার চালু করে গড়
 avg() { local s=$(date +%s%N); for i in $(seq 20); do "$@" &gt; /dev/null; done; echo "$(( ($(date +%s%N) - s) / 20000000 )) ms  $*"; }
 avg /bin/true
 avg python3 -c 0
 avg node -e 0</code></pre></div>
-  <div class="codewrap"><pre><code>0 ms  /bin/true
+  <div class="codewrap"><pre class="out"><code>0 ms  /bin/true
 3 ms  python3 -c 0
 10 ms  node -e 0</code></pre></div>
   <p>(Node image-এ python3 নেই; apt দিয়ে বসিয়ে নিয়েছি।) একটা ছোট C program-এর পুরো <code>execve</code> + <code>ld.so</code> + exit এক millisecond-এরও কম। node-এর ১০ ms-এর বেশিরভাগ তাই engine আর runtime দাঁড় করানো, load করা না। তোমার app-এর নিজের <code>require</code> করা dependency-গুলো এর উপরে যোগ হয়। বড় app-এ সেটাই প্রায়ই সবচেয়ে বড় অংশ, তাই startup ধীর লাগলে সেখান থেকেই মাপা শুরু করো।</p>

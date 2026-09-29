@@ -6,7 +6,7 @@
 
   <h3>Blocking: প্রতি connection-এ একজন পাহারাদার</h3>
   <p>Default socket <strong>blocking</strong>: <code>recv()</code>/<code>read()</code> ডাকলে data না আসা পর্যন্ত thread ঘুমায় (Chapter 15-এর Waiting)। এক thread একসাথে একটা connection-এর জন্যই ঘুমাতে পারে, তাই সবচেয়ে সরল নকশা হলো <strong>thread-per-connection</strong>: প্রতিটা নতুন connection-এর জন্য একটা নতুন thread, যে সেই connection-এর <code>recv()</code>-এ বসে থাকে। Code পড়তে খুব সহজ — সবকিছু উপর থেকে নিচে, কোনো callback নেই। Node-এ এভাবে লেখা যায় না, তাই Python-এ:</p>
-  <div class="codewrap"><pre><code># threaded_server.py — প্রতিটা connection-এর জন্য একটা thread, blocking recv
+  <div class="codewrap"><pre class="lang-py"><code># threaded_server.py — প্রতিটা connection-এর জন্য একটা thread, blocking recv
 import socket, threading
 
 def handle(conn):
@@ -27,14 +27,14 @@ while True:
   <p>পাশে একই কাজের Node version: <code>require('net').createServer(c =&gt; c.pipe(c)).listen(9001, '127.0.0.1', 4096);</code> (<code>event_server.js</code>)। দুইটাতেই ১০০০টা করে connection খুলে চুপচাপ বসিয়ে রাখব, তারপর <code>/proc/&lt;pid&gt;/status</code> থেকে thread-এর সংখ্যা আর memory পড়ব:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — ১০০০টা চুপচাপ connection</div>
-    <div class="codewrap"><pre><code>// idle_clients.js — N টা connection খুলে চুপচাপ বসে থাকো
+    <div class="codewrap"><pre class="lang-js"><code>// idle_clients.js — N টা connection খুলে চুপচাপ বসে থাকো
 const net = require('net');
 const [port, n] = process.argv.slice(2).map(Number);
 let open = 0;
 for (let i = 0; i &lt; n; i++)
   net.connect(port, '127.0.0.1', () =&gt; { if (++open === n) console.log(`${n} idle connections to :${port}`); });
 setTimeout(() =&gt; process.exit(0), 3000);</code></pre></div>
-    <div class="codewrap"><pre><code># compare.sh — দুই server-এ ১০০০টা idle connection, তারপর thread আর memory গুনে দেখো
+    <div class="codewrap"><pre class="lang-sh"><code># compare.sh — দুই server-এ ১০০০টা idle connection, তারপর thread আর memory গুনে দেখো
 show() { printf "%-22s threads=%-5s VmRSS=%-9s VmSize=%s\n" "$1" \
   "$(grep Threads /proc/$2/status | awk '{print $2}')" \
   "$(grep VmRSS /proc/$2/status | awk '{printf "%.1f MB", $2/1024}')" \
@@ -47,10 +47,10 @@ node idle_clients.js 9000 1000 &amp; node idle_clients.js 9001 1000 &amp;
 sleep 2
 show "python, 1000 clients" $PY; show "node, 1000 clients" $NJ
 kill $PY $NJ</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq python3 &gt;/dev/null
   bash compare.sh'</code></pre></div>
-    <div class="codewrap"><pre><code>python, 0 clients      threads=1     VmRSS=8.3 MB    VmSize=13.3 MB
+    <div class="codewrap"><pre class="out"><code>python, 0 clients      threads=1     VmRSS=8.3 MB    VmSize=13.3 MB
 node, 0 clients        threads=7     VmRSS=43.6 MB   VmSize=472.6 MB
 python, 1000 clients   threads=1001  VmRSS=31.8 MB   VmSize=14174.7 MB
 node, 1000 clients     threads=7     VmRSS=55.1 MB   VmSize=734.1 MB</code></pre></div>
@@ -61,7 +61,7 @@ node, 1000 clients     threads=7     VmRSS=55.1 MB   VmSize=734.1 MB</code></pre
   <p>চুপচাপ বসে থাকা thread-এর দাম তুলনামূলক কম। দাম ওঠে যখন তারা জাগে: প্রতিটা আসা message মানে একটা thread-কে ঘুম থেকে তোলা আর CPU-তে বসানো — একটা context switch (Chapter 17)। একই ১০০০টা connection-এ এবার ১০ দফা করে সবাই একসাথে ১ byte পাঠাবে আর echo-র অপেক্ষা করবে; burst চলাকালীন server-এর সব thread-এর স্বেচ্ছায় context switch (<code>voluntary_ctxt_switches</code>, Chapter 17) যোগ করব:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — burst আর context switch</div>
-    <div class="codewrap"><pre><code>// burst_clients.js — N টা connection; ১০ দফায় সবাই একসাথে 1 byte পাঠায় আর echo-র অপেক্ষা করে
+    <div class="codewrap"><pre class="lang-js"><code>// burst_clients.js — N টা connection; ১০ দফায় সবাই একসাথে 1 byte পাঠায় আর echo-র অপেক্ষা করে
 const net = require('net');
 const [port, n] = process.argv.slice(2).map(Number);
 const socks = [];
@@ -77,7 +77,7 @@ for (let i = 0; i &lt; n; i++) {
   });
   socks.push(s);
 }</code></pre></div>
-    <div class="codewrap"><pre><code># switches.sh — burst-এর সময় server-এর সব thread-এর স্বেচ্ছায় context switch যোগ করো
+    <div class="codewrap"><pre class="lang-sh"><code># switches.sh — burst-এর সময় server-এর সব thread-এর স্বেচ্ছায় context switch যোগ করো
 cs() { cat /proc/$1/task/*/status | awk '/^voluntary_ctxt_switches/ {s += $2} END {print s}'; }
 python3 threaded_server.py &amp; PY=$!
 node event_server.js &amp; NJ=$!
@@ -90,7 +90,7 @@ for pair in "$PY 9000 python" "$NJ 9001 node"; do
   wait $C
 done
 kill $PY $NJ</code></pre></div>
-    <div class="codewrap"><pre><code>:9000 10 rounds x 1000 echoes in 382 ms
+    <div class="codewrap"><pre class="out"><code>:9000 10 rounds x 1000 echoes in 382 ms
 python: 1001 threads, 62884 voluntary context switches
 :9001 10 rounds x 1000 echoes in 48 ms
 node: 7 threads, 123 voluntary context switches</code></pre></div>
@@ -102,7 +102,7 @@ node: 7 threads, 123 voluntary context switches</code></pre></div>
   <p>বিকল্প: socket-কে <strong>non-blocking</strong> করে দাও (<code>O_NONBLOCK</code>)। তখন <code>recv()</code>-এর চুক্তি বদলে যায় — data থাকলে দাও, না থাকলে ঘুমিয়ো না, সাথে সাথে error দিয়ে ফেরো: <code>EAGAIN</code> ("আবার চেষ্টা করো", কিছু সিস্টেমে নাম <code>EWOULDBLOCK</code>)। Thread আর কোনো একটা connection-এ আটকে থাকে না — সে ঘুরে ঘুরে অনেকগুলোকে জিজ্ঞেস করতে পারে। কিন্তু "কখন জিজ্ঞেস করবে"? বারবার, loop-এ — একে বলে <strong>busy polling</strong>। দেখি তাতে কী দাম:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — busypoll.py</div>
-    <div class="codewrap"><pre><code># busypoll.py — data আসবে ২ সেকেন্ড পরে। অপেক্ষার দুই উপায়ের CPU খরচ
+    <div class="codewrap"><pre class="lang-py"><code># busypoll.py — data আসবে ২ সেকেন্ড পরে। অপেক্ষার দুই উপায়ের CPU খরচ
 import socket, time, threading
 
 def serve_once(port):
@@ -129,8 +129,8 @@ def measure(label, port, nonblocking):
 
 measure('blocking', 9100, False)
 measure('busy-poll', 9101, True)</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/busypoll.py</code></pre></div>
-    <div class="codewrap"><pre><code>blocking     wall 2.00 s, CPU 0.00 s, recv calls 1
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro python:3.12-slim python /w/busypoll.py</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>blocking     wall 2.00 s, CPU 0.00 s, recv calls 1
   first non-blocking recv: [Errno 11] Resource temporarily unavailable
 busy-poll    wall 2.01 s, CPU 2.01 s, recv calls 4,398,095</code></pre></div>
   </div>

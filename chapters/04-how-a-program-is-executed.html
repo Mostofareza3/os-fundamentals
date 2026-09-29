@@ -7,7 +7,7 @@
   <h3>CPU সংখ্যা বোঝে, মানুষ বোঝে শব্দ</h3>
   <p>Chapter 2-এ দেখেছি CPU শুধু তার instruction set-এর সংখ্যা বোঝে। হাতে লিখতে হলে তোমাকে <code>d10083ff</code>-এর মতো সংখ্যা মুখস্থ করতে হতো, আর ARM-এর জন্য লেখা জিনিস Intel-এ চালাতে পুরোটা আবার লিখতে হতো। কেউ এভাবে software লেখে না। মানুষ লেখে পড়ার উপযোগী ভাষায়, আর একটা program সেটাকে machine code-এ অনুবাদ করে। এই অনুবাদক program-এর নাম <strong>compiler</strong>।</p>
   <p>উদাহরণ হিসেবে C ভাষার একটা ছোট program নেব — C এখানে শুধু একটা tool, কারণ এটা hardware-এর সবচেয়ে কাছের জনপ্রিয় ভাষা, আর <code>node</code> নিজেও মূলত C/C++-এ লেখা। C জানতে হবে না, প্রতিটা লাইন বলে দিচ্ছি:</p>
-  <div class="codewrap"><pre><code>#include &lt;stdio.h&gt;
+  <div class="codewrap"><pre class="lang-c"><code>#include &lt;stdio.h&gt;
 
 int main(void) {
     printf("hello %d\n", 42);
@@ -23,10 +23,10 @@ int main(void) {
 
   <h3>Compiler আর object file</h3>
   <p>প্রথমে শুধু compile করো, link না (<code>-c</code> flag):</p>
-  <div class="codewrap"><pre><code>cc -c hello.c -o hello.o
+  <div class="codewrap"><pre class="cmd"><code>cc -c hello.c -o hello.o
 nm hello.o</code></pre></div>
   <p><code>hello.o</code> হলো একটা <strong>object file</strong>: তোমার লেখা function গুলো machine code-এ অনুবাদ করা, কিন্তু এখনো চালানো যায় না। কেন যায় না, <code>nm</code> বলে দিচ্ছে। <code>nm</code> একটা file-এর <strong>symbol</strong> দেখায় — symbol মানে file-এর ভেতরে লিখে রাখা function বা variable-এর নাম, আর সেটা কোথায় আছে। Output:</p>
-  <div class="codewrap"><pre><code>0000000000000000 T _main
+  <div class="codewrap"><pre class="out"><code>0000000000000000 T _main
                  U _printf</code></pre></div>
   <p>(Linux-এ নামের সামনে <code>_</code> থাকে না: <code>main</code>, <code>printf</code>।) <code>T</code> মানে "এই file-এর code অংশে আছে" — <code>main</code> আমরা লিখেছি, তাই আছে। <code>U</code> মানে <strong>undefined</strong>: এই file <code>printf</code> ব্যবহার করে, কিন্তু তার code এখানে নেই। Machine code-এর যেখানে <code>printf</code>-কে ডাকা হয়েছে, সেখানে আসলে একটা ফাঁকা জায়গা রয়ে গেছে — "printf-এর ঠিকানা পরে এখানে বসবে"।</p>
   <p>Compiler নিজে <code>printf</code>-এর code ঢুকিয়ে দেয় না কেন? কারণ বড় project-এ হাজারটা source file থাকে; প্রতিটা আলাদা করে object file-এ compile করলে একটা file বদলালে শুধু সেটাই আবার compile করতে হয়। জোড়া লাগানোর কাজটা আলাদা একটা ধাপ।</p>
@@ -34,7 +34,7 @@ nm hello.o</code></pre></div>
   <h3>Library আর linker</h3>
   <p><code>printf</code>-এর code আছে একটা <strong>library</strong>-তে — library হলো আগে থেকে compile করা function-এর সংকলন, যাতে সবাই বারবার একই code না লেখে। C-র standard function গুলো থাকে <strong>libc</strong>-তে; Linux-এ file-টার নাম <code>libc.so.6</code>, macOS-এ এটা <code>libSystem.B.dylib</code>-এর অংশ।</p>
   <p>Object file আর library জোড়া দিয়ে চালানোর উপযোগী executable বানানোর কাজ করে <strong>linker</strong>। <code>cc</code>-কে <code>-c</code> ছাড়া ডাকলে সে ভেতরে linker চালায়:</p>
-  <div class="codewrap"><pre><code>cc hello.o -o hello
+  <div class="codewrap"><pre class="cmd"><code>cc hello.o -o hello
 ./hello              # hello 42
 nm hello | grep " U "
 otool -L hello       # macOS: কোন library লাগবে
@@ -99,10 +99,10 @@ ldd hello            # Linux: একই প্রশ্ন</code></pre></div>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — header আর segment পড়া</div>
     <p>Linux-এ (বা <code>debian</code> Docker image-এ <code>apt install gcc binutils</code> করে):</p>
-    <div class="codewrap"><pre><code>readelf -h hello | grep Entry
+    <div class="codewrap"><pre class="cmd"><code>readelf -h hello | grep Entry
 readelf -lW hello | grep -E "LOAD|interpreter"</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>  Entry point address:               0x640
+    <div class="codewrap"><pre class="out"><code>  Entry point address:               0x640
       [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
   LOAD  0x000000 0x0000000000000000 ... 0x000884 0x000884 R E 0x10000
   LOAD  0x00fdc8 0x000000000001fdc8 ... 0x000270 0x000278 RW  0x10000</code></pre></div>
@@ -121,9 +121,9 @@ readelf -lW hello | grep -E "LOAD|interpreter"</code></pre></div>
     <li><strong>PC বসানো:</strong> program dynamically linked হলে kernel dynamic linker-কেও map করে, আর PC বসায় <em>তার</em> entry point-এ; না হলে সরাসরি program-এর entry point-এ। তারপর user mode-এ ফিরে যায় — CPU সেখান থেকে চালাতে শুরু করে।</li>
   </ol>
   <p>ধাপ ৪ তোমার চেনা: Node-এর <code>process.argv</code> আর <code>process.env</code> ঠিক সেই তালিকাই পড়ে, যেটা kernel stack-এ রেখে গিয়েছিল।</p>
-  <div class="codewrap"><pre><code>node -e "console.log(process.argv)" hello world</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "console.log(process.argv)" hello world</code></pre></div>
   <p>Output: <code>[ '/Users/you/.nvm/versions/node/v22.15.1/bin/node', 'hello', 'world' ]</code>। আর একটা জিনিস লক্ষ করো: <code>execve</code> নতুন process বানায় না, <em>একই</em> process-এর ভেতরের program বদলায়। PID একই থাকে:</p>
-  <div class="codewrap"><pre><code>sh -c 'echo "shell pid: $$"; exec node -e "console.log(\"node pid: \" + process.pid)"'</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>sh -c 'echo "shell pid: $$"; exec node -e "console.log(\"node pid: \" + process.pid)"'</code></pre></div>
   <p>আমার চালানোয়: <code>shell pid: 87520</code>, তারপর <code>node pid: 87520</code>। Shell-এর <code>exec</code> command সরাসরি <code>execve</code> ডাকে — তাই shell-টা নিজেই node-এ রূপান্তরিত হলো, নম্বর বদলাল না।</p>
 
   <figure class="fig">
@@ -187,9 +187,9 @@ readelf -lW hello | grep -E "LOAD|interpreter"</code></pre></div>
   <p>Dynamic linking-এর ফাঁকটা মনে করো: <code>hello</code>-এর ভেতরে <code>printf</code>-এর ঠিকানা এখনো ফাঁকা। <code>main</code> চালু হওয়ার আগে কাউকে libc খুঁজে map করতে হবে আর ফাঁকটা ভরাট করতে হবে, না হলে <code>printf</code> ডাকার মুহূর্তে CPU অর্থহীন ঠিকানায় লাফ দেবে।</p>
   <p>Kernel এই কাজ নিজে করে না — library খোঁজার নিয়ম (কোন folder-এ, কোন version) কাজের নীতির ব্যাপার, আর kernel-কে যত ছোট রাখা যায় তত নিরাপদ। তাই এই দায়িত্ব দেওয়া হয় একটা user-space program-কে: <strong>dynamic linker</strong> (Linux-এ <code>ld.so</code>, যেমন <code>/lib/ld-linux-aarch64.so.1</code>; macOS-এ <code>dyld</code>)। ওপরের ধাপ ৫-এ kernel PC বসিয়েছিল এরই entry point-এ। Dynamic linker তারপর দরকারি library গুলো একই process-এর address space-এ map করে, ফাঁকা ঠিকানা গুলো ভরাট করে, আর শেষে program-এর entry point-এ লাফ দেয়। মানে তোমার process-এর প্রথম user-space instruction গুলো তোমার না — dynamic linker-এর।</p>
   <p>macOS-এ dyld-কে কাজ করতে দেখা যায়:</p>
-  <div class="codewrap"><pre><code>DYLD_PRINT_LIBRARIES=1 ./hello</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>DYLD_PRINT_LIBRARIES=1 ./hello</code></pre></div>
   <p>Output-এর প্রথম দিকের লাইন:</p>
-  <div class="codewrap"><pre><code>dyld[87515]: &lt;39E396B6-...&gt; /private/tmp/.../hello
+  <div class="codewrap"><pre class="out"><code>dyld[87515]: &lt;39E396B6-...&gt; /private/tmp/.../hello
 dyld[87515]: &lt;4FED5EE2-...&gt; /usr/lib/libSystem.B.dylib
 dyld[87515]: &lt;9CD7B1E1-...&gt; /usr/lib/system/libcache.dylib
 ...
@@ -206,10 +206,10 @@ hello 42</code></pre></div>
     <li><strong>PC update:</strong> সাধারণত পরের instruction-এ সরাও; আর instruction-টা যদি লাফ হয়, তাহলে লাফের গন্তব্যে বসাও। তারপর আবার ১ নম্বর।</li>
   </ol>
   <p>আধুনিক CPU সেকেন্ডে কয়েকশো কোটিবার এটা করে (আসলে অনেকগুলো instruction একসাথে ধাপে ধাপে এগিয়ে নেয় — Chapter 14), কিন্তু ধারণাটা এটাই। নিজের program-এর instruction গুলো দেখো:</p>
-  <div class="codewrap"><pre><code>otool -tvj hello              # macOS
+  <div class="codewrap"><pre class="cmd"><code>otool -tvj hello              # macOS
 objdump -d --disassemble=main hello    # Linux</code></pre></div>
   <p>macOS-এ <code>main</code>-এর মাঝখানের অংশ:</p>
-  <div class="codewrap"><pre><code>000000010000047c   d2800548   mov  x8, #0x2a
+  <div class="codewrap"><pre class="lang-asm"><code>000000010000047c   d2800548   mov  x8, #0x2a
 0000000100000480   f9000128   str  x8, [x9]
 0000000100000484   90000000   adrp x0, 0
 0000000100000488   9112b000   add  x0, x0, #0x4ac ; literal pool for: "hello %d\n"
@@ -266,11 +266,11 @@ objdump -d --disassemble=main hello    # Linux</code></pre></div>
 
   <h3>তাহলে <code>node server.js</code>-এর বেলায়?</h3>
   <p>JavaScript-এ তো compile বা link-এর ধাপ দেখো না। তাহলে এই পুরো গল্প কোথায় খাটে? খাটে, শুধু অন্য জায়গায়। <code>node server.js</code> চালালে kernel যে executable load করে সেটা হলো <code>node</code> — ওপরের সব ধাপ (<code>execve</code>, segment map, dyld/ld.so, <code>main</code>) ঘটে <code>node</code> binary-র জন্য। Kernel-এর কাছে <code>server.js</code> নিছক একটা argument, <code>argv[1]</code>।</p>
-  <div class="codewrap"><pre><code>node -e "setTimeout(() =&gt; {}, 60000)" server-demo &amp;
+  <div class="codewrap"><pre class="cmd"><code>node -e "setTimeout(() =&gt; {}, 60000)" server-demo &amp;
 ps -o pid,comm,args -p $!</code></pre></div>
   <p>(<code>$!</code> মানে shell-এর শেষ background process-এর PID।) Output-এ <code>COMM</code> column বলছে <code>node</code> — kernel-এর চোখে process-টার program হলো node, তোমার script না।</p>
   <p>তোমার JS-এর machine code তাহলে আসে কোথা থেকে? <code>node</code>-এর ভেতরের V8 engine চালু হয়ে <code>server.js</code>-কে সাধারণ file হিসেবে পড়ে (<code>read</code> syscall দিয়ে), parse করে, প্রথমে নিজের একটা <strong>interpreter</strong> দিয়ে চালায় — interpreter মানে এমন code, যেটা তোমার program-কে machine code-এ না বদলে নিজে এক এক ধাপ পড়ে পড়ে কাজটা করে দেয়। যে function বারবার চলে, V8 সেটাকে চলার মাঝখানেই machine code-এ compile করে ফেলে — এর নাম <strong>JIT</strong> (just-in-time) compilation। মানে compiler আর linker-এর কাজটা JS-এর বেলায় ঘটে program চলাকালীন, process-এর নিজের memory-র ভেতরে। দেখো:</p>
-  <div class="codewrap"><pre><code>node --trace-opt -e "function add(a, b) { return a + b } let s = 0; for (let i = 0; i &lt; 1e7; i++) s = add(s, i)" | grep add</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node --trace-opt -e "function add(a, b) { return a + b } let s = 0; for (let i = 0; i &lt; 1e7; i++) s = add(s, i)" | grep add</code></pre></div>
   <p>Output-এ আসবে <code>marking ... &lt;JSFunction add ...&gt; for optimization to TURBOFAN ... reason: hot and stable</code>, তারপর <code>completed optimizing ... add</code>। TurboFan হলো V8-এর optimizing compiler — <code>add</code> গরম হয়ে উঠতেই সে সেটাকে arm64 বা x86-64-এর machine code বানিয়ে ফেলেছে, এবং এরপর থেকে CPU সরাসরি সেই instruction গুলো fetch-decode-execute করছে।</p>
 
   <div class="box concept">

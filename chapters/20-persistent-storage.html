@@ -20,7 +20,7 @@
   </ul>
   <p>তাহলে তুমি file-এর একটা 4 KB জায়গা বদলালে কী হয়? পুরো block মুছে আবার লেখা ভয়ংকর ধীর হতো। তাই SSD-র ভেতরের controller-এ একটা ছোট software চলে — <strong>FTL</strong> (flash translation layer)। বাইরে থেকে SSD নিজেকে দেখায় নম্বর দেওয়া block-এর একটা লম্বা সারি হিসেবে — এই নম্বরকে বলে <strong>LBA</strong> (logical block address); OS শুধু বলে "LBA ৭ পড়ো/লেখো"। FTL-এর কাছে একটা table আছে: কোন LBA আসলে কোন chip-এর কোন flash page-এ। নতুন লেখা এলে FTL সেটা একটা খালি page-এ লেখে, table বদলে দেয়, আর পুরনো page-কে "বাতিল" (stale) দাগায়। Chapter 9-এর page table-এর সাথে মিলটা খেয়াল করো — এখানেও একটা নাম (LBA) আর আসল জায়গার মাঝে অনুবাদ, যাতে আসল জায়গা চুপচাপ বদলানো যায়।</p>
   <p>বাতিল page জমতে থাকলে FTL পেছনে পরিষ্কারের কাজ চালায় (<strong>garbage collection</strong>): একটা block-এর যে কয়টা page এখনো কাজের, সেগুলো অন্য জায়গায় সরিয়ে পুরো block মুছে ফেলে। এই সরানোর জন্য তুমি যত byte লিখেছ, flash-এ আসলে তার চেয়ে বেশি লেখা হয় — একে বলে <strong>write amplification</strong>। আর প্রতিটা flash cell কয়েক হাজার বার মোছার পরে নষ্ট হয়ে যায়, তাই FTL লেখাগুলো সব block-এ সমানভাবে ছড়ায় (<strong>wear leveling</strong>)। OS-ও সাহায্য করে: file মুছলে <strong>TRIM</strong> command দিয়ে SSD-কে জানায় "এই LBA গুলো আর লাগবে না" — তাহলে garbage collection-এর সময় সেগুলো সরাতে হয় না।</p>
-  <div class="codewrap"><pre><code>system_profiler SPNVMeDataType | grep -E "Model|TRIM|Capacity" | head -3   # macOS
+  <div class="codewrap"><pre class="cmd"><code>system_profiler SPNVMeDataType | grep -E "Model|TRIM|Capacity" | head -3   # macOS
 diskutil info / | grep -E "Solid State|Device Block Size"                    # macOS</code></pre></div>
   <p>আমার Mac-এ: <code>Capacity: 500.28 GB</code>, <code>Model: APPLE SSD AP0512Z</code>, <code>TRIM Support: Yes</code>, আর <code>Device Block Size: 4096 Bytes</code> — বাইরে থেকে SSD নিজেকে 4 KB-র LBA-র সারি হিসেবে দেখায়। ভেতরের flash page, erase block, FTL-এর table — সবই controller-এর গোপন ব্যাপার।</p>
 
@@ -94,7 +94,7 @@ diskutil info / | grep -E "Solid State|Device Block Size"                    # m
   <p>মাপতে একটা বাধা আছে। কোনো file একবার পড়লে kernel সেটা RAM-এ রেখে দেয় (Chapter 2-এর page cache, বিস্তারিত Chapter 23), তাই দ্বিতীয়বার পড়লে আসলে RAM মাপা হয়ে যায়। macOS-এ <code>F_NOCACHE</code> নামের একটা setting আছে যেটা একটা খোলা file-এর জন্য বলে "এর data RAM-এ জমিয়ো না" — তাহলে প্রতিটা read সত্যি SSD পর্যন্ত যায়। Node-এ এই setting দেওয়ার উপায় নেই, তাই script-টা Python-এ। <code>os.pread(fd, n, offset)</code> মানে "file-এর <code>offset</code> byte থেকে <code>n</code> byte পড়ো" — Node-এর <code>fh.read(buf, 0, n, offset)</code>-এর একই কাজ।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — storage.py (macOS, 2 GB জায়গা লাগবে)</div>
-    <div class="codewrap"><pre><code># storage.py — cache এড়িয়ে (F_NOCACHE) Mac-এর SSD থেকে সরাসরি পড়া
+    <div class="codewrap"><pre class="lang-py"><code># storage.py — cache এড়িয়ে (F_NOCACHE) Mac-এর SSD থেকে সরাসরি পড়া
 import os, fcntl, random, time, threading
 
 PATH = 'test.bin'
@@ -146,7 +146,7 @@ for T in (1, 4, 16, 64):
     dt = time.perf_counter() - t
     print(f'random 4 KB, {T:2d} at a time    {per*T/dt:9.0f} IOPS')</code></pre></div>
     <p><code>python3 storage.py</code> — আমার Mac-এ (M4 Pro, 512 GB SSD):</p>
-    <div class="codewrap"><pre><code>sequential 4 KB                   187 MB/s      45723 IOPS     21.9 µs/read
+    <div class="codewrap"><pre class="out"><code>sequential 4 KB                   187 MB/s      45723 IOPS     21.9 µs/read
 random     4 KB                    52 MB/s      12706 IOPS     78.7 µs/read
 sequential 1 MB                  2618 MB/s       2497 IOPS    400.5 µs/read
 random 4 KB,  1 at a time        12568 IOPS
@@ -221,7 +221,7 @@ random 4 KB, 64 at a time       123258 IOPS</code></pre></div>
   <p>এর মানে পরিষ্কার: SSD থেকে পুরো গতি পেতে হলে একসাথে অনেক অনুরোধ তার হাতে দিতে হয়। এক thread-এ একটার পর একটা <code>readFileSync</code> দিলে তুমি device-এর দশ ভাগের এক ভাগ ব্যবহার করছ। এবার Node-এর দিকে তাকাও। Chapter 19-এ দেখেছিলাম Node-এর async <code>fs</code> call গুলো libuv-এর thread pool-এ চলে, আর pool-এ default ৪টা thread। মানে তুমি যত <code>await</code>-ই একসাথে ছাড়ো, disk-এর হাতে একসাথে বড়জোর ৪টা অনুরোধ যায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — nodeqd.js (storage.py যে test.bin বানিয়েছে, সেটাই পড়ে)</div>
-    <div class="codewrap"><pre><code>// nodeqd.js — Node-এর fs দিয়ে 20,000টা random 4 KB read, একসাথে 64টা চাওয়া
+    <div class="codewrap"><pre class="lang-js"><code>// nodeqd.js — Node-এর fs দিয়ে 20,000টা random 4 KB read, একসাথে 64টা চাওয়া
 const fs = require('fs/promises');
 const [half] = process.argv.slice(2).map(Number);     // 0 বা 1: file-এর কোন অর্ধেক
 (async () => {
@@ -241,7 +241,7 @@ const [half] = process.argv.slice(2).map(Number);     // 0 বা 1: file-এর
   console.log(`pool=${process.env.UV_THREADPOOL_SIZE || 4}: ${Math.round(20000 / ms * 1000)} IOPS`);
   await fh.close();
 })();</code></pre></div>
-    <div class="codewrap"><pre><code>node nodeqd.js 0                          # প্রথম 1 GB, default pool
+    <div class="codewrap"><pre class="cmd"><code>node nodeqd.js 0                          # প্রথম 1 GB, default pool
 UV_THREADPOOL_SIZE=64 node nodeqd.js 1    # দ্বিতীয় 1 GB, 64টা thread</code></pre></div>
     <p>আমার output: <code>pool=4: 52294 IOPS</code>, <code>pool=64: 129651 IOPS</code>। দুইবার file-এর আলাদা অর্ধেক পড়া হয়েছে, যাতে প্রথম run-এর পড়া data RAM-এ থেকে গিয়ে দ্বিতীয়টাকে সাহায্য না করে (একই কারণে আবার চালালে সংখ্যা বাড়বে — Chapter 23)।</p>
   </div>

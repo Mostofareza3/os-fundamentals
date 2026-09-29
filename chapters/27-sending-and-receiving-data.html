@@ -79,7 +79,7 @@
   <p>TCP তোমার <code>write()</code>-গুলোর সীমানা মনে রাখে না। সে দেখে শুধু byte-এর একটা লম্বা সারি, আর তার সুবিধামতো segment-এ কাটে; ওপাশের kernel receive buffer-এ যা জমেছে, <code>read()</code> তার যতটা পারে একবারে দেয়। তাই ওপাশের <code>'data'</code> event আর তোমার <code>write()</code>-এর মধ্যে কোনো এক-এক মিল নেই:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — framing.js</div>
-    <div class="codewrap"><pre><code>// framing.js — TCP byte-এর স্রোত: write-এর সীমানা ওপাশে পৌঁছায় না
+    <div class="codewrap"><pre class="lang-js"><code>// framing.js — TCP byte-এর স্রোত: write-এর সীমানা ওপাশে পৌঁছায় না
 const net = require('net');
 let events = [];
 const server = net.createServer(c =&gt; {
@@ -101,16 +101,16 @@ server.listen(8080, '127.0.0.1', async () =&gt; {
   const c = net.connect(8080, '127.0.0.1', () =&gt; c.end(Buffer.alloc(1024 * 1024)));
   c.on('close', () =&gt; setTimeout(() =&gt; server.close(), 50));
 });</code></pre></div>
-    <div class="codewrap"><pre><code>node framing.js                                                             # macOS
+    <div class="codewrap"><pre class="cmd"><code>node framing.js                                                             # macOS
 docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim node /w/framing.js    # Linux</code></pre></div>
-    <div class="codewrap"><pre><code>1 'data' events, sizes: 15
+    <div class="codewrap"><pre class="out"><code>1 'data' events, sizes: 15
 17 'data' events, sizes: 65536, 65536, 65536, 65536, 65536, 65536 ...     (macOS)
 1 'data' events, sizes: 15
 17 'data' events, sizes: 65536, 65536, 63589, 65536, 29312, 65536 ...     (Linux)</code></pre></div>
   </div>
   <p>তিনটা আলাদা write (৫ byte করে) ওপাশে এসেছে একটা ১৫ byte-এর event হয়ে। আর একটা 1 MB-এর write এসেছে ১৭ টুকরোয়, Linux-এ এলোমেলো মাপে। কোনটা হবে, নির্ভর করে সময়, buffer, OS-এর উপর — তাই কখনোই ধরে নেওয়া যায় না। যে code ধরে নেয় "একটা <code>'data'</code> = একটা message", সে local-এ ঠিক চলে (ছোট data, দ্রুত loopback) আর production-এ মাঝে মাঝে ভাঙে।</p>
   <p>সমাধান: message কোথায় শেষ, সেটা data-র ভেতরেই চিহ্নিত করো — একে বলে <strong>framing</strong>। দুইটা চেনা উপায়: প্রতিটা message-এর শেষে একটা বিশেষ চিহ্ন (যেমন <code>\n</code>), বা শুরুতে message-এর দৈর্ঘ্য। আর গ্রাহক আসা byte জমিয়ে রেখে পুরো message হলে তবে কাজে লাগায়:</p>
-  <div class="codewrap"><pre><code>let pending = '';
+  <div class="codewrap"><pre class="lang-js"><code>let pending = '';
 socket.on('data', chunk =&gt; {
   pending += chunk;
   let i;
@@ -123,11 +123,11 @@ socket.on('data', chunk =&gt; {
 
   <h3>Buffer ভরলে: flow control আর backpressure</h3>
   <p>Buffer গুলো অসীম না। Linux-এ মাপ kernel নিজে চাহিদা বুঝে বাড়ায়-কমায়, তিনটা সীমার মধ্যে:</p>
-  <div class="codewrap"><pre><code>cat /proc/sys/net/ipv4/tcp_rmem /proc/sys/net/ipv4/tcp_wmem    # Linux: min, শুরু, max (byte)</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>cat /proc/sys/net/ipv4/tcp_rmem /proc/sys/net/ipv4/tcp_wmem    # Linux: min, শুরু, max (byte)</code></pre></div>
   <p>Docker VM-এ: receive buffer <code>4096 131072 6291456</code>, send buffer <code>4096 16384 4194304</code> — শুরু ১২৮ KB আর ১৬ KB, বাড়তে পারে ৬ MB আর ৪ MB পর্যন্ত। এবার ওপাশের reader যদি পড়া বন্ধ রাখে? তার receive buffer ভরে যায়, আর তার kernel প্রতিটা ACK-এ জানায় "আমার জায়গা আছে ০ byte" (Chapter 26-এর window)। প্রেরকের kernel তখন পাঠানো থামায় — এর নাম <strong>flow control</strong>। তারপর প্রেরকের send buffer ভরে, আর তারপর তোমার <code>write()</code>-ও আর জায়গা পায় না:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — backpressure.js</div>
-    <div class="codewrap"><pre><code>// backpressure.js — reader পড়ছে না; writer কতদূর লিখতে পারে?
+    <div class="codewrap"><pre class="lang-js"><code>// backpressure.js — reader পড়ছে না; writer কতদূর লিখতে পারে?
 const net = require('net');
 const { execSync } = require('child_process');
 
@@ -153,7 +153,7 @@ server.listen(8080, '127.0.0.1', () =&gt; {
   });
 });</code></pre></div>
     <p>Docker-এ iproute2 বসিয়ে চালালে:</p>
-    <div class="codewrap"><pre><code>write() returned false after 2624 KB; Node is holding 64 KB
+    <div class="codewrap"><pre class="out"><code>write() returned false after 2624 KB; Node is holding 64 KB
 State Recv-Q Send-Q  Local Address:Port  Peer Address:Port Process
 ESTAB 128704 0           127.0.0.1:8080     127.0.0.1:44044
 ESTAB 0      2452874     127.0.0.1:44044    127.0.0.1:8080
@@ -165,7 +165,7 @@ drain: kernel buffers have room again</code></pre></div>
   <p><code>false</code> উপেক্ষা করলে কী হয়? Node লেখা ফেলে দেয় না, নিজের memory-তে জমিয়ে রাখে — সীমা ছাড়াই:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — ignore.js</div>
-    <div class="codewrap"><pre><code>// ignore.js — write()-এর false উপেক্ষা করলে data যায় কোথায়?
+    <div class="codewrap"><pre class="lang-js"><code>// ignore.js — write()-এর false উপেক্ষা করলে data যায় কোথায়?
 const net = require('net');
 const server = net.createServer(c =&gt; c.pause());          // reader কিছুই পড়ছে না
 server.listen(8080, '127.0.0.1', () =&gt; {
@@ -179,7 +179,7 @@ server.listen(8080, '127.0.0.1', () =&gt; {
     }, 500);
   });
 });</code></pre></div>
-    <div class="codewrap"><pre><code>Node is holding 49.5 MB in its own memory
+    <div class="codewrap"><pre class="out"><code>Node is holding 49.5 MB in its own memory
 RSS grew by 51 MB</code></pre></div>
   </div>
   <p>Kernel-এর buffer ভরে যাওয়ার পরের পুরো ~৫০ MB Node-এর heap-এর বাইরের memory-তে (Chapter 6) বসে আছে। একটা ধীর client-এর জন্য একটা বড় file stream করা server যদি <code>false</code> না মানে, হাজারটা ধীর client মানে হাজার গুণ memory — শেষে OOM। নিজে <code>'drain'</code> সামলাও, বা <code>stream.pipeline(source, socket)</code> ব্যবহার করো, যেটা এই হিসাব নিজে রাখে।</p>
@@ -229,7 +229,7 @@ RSS grew by 51 MB</code></pre></div>
   <p>এখন ভাবো client একটা request দুই টুকরোয় লেখে, আর server পুরোটা না পেলে উত্তর দেয় না। প্রথম টুকরো যায়। দ্বিতীয়টা Nagle আটকে রাখে (প্রথমটার ACK আসেনি)। Server-এর kernel ACK দেরি করে (app তো এখনো উত্তর লেখেনি — পুরো request-ই পায়নি)। দুজনেই অপেক্ষায়, যতক্ষণ না delayed ACK-এর timer ফুরায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — nagle.js</div>
-    <div class="codewrap"><pre><code>// nagle.js — দুই টুকরোয় request লিখে উত্তরের অপেক্ষা (write-write-read), Nagle চালু বনাম বন্ধ
+    <div class="codewrap"><pre class="lang-js"><code>// nagle.js — দুই টুকরোয় request লিখে উত্তরের অপেক্ষা (write-write-read), Nagle চালু বনাম বন্ধ
 const net = require('net');
 const server = net.createServer(c =&gt; {
   let buf = '';
@@ -256,7 +256,7 @@ server.listen(8080, '127.0.0.1', async () =&gt; {
   }
   server.close();
 });</code></pre></div>
-    <div class="codewrap"><pre><code>linux:                                           mac:
+    <div class="codewrap"><pre class="out"><code>linux:                                           mac:
 noDelay=false: median 41.91 ms per request       noDelay=false: median 0.10 ms per request
 noDelay=true: median 0.06 ms per request         noDelay=true: median 0.08 ms per request</code></pre></div>
   </div>

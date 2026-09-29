@@ -13,7 +13,7 @@
   <p>৪ KB হলো কয়েক দশকের পুরনো একটা আপস; Apple Silicon ১৬ KB বেছেছে, কারণ আজকের RAM অনেক বড়। আর বড় memory-র কাজের জন্য প্রায় সব CPU আরও বড় page-ও সমর্থন করে — <strong>huge page</strong> (সাধারণত ২ MB, কোথাও ১ GB)। Linux-এ একটা feature আছে, <strong>Transparent Huge Pages</strong> (THP): বড় একটানা memory চাইলে kernel নিজে থেকেই সম্ভব হলে ২ MB-র page ব্যবহার করে। Chapter 9-এর <code>lazy.js</code>-এর Linux version-এ fault কম আসার রহস্য এটাই:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
-    <div class="codewrap"><pre><code>docker run --rm node:22-alpine sh -c 'cat /sys/kernel/mm/transparent_hugepage/enabled; node -e "
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-alpine sh -c 'cat /sys/kernel/mm/transparent_hugepage/enabled; node -e "
 const f = () =&gt; process.resourceUsage().minorPageFault;
 const f0 = f();
 const buf = new Uint8Array(1024 * 2 ** 20);                 // ১ GB
@@ -29,7 +29,7 @@ console.log(\"faults:\", f() - f0, \"|\", huge);"'</code></pre></div>
   <p>এটা মাপার কৌশল: data-র পরিমাণ একই রাখো আর এত ছোট রাখো যে পুরোটা cache-এ আঁটে (যাতে cache miss মাপে না ঢোকে), শুধু বদলাও কতগুলো আলাদা page-এ ছড়ানো।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — tlb.js</div>
-    <div class="codewrap"><pre><code>// একই পরিমাণ data (৪০৯৬টা cache line = 512 KB, পুরোটা L2-তে আঁটে),
+    <div class="codewrap"><pre class="lang-js"><code>// একই পরিমাণ data (৪০৯৬টা cache line = 512 KB, পুরোটা L2-তে আঁটে),
 // একবার ঘেঁষাঘেঁষি করে রাখা, একবার ৪০৯৬টা আলাদা page-এ ছড়ানো।
 const PAGE = 16384, LINE = 128, N = 4096;          // Linux/x86-এ PAGE = 4096, LINE = 64 দাও
 const a = new Int32Array((N * PAGE) / 4);          // 64 MB জায়গা, কিন্তু ব্যবহার হবে সামান্য
@@ -59,7 +59,7 @@ for (const [label, spread] of [['dense  (32 pages)  ', false], ['spread (4096 pa
   <p>Major fault-এর সবচেয়ে চেনা উৎস <strong>swap</strong>: RAM কম পড়লে kernel কম-ব্যবহৃত page গুলোর data disk-এর একটা বিশেষ জায়গায় (swap area) লিখে রাখে, frame ছেড়ে দেয়, আর page table entry-তে "present না" লিখে দেয়। সেই page আবার ছুঁলে major fault — disk থেকে ফিরিয়ে আনো। নিজে ঘটাও: container-কে ২০০ MB RAM দাও (swap সহ মোট ১ GB পর্যন্ত), আর ৬০০ MB ছোঁয়াও:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Docker) — swap</div>
-    <div class="codewrap"><pre><code>docker run --rm --memory=200m --memory-swap=1g node:22-alpine node -e "
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --memory=200m --memory-swap=1g node:22-alpine node -e "
 const ru = () =&gt; process.resourceUsage();
 const buf = new Uint8Array(600 * 2 ** 20);          // 600 MB — container-এর RAM সীমা 200 MB
 let t = performance.now();
@@ -69,7 +69,7 @@ t = performance.now();
 for (let i = 0; i &lt; buf.length; i += 4096) buf[i] += 1;   // আবার পুরোটা ছোঁয়া
 console.log('second pass :', (performance.now() - t).toFixed(0), 'ms | major faults so far:', ru().majorPageFault);"</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>first touch : 123 ms | major faults so far: 204
+    <div class="codewrap"><pre class="out"><code>first touch : 123 ms | major faults so far: 204
 second pass : 1562 ms | major faults so far: 39228</code></pre></div>
   </div>
   <p>প্রথমবার ছোঁয়ার সময় kernel শুধু নতুন frame দিচ্ছিল, আর RAM ফুরালে পুরনো page swap-এ ঠেলে দিচ্ছিল। দ্বিতীয়বার ঘুরতে গিয়ে প্রায় সব page-ই ততক্ষণে swap-এ — ৩৯ হাজার major fault, আর একই loop ১২ গুণের বেশি ধীর। এখন কল্পনা করো তোমার server-এর যে data সারাক্ষণ লাগে (তার <strong>working set</strong>) সেটাই RAM-এর চেয়ে বড়: system তখন আসল কাজের চেয়ে বেশি সময় কাটায় page disk-এ পাঠাতে আর ফিরিয়ে আনতে। এই অবস্থার নাম <strong>thrashing</strong>, আর তখন কোনো code optimization কাজে আসে না — হয় RAM বাড়াও, নয় working set ছোট করো।</p>
@@ -111,7 +111,7 @@ second pass : 1562 ms | major faults so far: 39228</code></pre></div>
   <h3>Overcommit: প্রতিশ্রুতি বেশি, RAM কম</h3>
   <p>Chapter 9-এ দেখেছ Node-এর <code>VmSize</code> ৪২১ MB, অথচ <code>VmRSS</code> ৫০ MB — program-রা যা চায়, তার অল্পই আসলে ছোঁয়। Kernel যদি প্রতিটা চাওয়ার বিপরীতে তখনই আসল RAM আলাদা করে রাখত (বা চাওয়ার যোগফল RAM ছাড়ালেই "না" বলত), অনেক program চালুই হতো না, আর বেশিরভাগ RAM পড়ে থাকত সংরক্ষিত কিন্তু অব্যবহৃত।</p>
   <p>তাই kernel ব্যাংকের মতো আচরণ করে: যত RAM আছে তার চেয়ে বেশি প্রতিশ্রুতি দেয়, এই ভরসায় যে সবাই একসাথে পুরোটা তুলতে আসবে না। এর নাম <strong>overcommit</strong>।</p>
-  <div class="codewrap"><pre><code>node -e "
+  <div class="codewrap"><pre class="cmd"><code>node -e "
 const buf = new ArrayBuffer(64 * 2 ** 30);    // ৬৪ GB চাও
 console.log('got', buf.byteLength / 2 ** 30, 'GB on a', require('os').totalmem() / 2 ** 30, 'GB machine; rss =', Math.round(process.memoryUsage().rss / 2 ** 20), 'MB');"</code></pre></div>
   <p>আমার Mac-এ: <code>got 64 GB on a 24 GB machine; rss = 37 MB</code>। ২৪ GB RAM-এর machine ৬৪ GB-র প্রতিশ্রুতি দিয়ে দিল, কারণ এখনো একটা byte-ও ছোঁয়া হয়নি। Linux-এ নিয়মটা বদলানো যায় <code>/proc/sys/vm/overcommit_memory</code> দিয়ে: <code>0</code> = অনুমান করে সিদ্ধান্ত (default), <code>1</code> = সবসময় হ্যাঁ, <code>2</code> = কড়া হিসাব। Docker Desktop-এর VM-এ এটা <code>1</code> — সেখানেও একই পরীক্ষায় ৬৪ GB পাওয়া যায়।</p>
@@ -121,7 +121,7 @@ console.log('got', buf.byteLength / 2 ** 30, 'GB on a', require('os').totalmem()
   <p>Linux-এর উত্তর নির্মম: <strong>OOM killer</strong> (out of memory)। Kernel প্রতিটা process-কে একটা নম্বর দেয় (মূলত কে কত memory দখল করে আছে), সবচেয়ে বড়টাকে বেছে নেয়, আর <code>SIGKILL</code> পাঠায় — এমন একটা signal যেটা process ধরতেও পারে না, আটকাতেও পারে না। Container-এ একই ঘটনা ঘটে container-এর নিজের memory সীমায় (Chapter 36-এ cgroup)।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Docker) — OOM kill</div>
-    <div class="codewrap"><pre><code>docker run --name oomdemo --memory=100m --memory-swap=100m node:22-alpine node -e "
+    <div class="codewrap"><pre class="cmd"><code>docker run --name oomdemo --memory=100m --memory-swap=100m node:22-alpine node -e "
 const chunks = [];
 for (let i = 1; i &lt;= 10; i++) {
   chunks.push(Buffer.alloc(50 * 2 ** 20, 1));   // 50 MB, সত্যি সত্যি লেখা
@@ -138,9 +138,9 @@ docker rm oomdemo</code></pre></div>
   <p>Chapter 2-এর <code>readFileSync</code>-এর যাত্রা মনে করো: data disk থেকে page cache-এ আসে, তারপর kernel সেটা তোমার process-এর buffer-এ <em>copy</em> করে। ছোট file-এ ঠিক আছে। কিন্তু ৫০ GB-র একটা database file, যার এখানে-ওখানে একটু একটু পড়তে হবে? প্রতিবার <code>read</code> syscall আর copy — এবং একই data RAM-এ দুইবার (page cache-এ আর তোমার buffer-এ)।</p>
   <p>Page fault-এর কৌশল এখানে আরেকবার কাজে লাগে। <code>mmap</code> syscall দিয়ে একটা file-কে সরাসরি address space-এর একটা range-এ map করা যায়। শুরুতে কিছুই পড়া হয় না। তুমি সেই range-এর কোনো address ছুঁলে page fault; kernel file-এর ঠিক সেই অংশ page cache-এ আনে, আর page cache-এর <em>সেই frame-টাই</em> তোমার page table-এ বসিয়ে দেয়। কোনো copy নেই, কোনো <code>read</code> নেই — file পড়া মানে memory পড়া। একাধিক process একই file map করলে সবাই একই frame দেখে।</p>
   <p>তুমি প্রতিদিন এটা ব্যবহার করছ না জেনেই। Chapter 4-এর dynamic linker libc-কে ঠিক এভাবে load করে:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim sh -c 'apt-get update -qq &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1; strace -e trace=openat,mmap cat /dev/null 2&gt;&amp;1 | grep -A2 "libc.so.6\""'</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE debian:bookworm-slim sh -c 'apt-get update -qq &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1; strace -e trace=openat,mmap cat /dev/null 2&gt;&amp;1 | grep -A2 "libc.so.6\""'</code></pre></div>
   <p>আমার output (একটু ছেঁটে):</p>
-  <div class="codewrap"><pre><code>openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+  <div class="codewrap"><pre class="out"><code>openat(AT_FDCWD, "/lib/aarch64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
 mmap(NULL, 1826912, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xffff9d383000
 mmap(0xffff9d390000, 1761376, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0) = 0xffff9d390000</code></pre></div>
   <p>libc খোলা হলো (fd <code>3</code>), তারপর <code>mmap</code>-এর শেষ দুই argument <code>3, 0</code> মানে "fd 3-এর file, শুরু থেকে" — ১.৭ MB-র code অংশটা <code>PROT_READ|PROT_EXEC</code> (Chapter 5-এর <code>r-x</code>) permission নিয়ে address space-এ বসে গেল, একটা byte-ও copy না করে। SQLite, LMDB, Elasticsearch-এর মতো database আর search engine বড় file-এর জন্য একই কৌশল ব্যবহার করে। (Node-এ built-in <code>mmap</code> নেই; npm package আছে।)</p>

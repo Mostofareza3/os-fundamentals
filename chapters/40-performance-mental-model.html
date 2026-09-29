@@ -81,7 +81,7 @@
 
   <h3>Latency আর throughput: Little's law</h3>
   <p>দুটো আলাদা প্রশ্ন প্রায়ই গুলিয়ে যায়। <strong>Latency</strong> মানে একটা কাজ কতক্ষণ নেয়। <strong>Throughput</strong> মানে প্রতি সেকেন্ডে কয়টা কাজ শেষ হয়। দুটোকে জোড়ে একটা সরল নিয়ম, Little's law:</p>
-  <div class="codewrap"><pre><code>L = λ × W
+  <div class="codewrap"><pre class="plain"><code>L = λ × W
 L = গড়ে একসাথে কয়টা কাজ চলছে (in flight)
 λ = প্রতি সেকেন্ডে কয়টা কাজ আসে (আর স্থির অবস্থায়, শেষ হয়)
 W = প্রতিটা কাজ গড়ে কতক্ষণ system-এর ভেতরে থাকে</code></pre></div>
@@ -90,7 +90,7 @@ W = প্রতিটা কাজ গড়ে কতক্ষণ system-এ�
 
   <h3>লাইন: utilization বাড়লে latency লাফায়</h3>
   <p>Chapter 39-এ বলেছিলাম saturation, মানে লাইন, utilization-এর চেয়ে গুরুত্বপূর্ণ। কেন? একটা resource ১০০% ব্যস্ত না হলেও লাইন তৈরি হয়, কারণ কাজ সমান তালে আসে না। কখনো তিনটা একসাথে আসে, তারপর কিছুক্ষণ কেউ না। একসাথে আসা তিনজনের দুজনকে দাঁড়াতে হয়, আর পরের ফাঁকা সময়টা ফেরত আসে না। এর দাম কত, সেটা সূত্র দিয়ে না, একটা simulation দিয়ে দেখি। একটা server, প্রতিটা request-এর কাজ গড়ে ১ ms, request আসে এলোমেলো সময়ে; শুধু আসার হার বাড়াব:</p>
-  <div class="codewrap"><pre><code>// queue.js — একটা server, একটা লাইন: প্রতিটা request-এর কাজ গড়ে ১ ms, আর request আসে এলোমেলো সময়ে।
+  <div class="codewrap"><pre class="lang-js"><code>// queue.js — একটা server, একটা লাইন: প্রতিটা request-এর কাজ গড়ে ১ ms, আর request আসে এলোমেলো সময়ে।
 // Utilization বাড়ালে latency কী করে? Simulation: ঘড়িটা নিজেরা চালাই, আসল অপেক্ষা লাগে না।
 let seed = 42;                                                  // নির্দিষ্ট seed: তোমার output আমার সাথে হুবহু মিলবে
 const uniform = () =&gt; ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
@@ -118,8 +118,8 @@ for (const u of [0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]) {
   const r = run(u), f = x =&gt; x.toFixed(1).padStart(5);
   console.log(`${String(u * 100).padStart(3)}%  ${f(r.mean)}  ${f(r.p50)}  ${f(r.p99)} ms |  ${r.L.toFixed(2).padStart(6)}  ${(r.rate * r.mean).toFixed(2).padStart(6)}`);
 }</code></pre></div>
-  <div class="codewrap"><pre><code>node queue.js</code></pre></div>
-  <div class="codewrap"><pre><code>util   mean    p50     p99    | in system  λ×W
+  <div class="codewrap"><pre class="cmd"><code>node queue.js</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>util   mean    p50     p99    | in system  λ×W
  10%    1.1    0.8    5.1 ms |    0.11    0.11
  30%    1.4    1.0    6.6 ms |    0.43    0.43
  50%    2.0    1.4    9.2 ms |    0.99    1.00
@@ -183,17 +183,17 @@ for (const u of [0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95]) {
   <p>ওপরের table-এ ৯০% utilization-এ গড় ১০ ms, কিন্তু P50 ৭ ms আর P99 ৪৭ ms। <strong>Percentile</strong> মানে: সব মাপ ছোট থেকে বড় সাজালে P50 হলো ঠিক মাঝেরটা, আর P99 হলো সেই মান, যার চেয়ে ধীর মাত্র ১%। গড় দুটোর কোনোটাই না। অল্প কয়েকটা খুব ধীর request গড়কে টেনে তোলে, অথচ বেশিরভাগ user সেই গড় কখনো দেখে না। আর সবচেয়ে খারাপ অভিজ্ঞতাটা গড়ে লুকিয়ে যায়।</p>
   <p>Chapter 39-এর lag.sh এর আরেকটা উদাহরণ: <code>/ping</code>-এর P50 ০.৭ ms, P99 ৫৬ ms। Dashboard-এ শুধু গড় বা P50 দেখলে মনে হতো server ঠিক আছে। অথচ প্রতি একশো request-এর একটা ৫০ ms আটকে ছিল, আর সেটাই event loop আটকে যাওয়ার একমাত্র চিহ্ন।</p>
   <p>P99 কেন "প্রায় কেউ না"-র সংখ্যা না, সেটা বোঝা যায় যখন একটা page বা API অনেকগুলো backend call করে। প্রতিটা call ১% সম্ভাবনায় ধীর হলে, ১০টা call-এর মধ্যে অন্তত একটা ধীর হওয়ার সম্ভাবনা কত?</p>
-  <div class="codewrap"><pre><code>node -p "(1 - 0.99 ** 10).toFixed(3) + '  ' + (1 - 0.99 ** 100).toFixed(3)"</code></pre></div>
-  <div class="codewrap"><pre><code>0.096  0.634</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -p "(1 - 0.99 ** 10).toFixed(3) + '  ' + (1 - 0.99 ** 100).toFixed(3)"</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>0.096  0.634</code></pre></div>
   <p>১০টা call-এ প্রায় ১০%, ১০০টায় ৬৩%। Page-টা সবচেয়ে ধীর call-এর জন্য অপেক্ষা করে, তাই backend-এর P99 হয়ে যায় page-এর P90। বড় system-এ tail, মানে সবচেয়ে ধীর কয়েক শতাংশ, অনেক user-এর রোজকার অভিজ্ঞতা। তাই latency-র লক্ষ্য লেখো percentile-এ ("P99 &lt; ১০০ ms"), গড়ে না।</p>
 
   <h3>Amdahl's law: parallel-এর সিলিং</h3>
   <p>Chapter 14-এর parallel.js মনে করো: ১২টা worker-এ ৮ গুণ দ্রুত, ১২ গুণ না; ২৪টায় আরও ধীর। কারণের একটা অংশ হার্ডওয়্যার: এই Mac-এর ১২ core-এর ৪টা ছোট efficiency core। আরেকটা অংশ আরও মৌলিক: প্রতিটা কাজের কিছু অংশ ভাগ করা যায় না। Worker চালু করা, কাজ ভাগ করে দেওয়া, ফল জোড়া দেওয়া, একটা shared lock বা একটা DB row-এর জন্য লাইন। এর নাম Amdahl's law: কাজের যে অংশ parallel করা যায় না, core যতই বাড়াও সেটা একই সময় নেয়:</p>
-  <div class="codewrap"><pre><code>// amdahl.js — কাজের ৯৫% ভাগ করা যায়, ৫% যায় না: core বাড়ালে কত গুণ দ্রুত?
+  <div class="codewrap"><pre class="lang-js"><code>// amdahl.js — কাজের ৯৫% ভাগ করা যায়, ৫% যায় না: core বাড়ালে কত গুণ দ্রুত?
 const speedup = (parallel, cores) =&gt; 1 / ((1 - parallel) + parallel / cores);
 for (const n of [1, 2, 4, 8, 12, 100, Infinity])
   console.log(`${String(n).padStart(8)} cores: ${speedup(0.95, n).toFixed(1).padStart(4)}×`);</code></pre></div>
-  <div class="codewrap"><pre><code>       1 cores:  1.0×
+  <div class="codewrap"><pre class="out"><code>       1 cores:  1.0×
        2 cores:  1.9×
        4 cores:  3.5×
        8 cores:  5.9×

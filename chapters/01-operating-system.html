@@ -14,7 +14,7 @@
   </ul>
   <p>আর <strong>program</strong> বলতে এই বইয়ে বোঝাব instruction-ভরা একটা file — যেমন <code>node</code>, Chrome, বা <code>ls</code>।</p>
   <p>একটা CPU chip-এর ভেতরে সাধারণত কয়েকটা স্বাধীন অংশ থাকে, যাদের প্রত্যেকে আলাদাভাবে instruction চালাতে পারে। প্রতিটা অংশের নাম <strong>core</strong>। ১২ core মানে একই মুহূর্তে সর্বোচ্চ ১২টা আলাদা কাজ সত্যিকার অর্থে পাশাপাশি চলতে পারে। তোমার machine-এ কী আছে, Node দিয়েই দেখে নাও:</p>
-  <div class="codewrap"><pre><code>node -e "const os = require('os'); console.log(os.cpus().length + ' cores,', Math.round(os.totalmem() / 2**30) + ' GB RAM')"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "const os = require('os'); console.log(os.cpus().length + ' cores,', Math.round(os.totalmem() / 2**30) + ' GB RAM')"</code></pre></div>
   <p>আমার Mac-এ output এল <code>12 cores, 24 GB RAM</code>। প্রতিটা hardware-এর ভেতরটা Chapter 2-এ খুলে দেখব। এই chapter-এর জন্য এটুকুই যথেষ্ট।</p>
 
   <h3>OS না থাকলে কী হতো</h3>
@@ -25,7 +25,7 @@
 
   <h4>সমস্যা ২: সবাই একই hardware চায়, একই সময়ে</h4>
   <p>এই মুহূর্তে তোমার machine-এ শুধু তোমার একটা program চলছে না। Browser, editor, Slack, background-এর অসংখ্য service — সবাই চলছে। <code>ps</code> command চলমান program-দের list দেখায়, আর <code>wc -l</code> সেই list-এর লাইন গোনে:</p>
-  <div class="codewrap"><pre><code>ps aux | wc -l</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>ps aux | wc -l</code></pre></div>
   <p>আমার Mac-এ এটা দেখাল ৭৫২ — মানে প্রায় সাড়ে সাতশো চলমান program, অথচ core মাত্র ১২টা। কে কখন CPU পাবে? RAM-এর কোন অংশ কার? দুইজন একসাথে disk-এ লিখতে চাইলে কার লেখা আগে যাবে? কেউ একজন সিদ্ধান্ত না নিলে পুরো বিশৃঙ্খলা।</p>
 
   <h4>সমস্যা ৩: একজনের bug আরেকজনকে মেরে ফেলত</h4>
@@ -43,7 +43,7 @@
     <tr><td>RAM-এর physical chip</td><td><strong>Virtual memory</strong> — প্রতিটা process মনে করে পুরো memory তার একার (Chapter 9)</td><td><code>new Array(1e6)</code></td></tr>
   </table></div>
   <p>File-এর উদাহরণটা নিজে পরীক্ষা করো। কোনো storage-কে folder tree-র একটা জায়গায় জুড়ে দেওয়াকে বলে <strong>mount</strong> করা — যেমন USB drive লাগালে macOS সেটাকে <code>/Volumes/</code>-এর নিচে mount করে। তোমার machine-এ কী কী mount করা আছে দেখো:</p>
-  <div class="codewrap"><pre><code>df -h</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>df -h</code></pre></div>
   <p>List-এ internal SSD থাকবে, USB drive লাগানো থাকলে সেটাও থাকবে, হয়তো কোনো network drive-ও। এদের hardware সম্পূর্ণ আলাদা, command-এর ভাষাও আলাদা। কিন্তু সবগুলোতে তুমি হুবহু একই code দিয়ে লিখবে: <code>fs.writeFileSync(path, data)</code>। কোন device-এ কীভাবে লিখতে হয়, সেই চিন্তা OS নিজের ঘাড়ে নিয়ে নিয়েছে। সমস্যা ১ সমাধান।</p>
 
   <h3>দ্বিতীয় কাজ: resource management</h3>
@@ -55,7 +55,7 @@
   <div class="box lab">
     <div class="box-title">EXPERIMENT</div>
     <p>শেষের <code>busyloop</code> শব্দটা শুধু একটা চিহ্ন, যাতে পরে এই process গুলোকেই খুঁজে বন্ধ করা যায়।</p>
-    <div class="codewrap"><pre><code># কয়টা core আছে? (আমার Mac-এ 12)
+    <div class="codewrap"><pre class="cmd"><code># কয়টা core আছে? (আমার Mac-এ 12)
 node -p "require('os').availableParallelism()"
 
 # core-এর দ্বিগুণ সংখ্যক infinite loop চালাও — এখানে 24
@@ -72,7 +72,7 @@ pkill -f busyloop</code></pre></div>
 
   <h4>Isolation: একজনকে আরেকজনের থেকে আলাদা রাখা</h4>
   <p>OS প্রতিটা process-কে আলাদা memory দেয়, আর একটা process অন্যটার memory ছুঁতে চাইলে সেখানেই আটকে দেয় (কীভাবে আটকায়, সেটা Chapter 9-এর virtual memory-র গল্প)। এই আলাদা রাখার নাম <strong>isolation</strong>। এর সবচেয়ে চেনা ফল তুমি Chrome-এ দেখেছ: Chrome প্রতিটা tab-কে আলাদা process-এ চালায়। Chrome-এ একটা নতুন tab খুলে address bar-এ লেখো:</p>
-  <div class="codewrap"><pre><code>chrome://crash</code></pre></div>
+  <div class="codewrap"><pre class="plain"><code>chrome://crash</code></pre></div>
   <p>ওই tab-টা "Aw, Snap!" দেখিয়ে মারা যাবে, কিন্তু অন্য tab গুলোর কিছুই হবে না। মরা process-টা অন্যদের memory ছুঁতেই পারত না, তাই তার মৃত্যু অন্যদের টেনে নামাতে পারেনি। সমস্যা ৩ সমাধান।</p>
 
   <div class="box concept">
@@ -89,12 +89,12 @@ pkill -f busyloop</code></pre></div>
     <li>বাকি সব program-এর হয়ে সিদ্ধান্ত নেয় — কে কখন CPU পাবে, কে কোন memory পাবে, কে কোন file খুলতে পারবে।</li>
   </ul>
   <p>তোমার machine-এর kernel-এর নাম আর version জিজ্ঞেস করো:</p>
-  <div class="codewrap"><pre><code>uname -a</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>uname -a</code></pre></div>
   <p>আমার Mac-এ output-এর ভেতরে আছে <code>Darwin Kernel Version 25.6.0 ... xnu-12377...</code> — macOS-এর kernel-এর নাম XNU। Linux-এ দেখবে <code>Linux</code> আর একটা version নম্বর, যেমন <code>6.8.0</code>। একটা মজার পরীক্ষা: <code>docker run --rm alpine uname -r</code> চালালে আমার Mac-এ এল <code>6.10.14-linuxkit</code> — এটা Docker-এর নিজস্ব ছোট Linux VM-এর kernel। Container নিজের কোনো kernel আনে না, যে machine-এ চলে তারটাই ব্যবহার করে (Chapter 36)।</p>
 
   <h4>OS আর kernel কি একই জিনিস?</h4>
   <p>না। Kernel হলো core। "Operating system" বললে সাধারণত বোঝায় kernel <em>এবং</em> তার সাথে আসা দরকারি program আর library-র পুরো package — shell (<code>zsh</code>, <code>bash</code>), <code>ls</code>/<code>cp</code>-এর মতো command, system library, background service চালানোর manager, আর desktop থাকলে সেটাও। এরা সবাই সাধারণ program, kernel-এর বিশেষ ক্ষমতা এদের নেই।</p>
-  <div class="codewrap"><pre><code>ls /bin</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>ls /bin</code></pre></div>
   <p>এখানে যা দেখবে (<code>ls</code>, <code>cp</code>, <code>zsh</code>, <code>ps</code>…) সবই OS-এর অংশ, কিন্তু kernel-এর না — প্রতিটা disk-এ রাখা একটা সাধারণ program, তোমার <code>node</code>-এর মতোই।</p>
 
   <div class="box warn">
@@ -112,13 +112,13 @@ pkill -f busyloop</code></pre></div>
   <p>User mode-এ থাকা কোনো program privileged instruction চালাতে চাইলে, বা নিষিদ্ধ memory ছুঁতে চাইলে, CPU সেই instruction চালায়ই না। বরং সঙ্গে সঙ্গে থেমে kernel-কে ডেকে আনে, আর kernel সাধারণত ওই program-টাকে মেরে ফেলে। C বা C++ program-এ যে "segmentation fault" crash শোনা যায়, সেটা ঠিক এই ঘটনা।</p>
   <p>এখান থেকে দুইটা শব্দ আসে যেগুলো পুরো বইয়ে বারবার পাবে: <strong>user space</strong> মানে user mode-এ চলা সব program আর তাদের memory; <strong>kernel space</strong> মানে kernel-এর code আর memory। (CPU কীভাবে এক mode থেকে আরেক mode-এ যায়, তার পুরো গল্প Chapter 31-এ।)</p>
   <p>তোমার প্রতিটা program আসলে দুই mode-এর মধ্যে আসা-যাওয়া করে, আর OS হিসাব রাখে কোন mode-এ কতক্ষণ কাটল। <code>time</code> command সেই হিসাবটা দেখায়। নিচের দ্বিতীয় উদাহরণে <code>fs.statSync</code> একটা file-এর metadata (size, তারিখ ইত্যাদি) এনে দেয়:</p>
-  <div class="codewrap"><pre><code># ১) শুধু হিসাব — kernel-এর কোনো সাহায্য লাগে না
+  <div class="codewrap"><pre class="cmd"><code># ১) শুধু হিসাব — kernel-এর কোনো সাহায্য লাগে না
 time node -e "let s = 0; for (let i = 0; i &lt; 1e9; i++) s += i;"
 
 # ২) বিশ লাখ বার file-এর metadata চাওয়া
 time node -e "const fs = require('fs'); for (let i = 0; i &lt; 2e6; i++) fs.statSync('.');"</code></pre></div>
   <p>আমার Mac-এর zsh-এ output (bash-এ একই সংখ্যা <code>user</code> আর <code>sys</code> নামে আলাদা লাইনে আসে):</p>
-  <div class="codewrap"><pre><code>3.54s user 0.08s system 96% cpu 3.763 total
+  <div class="codewrap"><pre class="out"><code>3.54s user 0.08s system 96% cpu 3.763 total
 0.37s user 0.78s system 100% cpu 1.144 total</code></pre></div>
   <p><code>user</code> হলো CPU user mode-এ তোমার program চালাতে কত সময় দিয়েছে। <code>system</code> হলো kernel mode-এ তোমার হয়ে কাজ করতে কত সময় দিয়েছে। প্রথমটায় প্রায় পুরোটাই user — loop-টা নিছক যোগ, kernel-এর কিছু করার নেই। দ্বিতীয়টায় system সময় user-এর দ্বিগুণ। কারণ file-এর metadata থাকে file system-এ, আর user mode থেকে সেখানে সরাসরি যাওয়ার কোনো উপায় নেই। তাহলে যায় কীভাবে? সেটাই পরের section।</p>
 
@@ -138,14 +138,14 @@ time node -e "const fs = require('fs'); for (let i = 0; i &lt; 2e6; i++) fs.stat
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
     <p><code>strace</code> হলো Linux-এর একটা tool, যেটা একটা program-এর প্রতিটা syscall ধরে ধরে print করে। macOS-এ এটা নেই, তাই Docker-এ একটা ছোট Linux container চালিয়ে দেখব। (Linux machine থাকলে Docker ছাড়াই সরাসরি চালাও; <code>SYS_PTRACE</code> অনুমতিটা কিছু Docker setup-এ container-এর ভেতরে <code>strace</code> চালাতে লাগে, তাই সবসময় দিয়ে রাখছি — কেন, সেটা Chapter 31-এ।)</p>
-    <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-alpine sh
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -it --cap-add SYS_PTRACE node:22-alpine sh
 
 # এখন তুমি container-এর ভেতরে (Linux)
 apk add strace
 echo '{"port":3000}' &gt; config.json
 strace -f -e trace=openat,statx,read,close node -e "require('fs').readFileSync('config.json')" 2&gt;&amp;1 | grep -A3 config.json</code></pre></div>
     <p>আমার output (লম্বা অংশ কেটে ছোট করা):</p>
-    <div class="codewrap"><pre><code>openat(AT_FDCWD, "config.json", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 17
+    <div class="codewrap"><pre class="out"><code>openat(AT_FDCWD, "config.json", O_RDONLY|O_LARGEFILE|O_CLOEXEC) = 17
 statx(17, "", ..., {... stx_size=14, ...}) = 0
 read(17, "{\"port\":3000}\n", 14) = 14
 close(17)                               = 0</code></pre></div>
@@ -153,7 +153,7 @@ close(17)                               = 0</code></pre></div>
   <p>এক লাইনের <code>readFileSync</code> kernel-এর কাছে চারবার গেল। <code>openat</code> — "file-টা খোলো"; kernel একটা নম্বর ফেরত দিল, <code>17</code>, আর এরপর থেকে এই নম্বর দিয়েই file-টাকে চেনা হলো (এই নম্বরের নাম file descriptor, Chapter 3-এ আসছে)। <code>statx</code> — "file কত বড়?" (১৪ byte)। <code>read</code> — "১৪ byte পড়ো"। <code>close</code> — "কাজ শেষ, বন্ধ করো"।</p>
   <p>একই container-এ <code>strace -c -f node -e "require('fs').readFileSync('config.json')"</code> চালালে পুরো program-এর syscall গোনা হয়। আমার চালানোয় total এসেছিল ১,১৮৩টা — এক লাইনের script-এর জন্য! বেশিরভাগই Node নিজে চালু হওয়ার কাজ: memory চাওয়া, ভেতরের কাঠামো তৈরি করা। তোমার প্রতিটা "সাধারণ" কাজের নিচে kernel-এর সাথে এমন অবিরাম কথোপকথন চলছে।</p>
   <p>Kernel যে সত্যিই যাচাই করে, সেটাও দেখে নাও। macOS-এ পুরো SSD-টা <code>/dev/disk0</code> নামে একটা বিশেষ file হিসেবে দেখা যায়। সেটা সরাসরি খুলতে চাও:</p>
-  <div class="codewrap"><pre><code>node -e "require('fs').openSync('/dev/disk0', 'r')"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -e "require('fs').openSync('/dev/disk0', 'r')"</code></pre></div>
   <p>উত্তর আসবে <code>Error: EPERM: operation not permitted, open '/dev/disk0'</code>। Syscall-টা kernel পর্যন্ত পৌঁছেছিল, আর kernel অনুমতি যাচাই করে "না" বলে দিয়েছে। (Linux-এ একই পরীক্ষা <code>/dev/sda</code> বা <code>/dev/nvme0n1</code> দিয়ে করো; সাধারণ user হিসেবে error আসবে <code>EACCES</code>।)</p>
 
   <p>এতক্ষণ যা যা দেখলাম, এক ছবিতে:</p>

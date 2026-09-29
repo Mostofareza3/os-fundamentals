@@ -6,7 +6,7 @@
 
   <h3>Container মানে একটা সাধারণ process</h3>
   <p>একটা container চালাও, আর তাকে দুই দিক থেকে দেখো: container-এর ভেতর থেকে, আর যে Linux kernel তাকে চালাচ্ছে তার দিক থেকে। Mac-এ সেই kernel হলো Docker-এর VM (Chapter 35)। <code>--pid=host</code> দিয়ে চালানো একটা container VM-এর সব process দেখতে পায়:</p>
-  <div class="codewrap"><pre><code># proc.sh — একটা container, দুই চোখে
+  <div class="codewrap"><pre class="lang-sh"><code># proc.sh — একটা container, দুই চোখে
 docker run -d --name osbook-demo node:22-alpine node -e "setInterval(() =&gt; {}, 1000)" &gt; /dev/null
 sleep 1
 echo "--- container-এর ভেতর থেকে"
@@ -15,7 +15,7 @@ echo "--- VM-এর চোখে (host-এর PID namespace)"
 docker run --rm --pid=host alpine ps -o pid,user,args | grep setInterval
 echo "--- docker-এর হিসাবে: $(docker inspect -f '{{.State.Pid}}' osbook-demo)"
 docker rm -f osbook-demo &gt; /dev/null</code></pre></div>
-  <div class="codewrap"><pre><code>--- container-এর ভেতর থেকে
+  <div class="codewrap"><pre class="out"><code>--- container-এর ভেতর থেকে
 PID   USER     COMMAND
     1 root     node -e setInterval(() =&gt; {}, 1000)
    14 root     ps -o pid,user,args
@@ -87,7 +87,7 @@ PID   USER     COMMAND
     <tr><td><code>uts</code></td><td>hostname</td><td>নিজের নাম (container ID)</td></tr>
     <tr><td><code>ipc</code>, <code>cgroup</code>, <code>user</code></td><td>shared memory, cgroup-এর তালিকা, uid-এর মানে</td><td>বাকি জিনিসগুলোও আলাদা</td></tr>
   </table></div>
-  <div class="codewrap"><pre><code># ns.sh — দুটো container একসাথে চালু রেখে, প্রত্যেকের namespace-এর পরিচয় নম্বর
+  <div class="codewrap"><pre class="lang-sh"><code># ns.sh — দুটো container একসাথে চালু রেখে, প্রত্যেকের namespace-এর পরিচয় নম্বর
 ids='for f in pid net mnt uts; do printf "%s  " "$(readlink /proc/self/ns/$f)"; done; echo'
 docker run -d --name osbook-one alpine sleep 60 &gt; /dev/null &amp;&amp;
 docker run -d --name osbook-two alpine sleep 60 &gt; /dev/null &amp;&amp;
@@ -95,14 +95,14 @@ echo "osbook-one: $(docker exec osbook-one sh -c "$ids")" &amp;&amp;
 echo "osbook-two: $(docker exec osbook-two sh -c "$ids")" &amp;&amp;
 echo "the VM:     $(docker run --rm --pid=host --net=host --uts=host alpine sh -c "$ids")"
 docker rm -f osbook-one osbook-two &gt; /dev/null</code></pre></div>
-  <div class="codewrap"><pre><code>osbook-one: pid:[4026532561]  net:[4026532563]  mnt:[4026532558]  uts:[4026532559]
+  <div class="codewrap"><pre class="out"><code>osbook-one: pid:[4026532561]  net:[4026532563]  mnt:[4026532558]  uts:[4026532559]
 osbook-two: pid:[4026532696]  net:[4026532698]  mnt:[4026532693]  uts:[4026532694]
 the VM:     pid:[4026531836]  net:[4026531840]  mnt:[4026532828]  uts:[4026531838]  </code></pre></div>
   <p>প্রতিটা container-এর চার namespace-এর নম্বর আলাদা। তৃতীয় লাইনে <code>--pid=host --net=host --uts=host</code> বলেছে "এই তিনটায় আলাদা কপি দিও না", তাই সে VM-এর আসল namespace-এ বসেছে। Kernel boot-এর সময় যে প্রথম namespace-গুলো বানায়, তাদের নম্বর এমন ছোট <code>40265318xx</code>। Mount namespace আলাদাই রয়ে গেছে, কারণ সেটা ভাগ করতে বলিনি।</p>
   <p>Docker ছাড়াও namespace বানানো যায়। Linux-এর <code>unshare</code> command ঠিক এটাই করে: "নতুন namespace-এ এই command চালাও"। Docker-এর কাজের মূল অংশ হাতে করে দেখা যাক:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — mini.sh</div>
-    <div class="codewrap"><pre><code># mini.sh — Docker ছাড়া, শুধু namespace দিয়ে একটা "container"
+    <div class="codewrap"><pre class="lang-sh"><code># mini.sh — Docker ছাড়া, শুধু namespace দিয়ে একটা "container"
 apk add -q util-linux                               # unshare command-টা এখানে
 echo "outside: hostname=$(hostname), processes: $(ps -o pid | tail -n +2 | wc -l)"
 unshare --uts --pid --fork --mount-proc sh -c '
@@ -110,8 +110,8 @@ unshare --uts --pid --fork --mount-proc sh -c '
   echo "inside:  hostname=$(hostname), my PID=$$"
   ps -o pid,args; true'
 echo "outside: hostname=$(hostname)"</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_ADMIN --security-opt seccomp=unconfined -v "$PWD":/w:ro -w /w alpine sh mini.sh</code></pre></div>
-    <div class="codewrap"><pre><code>outside: hostname=1eebc2d1d698, processes: 5
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_ADMIN --security-opt seccomp=unconfined -v "$PWD":/w:ro -w /w alpine sh mini.sh</code></pre></div>
+    <div class="codewrap"><pre class="out"><code>outside: hostname=1eebc2d1d698, processes: 5
 inside:  hostname=mini, my PID=1
 PID   COMMAND
     1 sh -c    hostname mini    ...
@@ -147,14 +147,14 @@ outside: hostname=1eebc2d1d698</code></pre></div>
 
   <h3>cgroup: কতটা পাবে</h3>
   <p>Namespace ঠিক করে একটা process কী দেখবে, কিন্তু কতটা খাবে সেটা না। একটা container-এর memory leak পুরো machine-এর RAM খেয়ে ফেললে বাকি সবাই ভুগবে। <strong>cgroup</strong> (control group) হলো kernel-এর হিসাবের খাতা: একদল process-এর memory, CPU, I/O একসাথে গোনা আর সীমা বসানো। Chapter 23-এ দেখেছি page cache-ও এই খাতায় ওঠে। Docker-এর <code>--memory</code> আর <code>--cpus</code>, Kubernetes-এর <code>resources.limits</code> — সবাই শেষ পর্যন্ত <code>/sys/fs/cgroup/</code>-এর কয়েকটা file-এ সংখ্যা লেখে। প্রশ্ন হলো, Node এই সীমা কতটা বোঝে:</p>
-  <div class="codewrap"><pre><code>// limits.js — container-এর সীমা Node কতটা বোঝে?
+  <div class="codewrap"><pre class="lang-js"><code>// limits.js — container-এর সীমা Node কতটা বোঝে?
 const os = require('os'), fs = require('fs'), v8 = require('v8');
 const read = (f) =&gt; { try { return fs.readFileSync('/sys/fs/cgroup/' + f, 'utf8').trim(); } catch { return '-'; } };
 console.log(`cgroup memory.max: ${read('memory.max')}, cpu.max: ${read('cpu.max')}`);
 console.log(`os.cpus().length: ${os.cpus().length}, os.availableParallelism(): ${os.availableParallelism()}`);
 console.log(`os.totalmem(): ${(os.totalmem() / 2 ** 20).toFixed(0)} MB, ` +
             `V8 heap limit: ${(v8.getHeapStatistics().heap_size_limit / 2 ** 20).toFixed(0)} MB`);</code></pre></div>
-  <div class="codewrap"><pre><code># limits.sh — একই limits.js, তিন রকম সীমায়; তারপর availableParallelism() আলাদা --cpus-এ
+  <div class="codewrap"><pre class="lang-sh"><code># limits.sh — একই limits.js, তিন রকম সীমায়; তারপর availableParallelism() আলাদা --cpus-এ
 for limit in "" "--memory 256m --cpus 0.5" "--cpus 2"; do
   echo "== ${limit:-no limit}"
   docker run --rm $limit -v "$PWD":/w:ro -w /w node:22-bookworm-slim node limits.js
@@ -162,7 +162,7 @@ done
 for c in 0.5 1 1.5 2.5; do
   echo "--cpus $c → availableParallelism() = $(docker run --rm --cpus $c node:22-bookworm-slim node -p 'require("os").availableParallelism()')"
 done</code></pre></div>
-  <div class="codewrap"><pre><code>== no limit
+  <div class="codewrap"><pre class="out"><code>== no limit
 cgroup memory.max: max, cpu.max: max 100000
 os.cpus().length: 12, os.availableParallelism(): 12
 os.totalmem(): 7837 MB, V8 heap limit: 2096 MB
@@ -181,7 +181,7 @@ os.totalmem(): 7837 MB, V8 heap limit: 2096 MB
   <p>প্রথমে cgroup file-দুটো পড়ো। <code>memory.max</code> byte-এ সীমা (২৬৮৪৩৫৪৫৬ = ২৫৬ MB)। <code>cpu.max</code>-এ দুটো সংখ্যা: "প্রতি ১,০০,০০০ µs-এ (১০০ ms) সর্বোচ্চ ৫০,০০০ µs CPU"। মানে <code>--cpus 0.5</code> কোনো core ভাগ করে দেয় না। সে সময়ের একটা কোটা দেয়, আর সেটা পরে গুরুত্বপূর্ণ হবে।</p>
   <p>এবার Node-এর দিক। <code>os.cpus()</code> আর <code>os.totalmem()</code> সীমা একদমই দেখে না; তারা VM-এর ১২টা core আর ৭.৭ GB বলে। <code>availableParallelism()</code> কোটাকে নিচের দিকে গোল করে: ২.৫ হলে ২, ১.৫ হলে ১। কিন্তু ১-এর কম হলে (০.৫) সে হাল ছেড়ে সব core, মানে ১২ বলে। Kubernetes-এ <code>cpu: 500m</code>-এর মতো সীমা খুব সাধারণ। তাই <code>availableParallelism()</code> দিয়ে worker pool বানালে আধা CPU-র pod-এ ১২টা worker তৈরি হবে, আর সবাই মিলে একই আধা CPU নিয়ে কাড়াকাড়ি করবে (Chapter 17-এর oversubscription)। Container-এ pool-এর আকার তাই config থেকে দাও, অনুমানের উপর ছেড়ো না।</p>
   <p>V8 উল্টো দিকে একটু বেশি চালাক: heap-এর সীমা memory cgroup দেখে ঠিক করে, ২০৯৬ MB থেকে নেমে ২৫৯ MB। কিন্তু ২৫৯ মানে পুরো container-এর সীমারও বেশি, অথচ node-এর heap-এর বাইরেও memory লাগে (code, Buffer, thread-এর stack)। swap ছাড়া (Kubernetes-এ সাধারণত যেমন থাকে) JS object দিয়ে memory ভরালে দেখো কী হয়:</p>
-  <div class="codewrap"><pre><code>// grow.js — JS object দিয়ে memory ভরাতে থাকো, আর দেখো কে আগে থামায়
+  <div class="codewrap"><pre class="lang-js"><code>// grow.js — JS object দিয়ে memory ভরাতে থাকো, আর দেখো কে আগে থামায়
 const keep = [];
 let mb = 0;
 setInterval(() =&gt; {
@@ -189,14 +189,14 @@ setInterval(() =&gt; {
   mb += 10;
   if (mb % 50 === 0) console.log(`${mb} MB of JS objects so far`);
 }, 5);</code></pre></div>
-  <div class="codewrap"><pre><code># oom.sh — ২৫৬ MB-এর container (swap ছাড়া), JS heap ভরানো: default আর ছোট heap limit
+  <div class="codewrap"><pre class="lang-sh"><code># oom.sh — ২৫৬ MB-এর container (swap ছাড়া), JS heap ভরানো: default আর ছোট heap limit
 for heap in "" "--max-old-space-size=160"; do
   echo "== node ${heap:-(default heap limit)}"
   docker run --rm --memory 256m --memory-swap 256m -v "$PWD":/w:ro -w /w node:22-bookworm-slim sh -c "
     node $heap grow.js &gt; /tmp/out 2&gt;&amp;1; code=\$?
     grep -E 'MB of|FATAL' /tmp/out | tail -2; echo \"exit \$code\""
 done</code></pre></div>
-  <div class="codewrap"><pre><code>== node (default heap limit)
+  <div class="codewrap"><pre class="out"><code>== node (default heap limit)
 150 MB of JS objects so far
 200 MB of JS objects so far
 exit 137
@@ -209,7 +209,7 @@ exit 134</code></pre></div>
   <p>এবার CPU-র কোটা। <code>cpu.max = 50000 100000</code> মানে প্রতি ১০০ ms-এর পর্বে (period) এই দল মোট ৫০ ms CPU পাবে। কোটা শেষ হলে পর্ব শেষ হওয়া পর্যন্ত দলের সব thread-কে থামিয়ে রাখা হয়। এর নাম <strong>throttling</strong>। গড় হিসাবে এটা ন্যায্য, কিন্তু একটা একক request-এর জন্য কী মানে?</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Docker) — throttle.js</div>
-    <div class="codewrap"><pre><code>// throttle.js — ১০টা "request", প্রতিটায় ~১৫০ ms-এর CPU কাজ, মাঝে ৩০০ ms বিরতি
+    <div class="codewrap"><pre class="lang-js"><code>// throttle.js — ১০টা "request", প্রতিটায় ~১৫০ ms-এর CPU কাজ, মাঝে ৩০০ ms বিরতি
 const fs = require('fs');
 const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
 function handle() {                                    // request-এর কাজ: শুধু গোনা
@@ -231,12 +231,12 @@ function handle() {                                    // request-এর কা�
   const stat = fs.readFileSync('/sys/fs/cgroup/cpu.stat', 'utf8');
   console.log(stat.split('\n').filter((l) =&gt; /^(nr_periods|nr_throttled|throttled_usec)/.test(l)).join(', '));
 })();</code></pre></div>
-    <div class="codewrap"><pre><code># throttle.sh
+    <div class="codewrap"><pre class="lang-sh"><code># throttle.sh
 for limit in "" "--cpus 1" "--cpus 0.5"; do
   echo "== ${limit:-no limit}"
   docker run --rm $limit -v "$PWD":/w:ro -w /w node:22-bookworm-slim node throttle.js
 done</code></pre></div>
-    <div class="codewrap"><pre><code>== no limit
+    <div class="codewrap"><pre class="out"><code>== no limit
 per request: CPU time 152 ms, wall time 152 ms (medians)
 nr_periods 0, nr_throttled 0, throttled_usec 0
 == --cpus 1
@@ -289,7 +289,7 @@ nr_periods 50, nr_throttled 30, throttled_usec 1254415</code></pre></div>
 
   <h3>Image আর overlayfs: file-গুলো কোথা থেকে আসে</h3>
   <p>Container-এর <code>/</code>-এ Debian বা Alpine-এর পুরো file-এর গাছ আছে। কিন্তু সেটা kernel না, শুধু file (Chapter 22)। Image হলো কয়েকটা <strong>layer</strong>-এর স্তূপ, প্রতিটা একটা file-এর সংকলন (base OS, তার উপর Node, তার উপর তোমার app)। Container চালু হলে overlayfs (Chapter 22) layer-গুলো read-only হিসেবে একটার উপর আরেকটা বসায়, আর সবার উপরে container-এর নিজের একটা খালি, লেখা-যোগ্য স্তর দেয়:</p>
-  <div class="codewrap"><pre><code># layers.sh — image-এর স্তর, আর container যা বদলায় তা কোথায় যায়
+  <div class="codewrap"><pre class="lang-sh"><code># layers.sh — image-এর স্তর, আর container যা বদলায় তা কোথায় যায়
 docker image inspect node:22-bookworm-slim -f 'image layers: {{len .RootFS.Layers}}'
 docker run --name osbook-diff node:22-bookworm-slim sh -c '
   echo hello &gt; /tmp/new.txt                   # নতুন file
@@ -301,7 +301,7 @@ docker run --name osbook-diff node:22-bookworm-slim sh -c '
 docker diff osbook-diff
 docker rm osbook-diff &gt; /dev/null
 docker run --rm node:22-bookworm-slim cat /etc/debian_version   # নতুন container: image অক্ষত</code></pre></div>
-  <div class="codewrap"><pre><code>image layers: 5
+  <div class="codewrap"><pre class="out"><code>image layers: 5
 root is: overlay
 read-only lower dirs: 6
 upperdir=/var/lib/docker/overlay2/3b57e0a62ecc33099328f852482001c23ad0

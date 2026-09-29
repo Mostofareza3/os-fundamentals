@@ -9,7 +9,7 @@
   <p><strong>CPU</strong> এই সমস্যার সমাধান। CPU-র hardware স্থির, কখনো বদলায় না। সে শুধু একটা কাজ জানে: memory থেকে একটা <strong>instruction</strong> পড়ো, চালাও, তারপর পরেরটা পড়ো। Instruction আসলে একটা সংখ্যা, যার ভেতরে লেখা থাকে কী করতে হবে — যোগ, তুলনা, memory থেকে আনা, অন্য জায়গায় লাফ দেওয়া। কাজ বদলাতে চাইলে hardware না, শুধু memory-তে রাখা instruction-এর তালিকা বদলাও। এই তালিকাটাই program।</p>
   <p>Instruction গুলো কাজ করে CPU-র ভেতরের কয়েকটা ছোট storage slot নিয়ে, যাদের বলে <strong>register</strong>। একটা core-এ মাত্র কয়েক ডজন register থাকে, প্রতিটায় একটা সংখ্যা রাখা যায় (৬৪-bit CPU-তে ৮ byte), আর এগুলো পুরো machine-এর সবচেয়ে দ্রুত storage। একটা বিশেষ register-এর নাম <strong>program counter</strong> (PC): এটা মনে রাখে পরের instruction টা memory-র কোথায় আছে। CPU প্রতিটা instruction শেষ করে PC সামনে সরায় — "program চলছে" বলতে আসলে এটুকুই বোঝায় (Chapter 4-এ বিস্তারিত)।</p>
   <p>একটা শর্ত আছে: CPU কোন কোন instruction বোঝে, আর সেগুলো কোন সংখ্যা দিয়ে লেখা হয় — এই তালিকার নাম <strong>instruction set</strong>। Intel/AMD-র CPU বোঝে <code>x86-64</code>, Apple Silicon আর বেশিরভাগ phone বোঝে <code>arm64</code>। একটার জন্য বানানো program আরেকটায় সরাসরি চলে না। তোমার machine কোনটা?</p>
-  <div class="codewrap"><pre><code>node -p "process.arch"
+  <div class="codewrap"><pre class="cmd"><code>node -p "process.arch"
 file $(which node)</code></pre></div>
   <p>আমার Mac-এ দুটোই বলছে <code>arm64</code> — <code>node</code> program-টা ARM-এর instruction দিয়ে লেখা। Intel Mac-এ এই একই file চলবে না, তার জন্য <code>x86_64</code> version লাগবে।</p>
 
@@ -17,10 +17,10 @@ file $(which node)</code></pre></div>
   <p>Register মাত্র কয়েক ডজন। অথচ তোমার Node server একসাথে লাখ লাখ মান নিয়ে কাজ করে — প্রতিটা request, প্রতিটা object, প্রতিটা string। এত data রাখার জন্য একটা বড় কাজের জায়গা লাগে, আর সেখানে প্রতিটা মানকে আলাদা করে চেনার উপায়ও লাগে। না হলে CPU বলবে কীভাবে "ওই মানটা আনো"?</p>
   <p><strong>RAM</strong> হলো সেই বড় কাজের জায়গা। RAM-কে ভাবো byte-এর একটা বিশাল array হিসেবে — এটা উপমা না, hardware আসলেই এভাবে আচরণ করে। প্রতিটা byte-এর একটা index আছে: ০, ১, ২, … এই index-এর নাম <strong>memory address</strong>। CPU যখন RAM থেকে কিছু পড়ে, সে বলে "address এত থেকে ৮ byte দাও"; লেখার সময় বলে "address এত-তে এই মান রাখো"। ২৪ GB RAM মানে মোটামুটি ২,৫৭০ কোটি আলাদা address।</p>
   <p>Address গুলো সাধারণত <strong>hexadecimal</strong>-এ লেখা হয় — ১৬-ভিত্তিক সংখ্যা, যেখানে ০–৯-এর পরে a–f আসে (a=১০ … f=১৫), আর সামনে <code>0x</code> বসিয়ে বোঝানো হয় এটা hex। Node-এ চেষ্টা করো:</p>
-  <div class="codewrap"><pre><code>node -p "[0xff, (255).toString(16), Buffer.from('Hi!')]"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node -p "[0xff, (255).toString(16), Buffer.from('Hi!')]"</code></pre></div>
   <p>Output: <code>[ 255, 'ff', &lt;Buffer 48 69 21&gt; ]</code>। শেষেরটা দেখো — <code>"Hi!"</code> string-টা memory-তে তিনটা পাশাপাশি byte: <code>0x48</code> (H), <code>0x69</code> (i), <code>0x21</code> (!)। প্রথম byte যে address-এ, পরেরটা তার ঠিক পরের address-এ।</p>
   <p>তোমার JS object-এরও একটা address আছে, V8 শুধু সেটা তোমাকে দেখায় না। একটা debug flag দিয়ে দেখানো যায়:</p>
-  <div class="codewrap"><pre><code>node --allow-natives-syntax -e "const user = { name: 'Rahim' }; %DebugPrint(user)"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node --allow-natives-syntax -e "const user = { name: 'Rahim' }; %DebugPrint(user)"</code></pre></div>
   <p>প্রথম লাইনে আসবে এরকম কিছু: <code>DebugPrint: 0x257501fa9999: [JS_OBJECT_TYPE]</code>। ওই <code>0x257501fa9999</code> হলো <code>user</code> object-টা memory-র কোন address-এ বসে আছে। (এটা আসলে "virtual" address — প্রতিটা process-কে OS যে নিজস্ব address-এর জগৎ দেয় তার ভেতরের ঠিকানা, Chapter 9-এ খুলে বলব। আপাতত ধরে নাও এটা RAM-এর একটা জায়গা।)</p>
   <p>RAM-এর দুইটা সীমাবদ্ধতা মনে রাখো: <strong>volatile</strong> — power গেলে সব মুছে যায়; আর দামি — প্রতি GB-র দাম storage-এর চেয়ে অনেক বেশি।</p>
 
@@ -39,7 +39,7 @@ file $(which node)</code></pre></div>
   <p>এই টেবিলটা মাথায় গেঁথে রাখো — "software কেন slow" প্রশ্নের অর্ধেক উত্তর এখানেই। নিজের machine-এ পার্থক্যটা মাপো। নিচের script একই ২০০ লাইন একবার শুধু RAM-এ (array-তে) রাখে, আরেকবার disk-এ লেখে। Disk-এর বেলায় প্রতিটা লেখার পর <code>fsyncSync</code> ডাকা হয়েছে। কারণ সাধারণ write-এ kernel data আগে RAM-এ জমিয়ে রাখে আর পরে সুবিধামতো storage-এ পাঠায় (কেন, সেটা Chapter 23-এ)। আর <code>fsync</code> বললে kernel storage-এ লেখা শেষ হওয়া পর্যন্ত অপেক্ষা করে তারপর ফেরে — মানে আসল storage-এর গতি মাপা হয়।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — disk.js</div>
-    <div class="codewrap"><pre><code>const fs = require('fs');
+    <div class="codewrap"><pre class="lang-js"><code>const fs = require('fs');
 const N = 200;
 const line = 'x'.repeat(100) + '\n';
 
@@ -65,7 +65,7 @@ fs.unlinkSync('test.txt');</code></pre></div>
   <p>দ্বিতীয় সমস্যার সমাধান <strong>device controller</strong>: প্রতিটা device-এর নিজস্ব একটা ছোট chip, যেটা ওই device-এর খুঁটিনাটি নিজেই সামলায়। CPU-কে flash-এর voltage বুঝতে হয় না। Controller-এর কয়েকটা নিজস্ব register থাকে, আর CPU সেখানে একটা সরল command লিখে দেয় — "block ৮৮,২১০ থেকে ৪টা block পড়ো, RAM-এর এই address-এ রাখো"। বাকিটা controller নিজে করে।</p>
   <p>কিন্তু কোন controller কোন command বোঝে, সেটা model ভেদে আলাদা। এই জ্ঞানটা রাখে <strong>driver</strong> — kernel-এর ভেতরের সেই code, যেটা একটা নির্দিষ্ট ধরনের controller-এর ভাষা জানে। Chapter 1-এ যে abstraction-এর কথা বলেছিলাম, তার নিচের তলাটা এরাই: file system বলে "এই block গুলো পড়ো", driver সেটাকে ওই নির্দিষ্ট controller-এর command-এ অনুবাদ করে।</p>
   <p>তোমার kernel-এ কোন কোন driver load করা আছে, দেখো:</p>
-  <div class="codewrap"><pre><code># macOS
+  <div class="codewrap"><pre class="cmd"><code># macOS
 kmutil showloaded | grep -iE "nvme|wlan|apfs"
 
 # Linux
@@ -165,7 +165,7 @@ lsmod | head</code></pre></div>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker)</div>
     <p>Linux kernel শুরু থেকে এ পর্যন্ত কতগুলো interrupt সামলেছে, সেই মোট হিসাব রাখে <code>/proc/stat</code> file-এর <code>intr</code> লাইনে। এক সেকেন্ডের ব্যবধানে দুইবার পড়ো:</p>
-    <div class="codewrap"><pre><code>docker run --rm alpine sh -c "awk '/^intr/{print \$2}' /proc/stat; sleep 1; awk '/^intr/{print \$2}' /proc/stat"</code></pre></div>
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm alpine sh -c "awk '/^intr/{print \$2}' /proc/stat; sleep 1; awk '/^intr/{print \$2}' /proc/stat"</code></pre></div>
     <p>আমার চালানোয় এসেছে <code>38638665</code> আর <code>38640797</code> — প্রায় চুপচাপ বসে থাকা একটা VM-এও এক সেকেন্ডে ২,১০০-এর বেশি interrupt। আসল Linux machine-এ <code>cat /proc/interrupts</code> চালালে device ধরে ধরে আলাদা হিসাব দেখবে (Docker Desktop এই file-টা লুকিয়ে রাখে)।</p>
   </div>
 
@@ -183,7 +183,7 @@ lsmod | head</code></pre></div>
 
   <h3>পুরো যাত্রা: একটা <code>readFileSync</code></h3>
   <p>এবার সব টুকরো জোড়া দিই। তোমার code-এ এক লাইন:</p>
-  <div class="codewrap"><pre><code>const config = fs.readFileSync('config.json');</code></pre></div>
+  <div class="codewrap"><pre class="lang-js"><code>const config = fs.readFileSync('config.json');</code></pre></div>
   <p>ধরে নিচ্ছি file-টা আগে কখনো পড়া হয়নি। যা যা ঘটে:</p>
   <ol>
     <li><strong>User space:</strong> Node file খোলার আর পড়ার জন্য syscall করে — Chapter 1-এর <code>strace</code>-এ দেখা <code>openat</code> আর <code>read</code>। CPU kernel mode-এ ঢোকে।</li>

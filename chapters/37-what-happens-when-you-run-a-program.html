@@ -6,22 +6,22 @@
 
   <h3>পুরো trace, এক file-এ</h3>
   <p>Program-টা যত ছোট হতে পারে, <code>hello.js</code> নামে, এক লাইনের (২২ byte):</p>
-  <div class="codewrap"><pre><code>console.log('hello');</code></pre></div>
+  <div class="codewrap"><pre class="lang-js"><code>console.log('hello');</code></pre></div>
   <p>আর trace করার script। <code>bash -c</code> দিয়ে চালাচ্ছি, যাতে terminal-এর মতোই একটা shell node-কে চালায়। শেষে <code>; echo</code> রেখেছি Chapter 15-এর মতো একই কারণে: node শেষ command হলে bash fork না করে নিজেই node হয়ে যেত। <code>-f</code> মানে child process আর thread-দেরও ধরো, <code>-ttt</code> মানে প্রতিটা লাইনে সময়। awk সেই সময়কে বদলে দেয় "shell-এর fork-এর পর কত ms"-এ:</p>
-  <div class="codewrap"><pre><code># timeline.sh — shell থেকে node hello.js, পুরোটা strace-এ; সময় ms-এ, shell-এর fork-এর মুহূর্ত = 0
+  <div class="codewrap"><pre class="lang-sh"><code># timeline.sh — shell থেকে node hello.js, পুরোটা strace-এ; সময় ms-এ, shell-এর fork-এর মুহূর্ত = 0
 strace -f -ttt -o trace.txt bash -c 'node hello.js; echo "exit=$?"'
 awk 'NR == FNR { if (!t0 &amp;&amp; /clone\(/) t0 = $2; next }
      { printf "%-3s %7.2f  %s\n", $1, ($2 - t0) * 1000, substr($0, index($0, $3)) }' trace.txt trace.txt &gt; timeline.txt
 echo "$(wc -l &lt; timeline.txt) lines, $(cut -d' ' -f1 timeline.txt | sort -u | wc -l) tasks"</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE -v "$PWD":/w -w /w node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
   bash timeline.sh'</code></pre></div>
-  <div class="codewrap"><pre><code>hello
+  <div class="codewrap"><pre class="out"><code>hello
 exit=0
 970 lines, 8 tasks</code></pre></div>
   <p><code>timeline.txt</code> তোমার folder-এই তৈরি হয়েছে, কারণ container-এর <code>/w</code> আসলে তোমার <code>$PWD</code>। তাই এই chapter-এর বাকি <code>grep</code>-গুলো Mac-এর terminal-এই চালাতে পারো। প্রতিটা লাইনে তিনটা জিনিস: task-এর নম্বর (Linux-এর চোখে process আর thread দুটোই task, Chapter 16), fork থেকে কত ms, আর syscall। Negative সময় মানে fork-এর আগের অংশ: bash নিজে চালু হচ্ছে। ৯৭০ লাইনে ৮৪৮টা system call, তার ৬৯৬টা node-এর। আটটা task হলো bash, node, আর node-এর ছয়টা বাড়তি thread।</p>
   <p>strace-এর নিচে পুরো কাজে লেগেছে ৭৪ ms। আসল সময় মাপতে strace বাদ দিয়ে দুটো ঘড়ি মেলাব। একটা shell-এর ঘড়ি, fork-এর ঠিক আগে। অন্যটা node-এর নিজের: <code>performance.timeOrigin</code> (node-এর ঘড়ি চালু হওয়ার মুহূর্ত) আর <code>performance.nodeTiming</code> (Chapter 34):</p>
-  <div class="codewrap"><pre><code>// clock.js — hello.js-ই, সাথে ঘড়ি: shell-এর fork-এর মুহূর্ত (T0) থেকে কখন কোন ধাপ, ms-এ
+  <div class="codewrap"><pre class="lang-js"><code>// clock.js — hello.js-ই, সাথে ঘড়ি: shell-এর fork-এর মুহূর্ত (T0) থেকে কখন কোন ধাপ, ms-এ
 const code = performance.now();               // node-এর ঘড়ি: process-এর জন্ম থেকে ms
 console.log('hello');
 const logged = performance.now();
@@ -33,14 +33,14 @@ process.on('exit', () =&gt; {
                 ['hello written', logged], ['exit event', performance.now()]];
   for (const [what, ms] of rows) console.error(`${what.padEnd(18)} ${(born + ms).toFixed(1).padStart(5)} ms`);
 });</code></pre></div>
-  <div class="codewrap"><pre><code># when.sh — strace ছাড়া: shell-এর fork-এর মুহূর্ত = 0, তারপর কোন ধাপ কখন
+  <div class="codewrap"><pre class="lang-sh"><code># when.sh — strace ছাড়া: shell-এর fork-এর মুহূর্ত = 0, তারপর কোন ধাপ কখন
 node clock.js &gt; /dev/null 2&gt;&amp;1                # warm-up: প্রথমবারের বাড়তি খরচ বাদ দিতে
 t0=${EPOCHREALTIME/./}                        # bash-এর নিজের ঘড়ি, µs-এ (নতুন process লাগে না)
 T0=$t0 node clock.js &gt; /dev/null
 t1=${EPOCHREALTIME/./}
 awk -v d=$((t1 - t0)) 'BEGIN { printf "back in the shell  %5.1f ms\n", d / 1000 }'</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash when.sh</code></pre></div>
-  <div class="codewrap"><pre><code>node clock starts    0.9 ms
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash when.sh</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>node clock starts    0.9 ms
 V8 ready             2.1 ms
 Node env ready       6.9 ms
 bootstrap done       9.0 ms
@@ -135,8 +135,8 @@ back in the shell   12.9 ms</code></pre></div>
   <p>ছবির সবচেয়ে বড় কথা: তোমার লেখা এক লাইন চলেছে ২ ms-এরও কম সময়। বাকি ১১ ms গেছে process-এর জন্ম আর বিদায়ে। এবার trace ধরে ধাপগুলো একে একে দেখা যাক।</p>
 
   <h3>Shell খোঁজে, fork করে, ঘুমায়</h3>
-  <div class="codewrap"><pre><code>grep -E 'stat.*bin/node"|clone\(child_stack=NULL|wait4|execve\("/usr/local' timeline.txt | cut -c1-100</code></pre></div>
-  <div class="codewrap"><pre><code>127   -1.02  newfstatat(AT_FDCWD, "/usr/local/sbin/node", 0xffffd5779a18, 0) = -1 ENOENT (No such fi
+  <div class="codewrap"><pre class="cmd"><code>grep -E 'stat.*bin/node"|clone\(child_stack=NULL|wait4|execve\("/usr/local' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>127   -1.02  newfstatat(AT_FDCWD, "/usr/local/sbin/node", 0xffffd5779a18, 0) = -1 ENOENT (No such fi
 127   -0.96  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
 127   -0.88  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
 127   -0.50  newfstatat(AT_FDCWD, "/usr/local/bin/node", {st_mode=S_IFREG|0755, st_size=122179336, .
@@ -150,8 +150,8 @@ back in the shell   12.9 ms</code></pre></div>
   <p><code>main</code>-এর প্রথম কাজগুলো সাবধানতার। <code>capget</code> দিয়ে দেখে তার কী কী capability আছে (Chapter 31)। <code>fstat</code> দিয়ে দেখে fd ০, ১, ২ খোলা আছে কি না। তারপর প্রতিটা signal-এর handler একবার করে পরীক্ষা করে: parent কোনোটা ignore করিয়ে রেখে গেলে সেটাকে default-এ ফেরায়। আর দুটো signal নিজে ইচ্ছে করে ignore করে, যার একটা <code>SIGPIPE</code> (নিচের grep-এর প্রথম লাইন)। Chapter 31-এর table-এ বলেছিলাম Node শুরুতেই এটা করে; এই সেই প্রমাণ। ফলে যে socket-এর ওপাশ বন্ধ, তাতে লিখলে process মরে না, শুধু <code>EPIPE</code> error আসে (Chapter 30)।</p>
 
   <h3>Runtime দাঁড়ায়: event loop, thread, cgroup</h3>
-  <div class="codewrap"><pre><code>grep -E 'SIGPIPE|epoll_create1|io_uring_setup|CLONE_THREAD|memory.max' timeline.txt | cut -c1-100</code></pre></div>
-  <div class="codewrap"><pre><code>128   10.47  rt_sigaction(SIGPIPE, {sa_handler=SIG_IGN, sa_mask=[], sa_flags=0}, NULL, 8) = 0
+  <div class="codewrap"><pre class="cmd"><code>grep -E 'SIGPIPE|epoll_create1|io_uring_setup|CLONE_THREAD|memory.max' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>128   10.47  rt_sigaction(SIGPIPE, {sa_handler=SIG_IGN, sa_mask=[], sa_flags=0}, NULL, 8) = 0
 128   23.76  epoll_create1(EPOLL_CLOEXEC) = 3
 128   24.07  io_uring_setup(256, {flags=0x10000 /* IORING_SETUP_??? */, sq_thread_cpu=0, sq_thread_i
 128   25.30  clone(child_stack=0xffff8220e8e0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLO
@@ -173,10 +173,10 @@ back in the shell   12.9 ms</code></pre></div>
     <li><strong>১৩০–১৩৩</strong> — V8-এর চারটা worker thread। Garbage collection-এর অনেকটা (Chapter 6) আর JIT compile (Chapter 4) এরা পেছনে চালায়, যাতে main thread না আটকায়।</li>
     <li><strong>১৩৪</strong> — সবার শেষে, ৫২ ms-এ। এই thread সারাজীবন একটা <code>SIGUSR1</code>-এর অপেক্ষায় ঘুমায়। Signal handler-এর ভেতরে প্রায় কিছুই নিরাপদে করা যায় না (Chapter 31), তাই handler শুধু এই thread-কে জাগায়, আর সে debugger চালু করে। চেষ্টা করে দেখো:</li>
   </ul>
-  <div class="codewrap"><pre><code>docker run --rm node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-bookworm-slim bash -c '
   node -e "setTimeout(() =&gt; {}, 1000)" &amp; sleep 0.3
   kill -USR1 $!; wait'</code></pre></div>
-  <div class="codewrap"><pre><code>Debugger listening on ws://127.0.0.1:9229/6270015b-cadf-451f-a169-65171d32f583
+  <div class="codewrap"><pre class="out"><code>Debugger listening on ws://127.0.0.1:9229/6270015b-cadf-451f-a169-65171d32f583
 For help, see: https://nodejs.org/learn/getting-started/debugging</code></pre></div>
   <p>Chapter 16-এর libuv-worker-দের এখানে দেখা যাচ্ছে না। hello.js কোনো file, DNS বা crypto-র কাজ চায়নি, তাই thread pool তৈরিই হয়নি; সেটা তৈরি হয় প্রথম দরকারের সময়।</p>
   <p>৩২ ms-এ <code>/sys/fs/cgroup/memory.max</code> পড়া: Chapter 36-এর সেই ঘটনা। Node এখান থেকে দেখে কতটা memory পাওয়া যাবে, আর সেই হিসাবে V8-এর heap-এর সীমা ঠিক করে। তাই <code>--memory 256m</code>-এ heap-এর সীমা হয়েছিল ২৫৯ MB। এখানে container-এ কোনো সীমা দিইনি, তাই file-টায় লেখা <code>max</code>, আর Node পরের লাইনে <code>/proc/meminfo</code> থেকে পুরো RAM-এর হিসাবও নেয়।</p>
@@ -242,8 +242,8 @@ For help, see: https://nodejs.org/learn/getting-started/debugging</code></pre></
   <p>এরপর ছবির চার নম্বর ধাপ: Node-এর নিজের JS (require, process, stream…) দাঁড় করানো, V8-এর snapshot থেকে (Chapter 34)। এই অংশের syscall-গুলো প্রায় সবই memory-র: V8-এর heap-এর জন্য <code>mmap</code>, <code>mprotect</code>, <code>madvise</code>। বাকি কাজটা CPU-র, strace-এ তার কোনো লাইন নেই।</p>
 
   <h3>তোমার এক লাইন</h3>
-  <div class="codewrap"><pre><code>grep -E '"/w/|FIONBIO|write\(1, "hello|epoll_pwait\(13' timeline.txt | cut -c1-100</code></pre></div>
-  <div class="codewrap"><pre><code>128   56.52  statx(AT_FDCWD, "/w/hello.js", AT_STATX_SYNC_AS_STAT, STATX_ALL, {stx_mask=STATX_ALL|ST
+  <div class="codewrap"><pre class="cmd"><code>grep -E '"/w/|FIONBIO|write\(1, "hello|epoll_pwait\(13' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>128   56.52  statx(AT_FDCWD, "/w/hello.js", AT_STATX_SYNC_AS_STAT, STATX_ALL, {stx_mask=STATX_ALL|ST
 128   56.89  statx(AT_FDCWD, "/w/hello.js", AT_STATX_SYNC_AS_STAT|AT_SYMLINK_NOFOLLOW, STATX_ALL, {s
 128   57.01  openat(AT_FDCWD, "/w/package.json", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or di
 128   57.21  statx(AT_FDCWD, "/w/package.json", AT_STATX_SYNC_AS_STAT, STATX_ALL, 0xfffff844e410) =
@@ -255,18 +255,18 @@ For help, see: https://nodejs.org/learn/getting-started/debugging</code></pre></
   <p>৫৬ ms-এ, strace-এর হিসাবে জন্মের প্রায় শেষে, Node প্রথমবার তোমার file খোঁজে। প্রথম <code>statx</code> দেখে <code>hello.js</code> আছে কি না, আর সেটা file না folder। দ্বিতীয়টা (<code>AT_SYMLINK_NOFOLLOW</code>) দেখে সেটা symlink কি না, যাতে আসল path জানা যায় (Chapter 22: path থেকে inode)। তারপর Node খোঁজে <code>package.json</code>: প্রথমে <code>/w</code>-এ, তারপর উপরের <code>/</code>-এ। এই grep-এ শুধু <code>/w</code>-এরটা এসেছে। খোঁজার কারণ, সবচেয়ে কাছের <code>package.json</code>-এর <code>"type"</code> দেখে Node ঠিক করে <code>.js</code> file-টা CommonJS না ES module। তারপর <code>openat</code>, ২২ byte <code>read</code>, <code>close</code> (Chapter 21)। Compile-এ কোনো syscall নেই: V8 পুরোটা user mode-এ করে (Chapter 4)।</p>
   <p><code>console.log</code>-এর আগে Node দেখে নেয় fd ১ আসলে কী। <code>ioctl(1, TCGETS)</code> (grep-এ নেই) উত্তর দেয় <code>ENOTTY</code>, মানে এটা terminal না। <code>-t</code> ছাড়া Docker stdout-কে একটা pipe দিয়ে নিজের কাছে নেয়। Terminal, file আর pipe-এ লেখার নিয়ম আলাদা বলে Node এটা আগে জেনে নেয়। তারপর fd-টাকে non-blocking করে (<code>FIONBIO</code>, Chapter 28), আর একটাই <code>write(1, "hello\n", 6)</code> (Chapter 32)। node জানে না লেখাটা শেষে কোথায় যাবে, সে শুধু fd ১-এ লেখে (Chapter 15-এর <code>dup3</code>)।</p>
   <p>তারপর দুটো <code>epoll_pwait(13, [], 1024, 0)</code>। তোমার script শেষ, এবার event loop ঘোরে। শেষ argument <code>0</code> হলো timeout: "একটুও অপেক্ষা কোরো না"। কারণ অপেক্ষা করার মতো কিছু বাকি নেই: কোনো timer নেই, socket নেই, চলমান file-এর কাজ নেই। Loop তাই শেষ, আর process-ও শেষ। Node কখন exit করে, তার নিয়ম এটাই: যখন আর কিছুর অপেক্ষা বাকি থাকে না। একটা timer যোগ করলে একই লাইন বদলে যায়:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE node:22-bookworm-slim bash -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq strace &gt;/dev/null 2&gt;&amp;1
   strace -f -e trace=epoll_pwait node -e "setTimeout(() =&gt; {}, 200)" 2&gt;&amp;1 | grep "epoll_pwait(13"'</code></pre></div>
-  <div class="codewrap"><pre><code>[pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
+  <div class="codewrap"><pre class="out"><code>[pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
 [pid   129] epoll_pwait(13, [], 1024, 200, NULL, 8) = 0
 [pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0
 [pid   129] epoll_pwait(13, [], 1024, 0, NULL, 8) = 0</code></pre></div>
   <p>দ্বিতীয় লাইনে timeout ২০০: main thread ২০০ ms kernel-এর ভেতরে ঘুমাল (Blocked), আর timer শেষ হলে kernel তাকে জাগাল। এভাবেই চিনেছি যে fd ১৩ তোমার event loop। একটা server কখনো নিজে থেকে exit করে না, কারণ তার listening socket সবসময় এই epoll-এ বসানো থাকে (Chapter 29)।</p>
 
   <h3>বিদায়: exit_group, wait4, $?</h3>
-  <div class="codewrap"><pre><code>grep -E 'write\(12|exit_group|exited|wait4 resumed|--- SIGCHLD|"exit=0' timeline.txt | cut -c1-100</code></pre></div>
-  <div class="codewrap"><pre><code>128   68.92  write(12, "\1\0\0\0\0\0\0\0", 8 &lt;unfinished ...&gt;
+  <div class="codewrap"><pre class="cmd"><code>grep -E 'write\(12|exit_group|exited|wait4 resumed|--- SIGCHLD|"exit=0' timeline.txt | cut -c1-100</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>128   68.92  write(12, "\1\0\0\0\0\0\0\0", 8 &lt;unfinished ...&gt;
 133   70.37  +++ exited with 0 +++
 132   70.40  +++ exited with 0 +++
 131   70.42  +++ exited with 0 +++
@@ -289,7 +289,7 @@ For help, see: https://nodejs.org/learn/getting-started/debugging</code></pre></
 
   <h3>strace যা দেখে না</h3>
   <p>strace শুধু system call দেখে। অথচ ওই ১৩ ms-এ আরও অনেক কিছু ঘটে যা syscall না। Page fault একটা exception, kernel-এর তৃতীয় দরজা (Chapter 31)। Context switch ঘটায় scheduler (Chapter 17)। Timer interrupt আসে hardware থেকে। কোনোটাই strace-এর লাইনে আসে না। তবে kernel প্রতিটা process-এর জন্য এগুলোর হিসাব রাখে, আর <code>getrusage()</code> syscall সেটা দেয়; Node-এ <code>process.resourceUsage()</code>। <code>-r</code> (require) দিয়ে যেকোনো script-এর আগে load করা যায় এমন একটা ছোট file:</p>
-  <div class="codewrap"><pre><code>// watch.js — যেকোনো script-এর আগে load করো (node -r ./watch.js app.js); শেষে kernel-এর খাতা দেখায়
+  <div class="codewrap"><pre class="lang-js"><code>// watch.js — যেকোনো script-এর আগে load করো (node -r ./watch.js app.js); শেষে kernel-এর খাতা দেখায়
 process.on('exit', () =&gt; {
   const r = process.resourceUsage();                        // getrusage(): পুরো process, সব thread মিলিয়ে
   const vm = require('fs').readFileSync('/proc/self/status', 'utf8');
@@ -299,8 +299,8 @@ process.on('exit', () =&gt; {
   console.error(`context switches ${r.voluntaryContextSwitches} voluntary, ${r.involuntaryContextSwitches} involuntary`);
   console.error(`memory           ${mb('VmSize')} MB mapped, ${mb('VmRSS')} MB in RAM, ${vm.match(/Threads:\s+(\d+)/)[1]} threads`);
 });</code></pre></div>
-  <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'node -r ./watch.js hello.js 2&gt;&amp;1; echo "exit=$?"'</code></pre></div>
-  <div class="codewrap"><pre><code>hello
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro -w /w node:22-bookworm-slim bash -c 'node -r ./watch.js hello.js 2&gt;&amp;1; echo "exit=$?"'</code></pre></div>
+  <div class="codewrap"><pre class="out"><code>hello
 CPU time         user 12.2 ms, kernel 1.9 ms
 page faults      2434 minor, 0 major
 context switches 24 voluntary, 1 involuntary

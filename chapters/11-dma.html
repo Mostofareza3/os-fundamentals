@@ -10,7 +10,7 @@
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — CPU-র copy</div>
     <p><code>dd</code> হলো block ধরে ধরে data পড়া-লেখার একটা পুরনো Unix tool; <code>time</code> দেখায় মোট সময় (<code>real</code>) আর তার মধ্যে CPU কতটা user mode আর kernel mode-এ খেটেছে (Chapter 1)। Container-টা খোলা রাখো, পরের experiment-ও এখানেই:</p>
-    <div class="codewrap"><pre><code>docker run --rm -it debian:bookworm-slim bash
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -it debian:bookworm-slim bash
 
 # container-এর ভেতরে: ১ GB-র একটা file বানাও (লেখার পরে এটা page cache-এও থাকবে)
 dd if=/dev/urandom of=/root/big.bin bs=1M count=1024 status=none
@@ -76,7 +76,7 @@ time dd if=/root/big.bin of=/dev/null bs=1M status=none</code></pre></div>
   <p>এবার মাপো। Linux-এ <code>O_DIRECT</code> নামের একটা flag আছে যেটা page cache এড়িয়ে যায় (বিস্তারিত Chapter 24): device DMA দিয়ে data সরাসরি process-এর নিজের buffer-এ লেখে। তাই CPU-র copy মাপে ঢোকে না — দেখা যায় DMA-র সময় CPU আসলে কতটা খাটে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — DMA-র সময় CPU</div>
-    <div class="codewrap"><pre><code># আগের container-এই
+    <div class="codewrap"><pre class="cmd"><code># আগের container-এই
 time dd if=/root/big.bin of=/dev/null bs=1M iflag=direct status=none</code></pre></div>
     <p>আমার output: <code>real 0m0.234s</code>, <code>user 0m0.002s</code>, <code>sys 0m0.030s</code>।</p>
   </div>
@@ -117,7 +117,7 @@ time dd if=/root/big.bin of=/dev/null bs=1M iflag=direct status=none</code></pre
   <p>DMA data-র প্রতি byte-এর খরচ মুছে দেয়, কিন্তু প্রতিটা <em>অনুরোধ</em>-এর খরচ থেকেই যায়: syscall, descriptor লেখা, doorbell, device-এর নিজের প্রস্তুতি, interrupt, completion দেখা, process জাগানো। অনুরোধ যত ছোট, এই স্থির খরচ তত বড় ভাগ খায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — block-এর মাপ</div>
-    <div class="codewrap"><pre><code># একই প্রথম 256 MB, একবার 4 KB টুকরোয় (65536টা অনুরোধ), একবার 1 MB টুকরোয় (256টা)
+    <div class="codewrap"><pre class="cmd"><code># একই প্রথম 256 MB, একবার 4 KB টুকরোয় (65536টা অনুরোধ), একবার 1 MB টুকরোয় (256টা)
 time dd if=/root/big.bin of=/dev/null bs=4k count=65536 iflag=direct status=none
 time dd if=/root/big.bin of=/dev/null bs=1M count=256   iflag=direct status=none</code></pre></div>
     <p>আমার output: 4 KB-তে <code>real 0m2.217s</code> (<code>sys 0m0.395s</code>), 1 MB-তে <code>real 0m0.027s</code>।</p>
@@ -128,7 +128,7 @@ time dd if=/root/big.bin of=/dev/null bs=1M count=256   iflag=direct status=none
   <h3>IOMMU: device-কে পাহারা</h3>
   <p>DMA-র একটা ভয়ংকর দিক আছে। Device physical address-এ সরাসরি লিখতে পারে — Chapter 9-এর MMU আর page table-এর কোনো পাহারা তার উপর নেই, কারণ ওগুলো CPU-র জন্য। তাহলে একটা buggy driver ভুল address দিলে, বা একটা দূষিত Thunderbolt device laptop-এ লাগালে, সে kernel-এর memory পড়ে ফেলতে বা বদলে দিতে পারে। এটা কল্পনা না — "DMA attack" নামে বাস্তবে দেখানো হয়েছে।</p>
   <p>সমাধান: device-দের জন্য আলাদা একটা MMU — <strong>IOMMU</strong>। Device যে address ব্যবহার করে, IOMMU সেটাকে kernel-এর বানানো একটা page table দিয়ে অনুবাদ করে; kernel শুধু সেই buffer গুলোই map করে দেয় যেগুলো device-কে দেওয়া হয়েছে। Table-এর বাইরের যেকোনো address-এ device-এর লেখা আটকে যায়। Apple এর নাম দিয়েছে DART:</p>
-  <div class="codewrap"><pre><code>ioreg -l | grep -o '"IOClass" = "Apple[A-Z0-9]*DART"' | sort | uniq -c   # macOS
+  <div class="codewrap"><pre class="cmd"><code>ioreg -l | grep -o '"IOClass" = "Apple[A-Z0-9]*DART"' | sort | uniq -c   # macOS
 ls /sys/kernel/iommu_groups                                             # Linux (আসল machine-এ)</code></pre></div>
   <p>আমার Mac-এ <code>30 "IOClass" = "AppleT8110DART"</code> — ৩০টা IOMMU, একেকটা একেক গোষ্ঠীর device পাহারা দিচ্ছে। Linux-এ IOMMU চালু থাকলে <code>/sys/kernel/iommu_groups</code>-এ প্রতিটা গোষ্ঠীর জন্য একটা folder থাকে (Docker Desktop-এর VM-এ এটা খালি — সেখানে IOMMU নেই)। Virtual machine-কে একটা আসল device সরাসরি দিতে চাইলেও (Chapter 35) IOMMU লাগে।</p>
 

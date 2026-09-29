@@ -11,7 +11,7 @@
     <li><strong>Store</strong> — register-এর মান memory-র একটা address-এ লেখো।</li>
   </ul>
   <p>Chapter 4-এর <code>hello</code>-র disassembly-তে এরা ছিল:</p>
-  <div class="codewrap"><pre><code>str  x8, [x9]           ; store: register x8-এর মান লেখো x9-এ রাখা address-এ
+  <div class="codewrap"><pre class="lang-asm"><code>str  x8, [x9]           ; store: register x8-এর মান লেখো x9-এ রাখা address-এ
 ldr  w0, [sp, #0x8]     ; load:  (SP + 8) address থেকে ৪ byte পড়ে w0-তে আনো</code></pre></div>
   <p>ARM-এ (Apple Silicon) নিয়মটা কড়া: হিসাব শুধু register-এ, memory ছোঁয়া শুধু load/store দিয়ে। Intel/AMD-এর x86-এ একটা instruction-এর ভেতরেই memory থেকে পড়ে যোগ করা যায়, কিন্তু CPU ভেতরে সেটাকেও load আর যোগ — দুই ধাপে ভাঙে। মানে JS-এর <code>s += a[i]</code> CPU-র চোখে: <code>a[i]</code>-এর address হিসাব, load, যোগ। প্রতিটা <code>a[i]</code> একটা load; প্রশ্ন শুধু সেই load কত দূর পর্যন্ত যেতে হয়।</p>
 
@@ -25,7 +25,7 @@ ldr  w0, [sp, #0x8]     ; load:  (SP + 8) address থেকে ৪ byte পড�
     <li>তারপর <strong>RAM</strong>।</li>
   </ul>
   <p>গুরুত্বপূর্ণ কথা: এটা পুরোপুরি hardware-এর কাজ। "এটা cache-এ রাখো" বলার কোনো সাধারণ instruction নেই, kernel-ও প্রতিটা load-এ মাথা ঘামায় না। তোমার হাতে একমাত্র লাগাম হলো access pattern — কোন ক্রমে, কতটা ছড়িয়ে memory ছুঁচ্ছ। তোমার machine-এর cache-এর মাপ দেখো:</p>
-  <div class="codewrap"><pre><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize   # macOS (Apple Silicon)
+  <div class="codewrap"><pre class="cmd"><code>sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize   # macOS (Apple Silicon)
 lscpu --caches                                                 # Linux</code></pre></div>
   <p>আমার Mac-এ performance core-প্রতি L1 data cache <code>131072</code> byte (১২৮ KB), আর performance core-দের ভাগ করা L2 <code>16777216</code> byte (১৬ MB)। Chapter 7-এর <code>chase.js</code> দিয়ে তিনটা মাপে চালালে ছবিটা পরিষ্কার: ১৬ KB-তে <code>1.4 ns</code> (পুরোটা L1-এ আঁটে), ২৫৬ KB-তে <code>4.0 ns</code> (L1-এ আঁটে না, L2-তে আঁটে), ৫১২ MB-তে <code>118 ns</code> (কোথাও আঁটে না — প্রতিবার RAM)। প্রতিটা স্তরের পুরো মাপজোখ Chapter 13-এ।</p>
 
@@ -69,12 +69,12 @@ lscpu --caches                                                 # Linux</code></p
   <h3>Cache line: memory আসে টুকরো ধরে</h3>
   <p>Cache যদি প্রতিটা byte আলাদা করে রাখত, তাহলে প্রতিটা byte-এর পাশে লিখে রাখতে হতো "এটা কোন address-এর copy" — সেই হিসাবের খাতাই data-র চেয়ে বড় হয়ে যেত। তার উপর, program একটা byte ছুঁলে প্রায়ই পাশেরগুলোও ছোঁয় — array-র পরের element, object-এর পরের field।</p>
   <p>তাই cache আর RAM-এর মধ্যে লেনদেন হয় নির্দিষ্ট মাপের টুকরো ধরে, যার নাম <strong>cache line</strong>। তুমি ৪ byte চাইলেও RAM থেকে আসে পুরো line; তার পরে সেই line-এর যেকোনো byte ছোঁয়া মানে hit। মাপটা CPU-ভেদে আলাদা:</p>
-  <div class="codewrap"><pre><code>sysctl -n hw.cachelinesize            # macOS — Apple Silicon-এ 128
+  <div class="codewrap"><pre class="cmd"><code>sysctl -n hw.cachelinesize            # macOS — Apple Silicon-এ 128
 getconf LEVEL1_DCACHE_LINESIZE        # Linux — Intel/AMD-এ সাধারণত 64</code></pre></div>
   <p>এবার প্রমাণ। নিচের script ১২৮ MB জুড়ে ছড়ানো ১০ লাখ line-এ একটা এলোমেলো শিকল বানায়: প্রতিটা line-এর প্রথম ঘরে লেখা থাকে পরের কোন line-এ যেতে হবে (Chapter 7-এর pointer chase, শুধু এবার line ধরে)। তারপর দুইবার শিকল ধরে হাঁটে — একবার প্রতি line থেকে শুধু ওই একটা মান পড়ে, আরেকবার প্রতি line-এর ৩২টা মানই পড়ে যোগ করে।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — cacheline.js</div>
-    <div class="codewrap"><pre><code>const LINE = 128;                          // Apple Silicon-এ 128 byte; Intel/AMD-এ 64 দাও
+    <div class="codewrap"><pre class="lang-js"><code>const LINE = 128;                          // Apple Silicon-এ 128 byte; Intel/AMD-এ 64 দাও
 const PER_LINE = LINE / 4;                 // এক line-এ কতগুলো Int32
 const LINES = 2 ** 20;                     // ~১০ লাখ line × 128 B = 128 MB, cache-এ আঁটবে না
 const a = new Int32Array(LINES * PER_LINE).fill(1);
@@ -110,7 +110,7 @@ for (const [label, fn] of [['1 value per line   ', firstOnly], ['all 32 values/l
   console.log(label, ms.toFixed(0).padStart(4), 'ms  =', (ms * 1e6 / LINES).toFixed(0), 'ns per line');
 }</code></pre></div>
     <p>আমার Mac-এ:</p>
-    <div class="codewrap"><pre><code>1 value per line     124 ms  = 118 ns per line
+    <div class="codewrap"><pre class="out"><code>1 value per line     124 ms  = 118 ns per line
 all 32 values/line   128 ms  = 122 ns per line</code></pre></div>
   </div>
   <p>৩২ গুণ বেশি মান পড়া হলো, সময় বাড়ল মাত্র ৩%। প্রতিটা line-এর দাম ~১১৮ ns — সেটা দেওয়া হয় প্রথম byte ছোঁয়ার সময়ই; তারপর বাকি ৩১টা মান এসে বসে আছে L1-এ, প্রায় বিনামূল্যে। উল্টো দিক থেকে ভাবলে: প্রতি line থেকে মাত্র একটা মান নিলে তুমি ১২৮ byte আনার দাম দিচ্ছ ৪ byte কাজে লাগাতে — বাকি ৯৭% bandwidth নষ্ট।</p>
@@ -121,7 +121,7 @@ all 32 values/line   128 ms  = 122 ns per line</code></pre></div>
   <p>কারণ CPU-র ভেতরে একটা circuit আছে যে memory access-এর ধরন খেয়াল করে — "এ তো পরপর line পড়ছে" বা "এ প্রতি ৬৪ byte পরপর লাফাচ্ছে" — আর অনুমান করে পরের line গুলো চাওয়ার আগেই RAM থেকে আনিয়ে রাখে। এর নাম <strong>prefetcher</strong>। অনুমান মিললে load এসে দেখে data আগে থেকেই cache-এ। কিন্তু pattern না থাকলে সে কিছুই অনুমান করতে পারে না।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — prefetch.js</div>
-    <div class="codewrap"><pre><code>const N = 32 * 2 ** 20;                    // ৩ কোটির বেশি Int32 = 128 MB
+    <div class="codewrap"><pre class="lang-js"><code>const N = 32 * 2 ** 20;                    // ৩ কোটির বেশি Int32 = 128 MB
 const a = new Int32Array(N).fill(1);
 const inOrder = new Int32Array(N);         // 0, 1, 2, 3, ...
 const shuffled = new Int32Array(N);        // একই index গুলো, এলোমেলো ক্রমে

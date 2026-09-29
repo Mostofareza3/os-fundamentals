@@ -12,7 +12,7 @@
     <li><strong>TCP</strong> আর <strong>UDP:</strong> packet-এর উপর বসানো দুইটা নিয়ম (<strong>protocol</strong>)। TCP দেয় একটা নির্ভরযোগ্য, ক্রম-ঠিক-রাখা byte-এর স্রোত — Chapter 26-এ তার ভেতরটা। UDP দেয় আলাদা আলাদা বার্তা, কোনো নিশ্চয়তা ছাড়া।</li>
   </ul>
   <p>একটা TCP connection-কে kernel চেনে চারটা মান দিয়ে: <strong>(client IP, client port, server IP, server port)</strong> — একে বলে <strong>four-tuple</strong>। Client-এর port তুমি সাধারণত বাছো না; <code>connect()</code>-এর সময় kernel একটা খালি নম্বর নিজেই দিয়ে দেয় — <strong>ephemeral port</strong>। কোন range থেকে দেবে, দেখা যায়:</p>
-  <div class="codewrap"><pre><code>sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last   # macOS
+  <div class="codewrap"><pre class="cmd"><code>sysctl net.inet.ip.portrange.first net.inet.ip.portrange.last   # macOS
 cat /proc/sys/net/ipv4/ip_local_port_range                     # Linux</code></pre></div>
   <p>আমার Mac-এ ৪৯১৫২ থেকে ৬৫৫৩৫; Docker-এর Linux-এ ৩২৭৬৮ থেকে ৬০৯৯৯। চারটা মানের যেকোনো একটা আলাদা হলেই connection আলাদা — তাই একই server port 8080-এ হাজারো client একসাথে থাকতে পারে, কারণ প্রত্যেকের (client IP, client port) জোড়া আলাদা।</p>
 
@@ -21,7 +21,7 @@ cat /proc/sys/net/ipv4/ip_local_port_range                     # Linux</code></p
   <p>একটা server আর তিনটা client একই Node process-এ চালিয়ে kernel-এর চোখে কী কী আছে দেখি। <code>ss</code> হলো Linux-এর socket দেখার tool (iproute2 package-এ):</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — sockets.js</div>
-    <div class="codewrap"><pre><code>// sockets.js — একটা server, তিনটা client (সবাই এক process-এ, দেখার সুবিধার জন্য)
+    <div class="codewrap"><pre class="lang-js"><code>// sockets.js — একটা server, তিনটা client (সবাই এক process-এ, দেখার সুবিধার জন্য)
 const net = require('net');
 const fs = require('fs');
 const { execSync } = require('child_process');
@@ -42,10 +42,10 @@ function show() {
   }
   process.exit(0);
 }</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq iproute2 &gt;/dev/null
   node /w/sockets.js'</code></pre></div>
-    <div class="codewrap"><pre><code>State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+    <div class="codewrap"><pre class="out"><code>State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 LISTEN 0      511        127.0.0.1:8080       0.0.0.0:*
 ESTAB  0      0          127.0.0.1:8080     127.0.0.1:36666
 ESTAB  0      0          127.0.0.1:36666    127.0.0.1:8080
@@ -119,7 +119,7 @@ fd 24 -&gt; socket:[2248431]</code></pre></div>
   <p>Client-এর কাজ সরল: socket বানাও, <code>connect()</code>। Server-এর ছন্দ আলাদা, চার ধাপে। Node-এর <code>net.createServer().listen()</code> ভেতরে ঠিক কী চায়, strace-এ দেখি:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — একটা server-এর system call</div>
-    <div class="codewrap"><pre><code>docker run --rm -it --cap-add SYS_PTRACE node:22-bookworm-slim bash
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -it --cap-add SYS_PTRACE node:22-bookworm-slim bash
 apt-get update -qq &amp;&amp; apt-get install -y -qq strace
 
 cat &gt; tiny.js &lt;&lt;'EOF'
@@ -128,7 +128,7 @@ const s = net.createServer(c =&gt; { c.end('hi\n'); s.close(); });
 s.listen(8080, '127.0.0.1', () =&gt; net.connect(8080, '127.0.0.1').resume());
 EOF
 strace -f -e trace=socket,setsockopt,bind,listen,accept4 node tiny.js 2&gt;&amp;1 | grep -E "AF_INET|setsockopt|bind|listen|accept4"</code></pre></div>
-    <div class="codewrap"><pre><code>[pid   131] socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 18
+    <div class="codewrap"><pre class="out"><code>[pid   131] socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 18
 [pid   131] setsockopt(18, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
 [pid   131] bind(18, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
 [pid   131] listen(18, 511)             = 0
@@ -176,7 +176,7 @@ strace -f -e trace=socket,setsockopt,bind,listen,accept4 node tiny.js 2&gt;&amp;
   <p>TCP-তে কথা বলার আগে একটা connection বানাতে হয় — দুই kernel আগে একমত হয় (Chapter 26)। UDP-তে কোনো connection নেই: প্রতিটা বার্তা (<strong>datagram</strong>) আলাদা packet হয়ে ঠিকানায় রওনা দেয়; পৌঁছাল কি না, কোন ক্রমে পৌঁছাল — UDP কিছুই দেখে না। পার্থক্যটা সবচেয়ে পরিষ্কার এমন একটা port-এ যেখানে কেউ শুনছে না:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — udp-vs-tcp.js</div>
-    <div class="codewrap"><pre><code>// udp-vs-tcp.js — port 9999-এ কেউ শুনছে না; দুই protocol কী বলে?
+    <div class="codewrap"><pre class="lang-js"><code>// udp-vs-tcp.js — port 9999-এ কেউ শুনছে না; দুই protocol কী বলে?
 const dgram = require('dgram');
 const net = require('net');
 
@@ -187,7 +187,7 @@ u.send('hello', 9999, '127.0.0.1', err =&gt; {
   net.connect(9999, '127.0.0.1')
      .on('error', e =&gt; console.log('TCP connect:', e.code));
 });</code></pre></div>
-    <div class="codewrap"><pre><code>UDP send: no error (sent into the void)
+    <div class="codewrap"><pre class="out"><code>UDP send: no error (sent into the void)
 TCP connect: ECONNREFUSED</code></pre></div>
   </div>
   <p>UDP-র send সফল — বার্তা বেরিয়ে গেছে, কেউ নিল কি না তার খবর রাখার কোনো ব্যবস্থাই নেই। TCP সাথে সাথে জানিয়ে দিয়েছে কেউ শুনছে না (<code>ECONNREFUSED</code>), কারণ connect-এর সময় অপর পাশের kernel-এর উত্তর লাগে। UDP সস্তা আর দেরিহীন, তাই সেখানে চলে যেখানে একটা হারানো বার্তা আবার পাঠানোর চেয়ে পরেরটা পাঠানোই ভালো, বা যেখানে app নিজের মতো করে নির্ভরযোগ্যতা বানাতে চায়: DNS lookup, video call, online game, আর HTTP/3 (যার নিচের QUIC protocol UDP-র উপর নিজস্ব নির্ভরযোগ্যতা বানায়)।</p>
@@ -196,7 +196,7 @@ TCP connect: ECONNREFUSED</code></pre></div>
   <p>দুইটা process যদি একই machine-এ থাকে, তাহলে IP আর port-এর ঝামেলা কেন? <strong>Unix domain socket</strong>-এর ঠিকানা একটা file path; data কোনো network stack-এর ভেতর দিয়ে যায় না, kernel এক process-এর buffer থেকে আরেক process-এর buffer-এ সরাসরি দেয়। API হুবহু একই — Node-এ port-এর জায়গায় path দিলেই হলো:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — unixsock.js</div>
-    <div class="codewrap"><pre><code>// unixsock.js — একই machine-এর দুই process-এর জন্য socket: network না, একটা file path
+    <div class="codewrap"><pre class="lang-js"><code>// unixsock.js — একই machine-এর দুই process-এর জন্য socket: network না, একটা file path
 const net = require('net');
 const fs = require('fs');
 const path = '/tmp/demo.sock';
@@ -206,11 +206,11 @@ server.listen(path, () =&gt; {
   console.log(fs.statSync(path).isSocket() ? 'file type: socket' : 'not a socket');
   net.connect(path).on('data', d =&gt; { process.stdout.write(d); server.close(); });
 });</code></pre></div>
-    <div class="codewrap"><pre><code>file type: socket
+    <div class="codewrap"><pre class="cmd"><code>file type: socket
 hello over a unix socket</code></pre></div>
   </div>
   <p>তুমি এটা রোজ ব্যবহার করো, না জেনেই। <code>docker</code> command আসলে Docker daemon-এর সাথে HTTP-তে কথা বলে — কিন্তু TCP port-এ না, একটা Unix socket-এ:</p>
-  <div class="codewrap"><pre><code>ls -l /var/run/docker.sock
+  <div class="codewrap"><pre class="cmd"><code>ls -l /var/run/docker.sock
 curl -s --unix-socket /var/run/docker.sock http://localhost/version | head -c 120</code></pre></div>
   <p>আমার Mac-এ প্রথমটা দেখায় <code>/var/run/docker.sock -&gt; /Users/mostofareza/.docker/run/docker.sock</code>, আর দ্বিতীয়টা ফেরত দেয় <code>{"Platform":{"Name":"Docker Desktop 4.46.0 (204649)"},"Components":[{"Name":"Engine","Version":"28.4.0",…</code> — সাধারণ HTTP request আর JSON উত্তর, শুধু পথটা একটা file। Postgres-এর local connection (<code>/var/run/postgresql/.s.PGSQL.5432</code>) একই কৌশল।</p>
 

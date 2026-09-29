@@ -83,7 +83,7 @@
   <div class="box lab">
     <div class="box-title">EXPERIMENT — ilp.js</div>
     <p>একই দুই কোটি গুণ, একবার একটা শিকলে (প্রতিটা গুণ আগেরটার ফলাফলের জন্য অপেক্ষা করে), একবার চারটা স্বাধীন শিকলে ভাগ করে:</p>
-    <div class="codewrap"><pre><code>const N = 20_000_000;
+    <div class="codewrap"><pre class="lang-js"><code>const N = 20_000_000;
 const a = new Float64Array(N).fill(1.0000001);
 function one(a) {                                   // একটা শিকল
   let s = 1;
@@ -110,7 +110,7 @@ for (const [label, f] of [['1 chain ', one], ['4 chains', four]]) {
   <p>তাই core অপেক্ষা করে না, অনুমান করে। Chapter 12-এর front-end-এর <strong>branch predictor</strong> প্রতিটা branch-এর অতীত আচরণ মনে রাখে — "এই loop-এর লাফ প্রায় সবসময় নেওয়া হয়", "এই <code>if</code> পাঁচবারে একবার সত্যি" — আর সেই অনুমানে পরের instruction গুলো আনা আর চালানো শুরু করে দেয়। অনুমান ঠিক হলে কোনো দেরি নেই। ভুল হলে আধা-চালানো সব কাজ ফেলে দিয়ে সঠিক পথ থেকে নতুন করে শুরু — কয়েক ডজন cycle-এর লোকসান।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — branch.js</div>
-    <div class="codewrap"><pre><code>const N = 10_000_000;
+    <div class="codewrap"><pre class="lang-js"><code>const N = 10_000_000;
 const data = new Int32Array(N);
 for (let i = 0; i &lt; N; i++) data[i] = Math.floor(Math.random() * 256);   // ০–২৫৫ এলোমেলো
 
@@ -136,7 +136,7 @@ run('sorted:  ', data.slice().sort());     // একই সংখ্যা, স�
   <div class="box lab">
     <div class="box-title">EXPERIMENT — parallel.js</div>
     <p>একই মোট কাজ (২৪০ কোটিবার বর্গমূল যোগ), ১, ২, ৪, ৮, ১২ আর ২৪টা <code>worker_threads</code>-এ সমান ভাগ করে:</p>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData, parentPort } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData, parentPort } = require('worker_threads');
 const TOTAL = 2_400_000_000;                     // মোট কাজ: ২৪০ কোটি ধাপ
 
 function work(from, to) {                        // শুধু CPU-র কাজ, memory প্রায় ছোঁয় না
@@ -167,7 +167,7 @@ if (isMainThread) {
   parentPort.postMessage(work(workerData.from, workerData.to));
 }</code></pre></div>
     <p>আমার Mac-এ (৮টা P-core, ৪টা E-core):</p>
-    <div class="codewrap"><pre><code> 1 workers:  1344 ms   speedup ×1.0
+    <div class="codewrap"><pre class="out"><code> 1 workers:  1344 ms   speedup ×1.0
  2 workers:   672 ms   speedup ×2.0
  4 workers:   374 ms   speedup ×3.6
  8 workers:   201 ms   speedup ×6.7
@@ -179,7 +179,7 @@ if (isMainThread) {
 
   <h3>Instruction set নিয়ে দুই টুকরো কথা</h3>
   <p><strong>RISC বনাম CISC</strong>: instruction set নকশার দুই দর্শন — ছোট, সরল, সমান মাপের instruction (RISC — ARM, তোমার Mac; সব instruction ৪ byte, Chapter 4-এ দেখেছ), বনাম বড়, জটিল, নানা মাপের instruction (CISC — Intel/AMD-এর x86)। আজ ভেতরে দুই ধারাই জটিল instruction ভেঙে ছোট ছোট অংশে চালায়, তাই পার্থক্য আগের চেয়ে কম। App developer-এর জন্য আসল কথা: আলাদা instruction set মানে আলাদা machine code।</p>
-  <div class="codewrap"><pre><code>file /bin/ls</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>file /bin/ls</code></pre></div>
   <p>macOS-এ output: <code>Mach-O universal binary with 2 architectures: [x86_64 ...] [arm64e ...]</code> — একটা file-এর ভেতরে দুইটা পুরো program, দুই instruction set-এর জন্য; loader চালানোর সময় machine-এর সাথে মেলে এমনটা বেছে নেয়। যে program-এ শুধু x86 code আছে, Apple Silicon-এ সেটা চালায় <strong>Rosetta</strong> — x86-এর machine code-কে ARM-এর machine code-এ অনুবাদ করে।</p>
   <p><strong>৩২-bit বনাম ৬৪-bit</strong>: মূলত register আর address কত চওড়া। ৩২-bit-এ একটা address দিয়ে সর্বোচ্চ ৪ GB বোঝানো যায় — আজকের জন্য হাস্যকর ছোট। <code>getconf LONG_BIT</code> তোমার machine-এ <code>64</code> দেখাবে। তবে আজকের CPU পুরো ৬৪ bit address ব্যবহার করে না, সাধারণত নিচের ৪৮ bit — এজন্যই Chapter 5-এর <code>/proc/self/maps</code>-এর address গুলো ১২ hex digit লম্বা (<code>ffffffee8000</code>): ১২ × ৪ = ৪৮ bit।</p>
 

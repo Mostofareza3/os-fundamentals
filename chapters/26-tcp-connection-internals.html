@@ -18,7 +18,7 @@
   <p>পুরো একটা কথোপকথন ধরে দেখি। <code>tcpdump</code> network-এর packet ধরে দেখানোর tool; Docker-এর ভেতরে loopback (<code>lo</code>)-এ চালাব:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — hello-tcp.js আর tcpdump</div>
-    <div class="codewrap"><pre><code>// hello-tcp.js — client "hello" পাঠায়, server "HELLO" ফেরত দেয়, তারপর বিদায়
+    <div class="codewrap"><pre class="lang-js"><code>// hello-tcp.js — client "hello" পাঠায়, server "HELLO" ফেরত দেয়, তারপর বিদায়
 const net = require('net');
 const server = net.createServer(c =&gt; c.on('data', d =&gt; c.end(d.toString().toUpperCase())));
 server.listen(8080, '127.0.0.1', () =&gt; {
@@ -26,12 +26,12 @@ server.listen(8080, '127.0.0.1', () =&gt; {
   c.on('data', d =&gt; console.log('client got:', d.toString()));
   c.on('close', () =&gt; server.close());
 });</code></pre></div>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w:ro node:22-bookworm-slim sh -c '
   apt-get update -qq &gt;/dev/null &amp;&amp; apt-get install -y -qq tcpdump &gt;/dev/null
   tcpdump -i lo -n -l "tcp port 8080" 2&gt;/dev/null &gt; /tmp/cap.txt &amp; sleep 1
   node /w/hello-tcp.js; sleep 1; cat /tmp/cap.txt'</code></pre></div>
     <p>আমার output (প্রতিটা লাইনের শেষের <code>options [...]</code> অংশ ছেঁটে দিয়েছি; আর port 8080 দেখে tcpdump data-কে ভুল করে <code>HTTP</code> বলে):</p>
-    <div class="codewrap"><pre><code>.608782 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [S],  seq 1401336468, win 65495, length 0
+    <div class="codewrap"><pre class="out"><code>.608782 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [S],  seq 1401336468, win 65495, length 0
 .608793 127.0.0.1.8080 &gt; 127.0.0.1.48560: Flags [S.], seq 2557690574, ack 1401336469, win 65483, length 0
 .608802 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [.],  ack 1, win 512, length 0
 .609508 127.0.0.1.48560 &gt; 127.0.0.1.8080: Flags [P.], seq 1:6, ack 1, win 512, length 5: HTTP
@@ -93,7 +93,7 @@ server.listen(8080, '127.0.0.1', () =&gt; {
   <p>তারে "connection" বলে কিছু নেই — তারে শুধু ওপরের মতো আলাদা আলাদা packet। Connection হলো দুই পাশের kernel-এ রাখা একগাদা সংখ্যা: কার কোন sequence number পর্যন্ত পাঠানো, কোন পর্যন্ত ACK পাওয়া, timer, window। <code>ss -i</code> দিয়ে সেই সংখ্যাগুলো সরাসরি দেখা যায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — tcpinfo.js</div>
-    <div class="codewrap"><pre><code>// tcpinfo.js — একটা চালু connection-এর জন্য kernel কী কী মনে রাখে
+    <div class="codewrap"><pre class="lang-js"><code>// tcpinfo.js — একটা চালু connection-এর জন্য kernel কী কী মনে রাখে
 const net = require('net');
 const { execSync } = require('child_process');
 net.createServer(c =&gt; c.pipe(c)).listen(8080, '127.0.0.1', () =&gt; {   // echo server
@@ -107,7 +107,7 @@ net.createServer(c =&gt; c.pipe(c)).listen(8080, '127.0.0.1', () =&gt; {   // ec
   c.resume();
 });</code></pre></div>
     <p>Docker-এ iproute2 বসিয়ে (Chapter 25-এর মতো) চালালে, আমার output-এর দরকারি অংশ:</p>
-    <div class="codewrap"><pre><code>ESTAB 0      0          127.0.0.1:56596    127.0.0.1:8080
+    <div class="codewrap"><pre class="out"><code>ESTAB 0      0          127.0.0.1:56596    127.0.0.1:8080
 	 cubic wscale:7,7 rto:201 rtt:0.033/0.036 ... mss:47424 ... cwnd:10
 	 bytes_sent:100000 bytes_acked:100001 bytes_received:100000 ... snd_wnd:94848</code></pre></div>
   </div>
@@ -117,7 +117,7 @@ net.createServer(c =&gt; c.pipe(c)).listen(8080, '127.0.0.1', () =&gt; {   // ec
   <p>TCP connection-এর দুই দিক আলাদাভাবে বন্ধ হয়: প্রতিটা পক্ষ "আমার আর পাঠানোর কিছু নেই" জানাতে FIN পাঠায়। ফলে একটা connection বন্ধ হওয়ার পথে কয়েকটা মাঝামাঝি অবস্থা (<strong>state</strong>) পেরোয়, আর দুইটা production-এ খুব চেনা:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — states.js</div>
-    <div class="codewrap"><pre><code>// states.js — connection বন্ধের পরের দুই অবস্থা: TIME-WAIT আর CLOSE-WAIT
+    <div class="codewrap"><pre class="lang-js"><code>// states.js — connection বন্ধের পরের দুই অবস্থা: TIME-WAIT আর CLOSE-WAIT
 const net = require('net');
 const { execSync } = require('child_process');
 
@@ -134,7 +134,7 @@ setTimeout(() =&gt; {
     process.exit(0);
   }, 300);
 }, 100);</code></pre></div>
-    <div class="codewrap"><pre><code>State      Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+    <div class="codewrap"><pre class="out"><code>State      Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
 CLOSE-WAIT 0      0          127.0.0.1:8081     127.0.0.1:49548
 FIN-WAIT-2 0      0          127.0.0.1:49548    127.0.0.1:8081
 TIME-WAIT  0      0          127.0.0.1:8082     127.0.0.1:39102</code></pre></div>
@@ -212,7 +212,7 @@ TIME-WAIT  0      0          127.0.0.1:8082     127.0.0.1:39102</code></pre></di
   <p>ওপরের handshake-এ তোমার Node code কোথায় ছিল? কোথাও না — পুরোটা kernel করেছে। Listening socket-এর পেছনে kernel দুইটা লাইন রাখে: আধা-শেষ handshake-এর জন্য <strong>SYN queue</strong>, আর পুরো শেষ হওয়া connection-এর জন্য <strong>accept queue</strong> — যেখানে তারা app-এর <code>accept()</code>-এর অপেক্ষায় থাকে। Accept queue-এর মাপ হলো <code>listen()</code>-এ দেওয়া backlog আর kernel-এর সীমা <code>net.core.somaxconn</code>-এর মধ্যে যেটা ছোট (Docker VM-এ <code>cat /proc/sys/net/core/somaxconn</code> = ৪০৯৬, Node-এর default backlog ৫১১)। App ব্যস্ত থাকলে কী হয়, দেখি — backlog ইচ্ছা করে ৪:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — backlog.js</div>
-    <div class="codewrap"><pre><code>// backlog.js — server-এর event loop আটকে থাকলে নতুন connection-এর কী হয়
+    <div class="codewrap"><pre class="lang-js"><code>// backlog.js — server-এর event loop আটকে থাকলে নতুন connection-এর কী হয়
 const net = require('net');
 const { execSync } = require('child_process');
 
@@ -235,7 +235,7 @@ if (process.argv[2] === 'server') {
   });
 }</code></pre></div>
     <p>আমার output (ss-এর তালিকা থেকে একই রকম লাইনগুলো বাদ দিয়ে):</p>
-    <div class="codewrap"><pre><code>client 1 connected after 2 ms
+    <div class="codewrap"><pre class="out"><code>client 1 connected after 2 ms
 client 2 connected after 2 ms
 client 3 connected after 2 ms
 client 4 connected after 2 ms

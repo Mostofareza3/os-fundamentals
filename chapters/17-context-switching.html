@@ -66,7 +66,7 @@
   <p>ওপরের দুই শুরুর পথের দুইটা নাম আছে। <strong>Voluntary</strong> switch — thread নিজেই CPU ছেড়ে দিল, কারণ তার অপেক্ষা করার কিছু আছে (I/O, sleep, lock)। <strong>Involuntary</strong> switch — thread চলতে চাইছিল, কিন্তু kernel জোর করে নামিয়ে দিল (time slice শেষ, বা বেশি গুরুত্বপূর্ণ কেউ জেগেছে)। Linux দুইটাই গোনে, আর Node <code>process.resourceUsage()</code> দিয়ে দেখায়:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — switches.js</div>
-    <div class="codewrap"><pre><code>const ru = () =&gt; { const r = process.resourceUsage(); return [r.voluntaryContextSwitches, r.involuntaryContextSwitches]; };
+    <div class="codewrap"><pre class="lang-js"><code>const ru = () =&gt; { const r = process.resourceUsage(); return [r.voluntaryContextSwitches, r.involuntaryContextSwitches]; };
 const mode = process.argv[2];
 const [v0, i0] = ru();
 if (mode === 'sleepy') {
@@ -86,19 +86,19 @@ function report() {
   console.log(`${mode.padEnd(6)} voluntary: ${v1 - v0}   involuntary: ${i1 - i0}`);
 }</code></pre></div>
     <p>তিনভাবে চালাও — ঘুমপ্রিয়টা, একা busy-টা, আর একটা core-এ আরেকটা loop-এর সাথে ভাগাভাগি করে busy-টা (<code>taskset -c 0</code> দুজনকেই CPU 0-তে আটকায়, Chapter 15):</p>
-    <div class="codewrap"><pre><code>docker run --rm -v "$PWD":/w node:22-bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm -v "$PWD":/w node:22-bookworm-slim bash -c '
   node /w/switches.js sleepy
   node /w/switches.js busy
   taskset -c 0 node -e "while(true){}" &amp; C=$!; sleep 0.5
   taskset -c 0 node /w/switches.js busy; kill $C'</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>sleepy voluntary: 199   involuntary: 0
+    <div class="codewrap"><pre class="out"><code>sleepy voluntary: 199   involuntary: 0
 busy   voluntary: 7   involuntary: 14
 busy   voluntary: 8   involuntary: 275</code></pre></div>
   </div>
   <p>ঘুমপ্রিয় process-এ প্রায় প্রতিটা <code>setTimeout</code>-এ একটা voluntary switch — সে নিজে block হয়ে CPU ছেড়েছে, কেউ তাকে সরায়নি। একা busy loop-এ switch প্রায় নেই: অন্য core খালি, কাউকে তার জায়গা লাগেনি। কিন্তু একই core আরেকটা loop-এর সাথে ভাগ করতেই দুই সেকেন্ডে ২৭৫টা involuntary switch — প্রায় প্রতি ৭ ms-এ scheduler জোর করে পালা বদলাচ্ছে। (macOS এই দুই সংখ্যা নির্ভরযোগ্যভাবে দেয় না, তাই Linux।)</p>
   <p>Production-এ এই দুই সংখ্যা রোগ চেনায়: involuntary বেশি মানে CPU-র জন্য কাড়াকাড়ি — core-এর তুলনায় বেশি runnable thread; voluntary বেশি মানে প্রচুর blocking I/O বা lock-এর অপেক্ষা। পুরো system-এর হিসাব Linux রাখে <code>/proc/stat</code>-এর <code>ctxt</code> লাইনে (আসল machine-এ <code>vmstat 1</code>-এর <code>cs</code> column একই জিনিস):</p>
-  <div class="codewrap"><pre><code>docker run --rm alpine sh -c "awk '/^ctxt/{print \$2}' /proc/stat; sleep 1; awk '/^ctxt/{print \$2}' /proc/stat"</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm alpine sh -c "awk '/^ctxt/{print \$2}' /proc/stat; sleep 1; awk '/^ctxt/{print \$2}' /proc/stat"</code></pre></div>
   <p>আমার চালানোয় <code>58931623</code> থেকে <code>58934114</code> — প্রায় চুপচাপ একটা VM-এও সেকেন্ডে ~২,৫০০ switch।</p>
 
   <h3>দামটা কোথায়</h3>
@@ -106,7 +106,7 @@ busy   voluntary: 8   involuntary: 275</code></pre></div>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — pingpong.js</div>
     <p><code>Atomics.wait</code> kernel-এর কাছে বলে "এই memory-র মান না বদলানো পর্যন্ত আমাকে ঘুম পাড়াও"; <code>Atomics.notify</code> বলে "ওখানে যে ঘুমাচ্ছে তাকে জাগাও":</p>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData } = require('worker_threads');
 const ROUNDS = 100_000;
 
 if (isMainThread) {

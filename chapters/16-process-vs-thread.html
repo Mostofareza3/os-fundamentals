@@ -7,7 +7,7 @@
   <h3>Thread কেন লাগে</h3>
   <p>ধরো একটা program একসাথে কয়েকটা কাজ করতে চায় — Chapter 14-এর মতো বারোটা core-এ হিসাব ভাগ করতে, বা একটা লম্বা হিসাব চলার সময়ও UI সাড়া দিক। একটা উপায়: কয়েকটা process চালাও। কিন্তু process-দের address space আলাদা (Chapter 9) — একজনের data আরেকজন সরাসরি দেখতে পারে না; ভাগ করতে হলে pipe বা socket দিয়ে kernel-এর মাধ্যমে copy করে পাঠাতে হয়। আর process বানানো নিজেই দামি: নতুন PCB, নতুন page table, খোলা file-এর নতুন table।</p>
   <p>দ্বিতীয় উপায়: একই address space-এর ভেতরে একাধিক execution-এর ধারা চালাও — প্রত্যেকের নিজের PC, নিজের register, নিজের stack, আর kernel তাদের আলাদা আলাদা করে CPU-তে বসায়; কিন্তু memory, খোলা file, বাকি সব একই। এরই নাম <strong>thread</strong>। প্রতিটা process অন্তত একটা thread নিয়ে জন্মায় — <strong>main thread</strong> — আর চাইলে আরও বানাতে পারে। দামের পার্থক্য মাপো:</p>
-  <div class="codewrap"><pre><code>python3 -c "
+  <div class="codewrap"><pre class="cmd"><code>python3 -c "
 import os, threading, time
 N = 1000
 t = time.perf_counter()
@@ -90,19 +90,19 @@ print(f'thread create+join: {thr:.0f} µs   |   process fork+wait: {prc:.0f} µs
 
   <h3>Kernel-এর চোখে thread</h3>
   <p>Kernel thread আর process-কে কতটা আলাদা ভাবে? Linux-এ উত্তর চমকপ্রদ: প্রায় একই ভাবে। প্রতিটা thread kernel-এর কাছে একটা পূর্ণ "task" — নিজের PCB (<code>task_struct</code>), নিজের ID, scheduler-এর নিজের পালা। পার্থক্য শুধু একটা: একই process-এর task গুলো memory আর খোলা file-এর table ভাগ করে। আর দুটোই তৈরি হয় একই syscall দিয়ে — Chapter 15-এর <code>clone</code> — শুধু flag আলাদা। Node চালু হওয়ার সময় সে নিজের জন্য কয়েকটা thread বানায়; দেখো:</p>
-  <div class="codewrap"><pre><code>docker run --rm --cap-add SYS_PTRACE node:22-alpine sh -c 'apk add -q strace &gt;/dev/null 2&gt;&amp;1; strace -f -e trace=clone node -e 1 2&gt;&amp;1 | grep clone | head -1'</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>docker run --rm --cap-add SYS_PTRACE node:22-alpine sh -c 'apk add -q strace &gt;/dev/null 2&gt;&amp;1; strace -f -e trace=clone node -e 1 2&gt;&amp;1 | grep clone | head -1'</code></pre></div>
   <p>আমার output (ছেঁটে): <code>clone(child_stack=0xffff8e002950, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|...)</code>। Chapter 15-এ bash-এর <code>fork</code> ছিল <code>clone(child_stack=NULL, flags=...|SIGCHLD)</code>। তফাতটা পড়ো: thread-এর বেলায় <code>CLONE_VM</code> (address space ভাগ করো), <code>CLONE_FILES</code> (খোলা file-এর table ভাগ করো), <code>CLONE_THREAD</code> (একই process-এর সদস্য), আর একটা নতুন <code>child_stack</code> — নতুন thread-এর নিজের stack। Process-এর বেলায় এসবের কিছুই না — সব copy। একই যন্ত্র, কতটা ভাগ হবে সেটা flag ঠিক করে।</p>
   <p>এবার দেখো তোমার "single-threaded" Node-এর ভেতরে আসলে কী চলছে। Linux প্রতিটা thread-কে <code>/proc/&lt;PID&gt;/task/</code>-এর নিচে একটা folder হিসেবে দেখায়, আর <code>comm</code> file-এ তার নাম:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — Node-এর thread গুলো</div>
-    <div class="codewrap"><pre><code>docker run --rm node:22-alpine node -e "
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm node:22-alpine node -e "
 const fs = require('fs');
 const threads = () =&gt; fs.readdirSync('/proc/self/task')
   .map(t =&gt; t + ':' + fs.readFileSync('/proc/self/task/' + t + '/comm', 'utf8').trim());
 console.log('at start         :', threads().join('  '));
 fs.readFile('/etc/hostname', () =&gt; console.log('after fs.readFile:', threads().join('  ')));"</code></pre></div>
     <p>আমার output:</p>
-    <div class="codewrap"><pre><code>at start         : 1:node  10:node  11:node  12:node  13:node  8:DelayedTaskSche  9:node
+    <div class="codewrap"><pre class="out"><code>at start         : 1:node  10:node  11:node  12:node  13:node  8:DelayedTaskSche  9:node
 after fs.readFile: 1:node  10:node  11:node  12:node  13:node  14:libuv-worker  15:libuv-worker  16:libuv-worker  17:libuv-worker  8:DelayedTaskSche  9:node</code></pre></div>
     <p>macOS-এ: <code>ps -M &lt;PID&gt;</code> — প্রতিটা thread একটা লাইন।</p>
   </div>
@@ -112,7 +112,7 @@ after fs.readFile: 1:node  10:node  11:node  12:node  13:node  14:libuv-worker  
   <p>C, Java বা Go-তে এক thread-এর বানানো object আরেক thread সরাসরি পড়তে-লিখতে পারে — ওপরের ছবির মতো heap সবার এক। Node-এর <code>worker_threads</code> আসল OS thread-ই (<code>clone</code>-এর ওই flag দিয়ে তৈরি), কিন্তু প্রতিটা worker পায় নিজের একটা পুরো V8 instance — নিজের JS heap, নিজের garbage collector, নিজের event loop। কারণ V8-এর heap আর GC এমনভাবে বানানো যে একাধিক thread একসাথে JS object বদলালে সেগুলো ভেঙে পড়ত। ফল: worker-কে সাধারণ object পাঠালে সেটা <em>copy</em> হয়ে যায়; শুধু <code>SharedArrayBuffer</code>-এর memory সত্যিই ভাগ হয়।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — share.js</div>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread, workerData } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread, workerData } = require('worker_threads');
 
 if (isMainThread) {
   const plain = { count: 0 };                               // সাধারণ JS object
@@ -136,7 +136,7 @@ if (isMainThread) {
   <p>ভাগাভাগির উল্টো পিঠ: একই address space মানে একটা thread-এর bug সবার memory নষ্ট করতে পারে, আর একটা thread crash করলে — ধরো ভুল address ছুঁয়ে segmentation fault — kernel-এর signal যায় পুরো process-এর কাছে, আর process-এর সব thread একসাথে মরে। Node-এর worker-এ JS স্তরের ভুল আলাদা ব্যাপার, কারণ প্রতিটা worker-এর V8 আলাদা:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — crash.js</div>
-    <div class="codewrap"><pre><code>const { Worker, isMainThread } = require('worker_threads');
+    <div class="codewrap"><pre class="lang-js"><code>const { Worker, isMainThread } = require('worker_threads');
 if (isMainThread) {
   const mode = process.argv[2];
   new Worker(__filename, { argv: [mode] }).on('error', e =&gt; console.log('main: worker threw →', e.message));
@@ -146,7 +146,7 @@ if (isMainThread) {
 } else {
   process.kill(process.pid, 'SIGSEGV');                // segfault-এর signal: পুরো process-এর জন্য
 }</code></pre></div>
-    <div class="codewrap"><pre><code>node crash.js throw; echo "exit code: $?"
+    <div class="codewrap"><pre class="cmd"><code>node crash.js throw; echo "exit code: $?"
 node crash.js segv;  echo "exit code: $?"</code></pre></div>
     <p>আমার output: প্রথমটায় <code>main: worker threw → JS error inside the worker</code>, <code>main: still alive after 500 ms</code>, <code>exit code: 0</code>। দ্বিতীয়টায় শুধু <code>exit code: 139</code> — main-এর একটা লাইনও না।</p>
   </div>

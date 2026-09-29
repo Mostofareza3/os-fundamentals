@@ -9,7 +9,7 @@
   <p>Cache-টা কোনো process-এর না — kernel-এর। তাই এক process-এর পড়া অন্য process-এর কাজে লাগে। নিচের পরীক্ষায় প্রতিটা <code>node</code> আলাদা process (pid আলাদা দেখবে)। প্রথমে Chapter 20-এর কৌশলে (<code>F_NOCACHE</code>) একটা 1 GB file বানাব যেটা RAM-এ নেই:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (macOS) — ঠান্ডা আর গরম</div>
-    <div class="codewrap"><pre><code># mkcold.py — 1 GB file লেখো, কিন্তু page cache-এ রেখো না (macOS F_NOCACHE)
+    <div class="codewrap"><pre class="lang-py"><code># mkcold.py — 1 GB file লেখো, কিন্তু page cache-এ রেখো না (macOS F_NOCACHE)
 import os, fcntl
 fd = os.open('cold.bin', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
 fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
@@ -17,7 +17,7 @@ chunk = os.urandom(8 * 1024**2)
 for _ in range(128):
     os.write(fd, chunk)
 os.fsync(fd); os.close(fd)</code></pre></div>
-    <div class="codewrap"><pre><code>// readall.js — পুরো file 1 MB করে পড়ো, সময় মাপো
+    <div class="codewrap"><pre class="lang-js"><code>// readall.js — পুরো file 1 MB করে পড়ো, সময় মাপো
 const fs = require('fs');
 const fd = fs.openSync(process.argv[2]);
 const buf = Buffer.alloc(1024 * 1024);
@@ -26,7 +26,7 @@ let total = 0, n;
 while ((n = fs.readSync(fd, buf)) &gt; 0) total += n;
 const ms = performance.now() - t;
 console.log(`pid ${process.pid}: ${total / 2 ** 20} MB in ${ms.toFixed(0)} ms (${(total / ms / 1e6).toFixed(1)} GB/s)`);</code></pre></div>
-    <div class="codewrap"><pre><code>// randread.js — 20,000টা random 4 KB read, একটার পর একটা
+    <div class="codewrap"><pre class="lang-js"><code>// randread.js — 20,000টা random 4 KB read, একটার পর একটা
 const fs = require('fs');
 const fd = fs.openSync(process.argv[2]);
 const blocks = fs.fstatSync(fd).size / 4096;
@@ -35,9 +35,9 @@ const t = performance.now();
 for (let i = 0; i &lt; 20000; i++)
   fs.readSync(fd, buf, 0, 4096, Math.floor(Math.random() * blocks) * 4096);
 console.log(`${((performance.now() - t) * 1000 / 20000).toFixed(1)} µs per random 4 KB read`);</code></pre></div>
-    <div class="codewrap"><pre><code>python3 mkcold.py &amp;&amp; node readall.js cold.bin &amp;&amp; node readall.js cold.bin
+    <div class="codewrap"><pre class="cmd"><code>python3 mkcold.py &amp;&amp; node readall.js cold.bin &amp;&amp; node readall.js cold.bin
 python3 mkcold.py &amp;&amp; node randread.js cold.bin &amp;&amp; node readall.js cold.bin &amp;&amp; node randread.js cold.bin</code></pre></div>
-    <div class="codewrap"><pre><code>pid 20884: 1024 MB in 182 ms (5.9 GB/s)
+    <div class="codewrap"><pre class="out"><code>pid 20884: 1024 MB in 182 ms (5.9 GB/s)
 pid 20885: 1024 MB in 49 ms (21.8 GB/s)
 
 75.9 µs per random 4 KB read
@@ -100,7 +100,7 @@ pid 20921: 1024 MB in 204 ms (5.3 GB/s)
   <p>Linux-এ একটা file-এর কতটা এই মুহূর্তে page cache-এ, সেটা <code>fincore</code> বলে দেয়। আর GNU <code>dd</code>-এর <code>iflag=nocache</code> দিয়ে একটা নির্দিষ্ট file-এর cache ফেলে দেওয়া যায় — root বা বিশেষ permission ছাড়াই। এবার পরপর একটু একটু পড়ে দেখি kernel কতটা তুলে আনে:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — read-ahead</div>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim bash -c '
   cd /root; dd if=/dev/urandom of=big.bin bs=1M count=1024 status=none
   cat /sys/block/vda/queue/read_ahead_kb
   for n in 1 8 64 256; do
@@ -108,7 +108,7 @@ pid 20921: 1024 MB in 204 ms (5.3 GB/s)
     dd if=big.bin of=/dev/null bs=4k count=$n status=none  # শুরু থেকে n × 4 KB পড়ো
     echo "read $n x 4K:"; fincore -n -o RES big.bin
   done'</code></pre></div>
-    <div class="codewrap"><pre><code>128
+    <div class="codewrap"><pre class="out"><code>128
 read 1 x 4K:
   16K
 read 8 x 4K:
@@ -124,7 +124,7 @@ read 256 x 4K:
   <p>Chapter 21-এ দেখেছি <code>write()</code> শুধু page cache-এ লিখে page-কে dirty দাগায়। কিন্তু "পরে disk-এ যাবে" — পরে মানে কখন? Kernel-এর কয়েকটা setting এটা ঠিক করে, <code>/proc/sys/vm/</code>-এ পড়া যায়। এবার 500 MB লিখে <code>/proc/meminfo</code>-এর <code>Dirty</code> লাইনটা ২ সেকেন্ড পরপর দেখব:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — dirty data-র আয়ু</div>
-    <div class="codewrap"><pre><code>docker run --rm debian:bookworm-slim bash -c '
+    <div class="codewrap"><pre class="cmd"><code>docker run --rm debian:bookworm-slim bash -c '
   for f in dirty_background_ratio dirty_ratio dirty_expire_centisecs dirty_writeback_centisecs; do
     echo "$f = $(cat /proc/sys/vm/$f)"; done
   sync; cd /root
@@ -133,7 +133,7 @@ read 256 x 4K:
   for i in $(seq 0 20); do
     printf "%3ss " $(( $(date +%s) - s )); grep "^Dirty:" /proc/meminfo; sleep 2
   done'</code></pre></div>
-    <div class="codewrap"><pre><code>dirty_background_ratio = 10
+    <div class="codewrap"><pre class="out"><code>dirty_background_ratio = 10
 dirty_ratio = 20
 dirty_expire_centisecs = 3000
 dirty_writeback_centisecs = 1500
@@ -190,14 +190,14 @@ dirty_writeback_centisecs = 1500
 
   <h3>Cache কখন ছাড়ে</h3>
   <p>Page cache যতটা পারে RAM ভরে রাখে — Chapter 7-এ <code>free</code>-এর "available" column-এ দেখেছ, cache সেখানে "ব্যবহারযোগ্য" হিসেবেই গোনা হয়। কোনো process-এর memory লাগলে kernel cache থেকে জায়গা ফেরত নেয় (<strong>eviction</strong>)। কোনটা আগে যাবে? Kernel সব page-এর উপর নজর রাখে না, মোটামুটি হিসাব রাখে: file page গুলো দুই তালিকায় — সম্প্রতি একাধিকবার ছোঁয়া (active) আর বাকি (inactive)। ফেলার সময় আগে inactive তালিকার পুরনোগুলো।</p>
-  <div class="codewrap"><pre><code>grep -E "^(Active|Inactive)\(file\)" /proc/meminfo   # Linux</code></pre></div>
+  <div class="codewrap"><pre class="cmd"><code>grep -E "^(Active|Inactive)\(file\)" /proc/meminfo   # Linux</code></pre></div>
   <p>আর ফেলার দাম page-এর অবস্থার উপর নির্ভর করে। Clean page-এর হুবহু কপি disk-এ আছে — ফেলে দেওয়া মানে শুধু হিসাব থেকে মোছা, প্রায় বিনা খরচে। Dirty page ফেলা যায় না; আগে disk-এ লিখতে হয়, আর সেটা ধীর। এই পার্থক্যটাই পরের অংশের পুরো গল্প।</p>
 
   <h3>Container-এর হিসাবে page cache</h3>
   <p>Docker-এর <code>--memory</code> (বা Kubernetes-এর memory limit) একটা <strong>cgroup</strong>-এর সীমা বসায় — kernel-এর একটা হিসাবের খাতা, যেখানে একদল process-এর memory একসাথে গোনা হয় (বিস্তারিত Chapter 36)। মজার কথা: সেই খাতায় process-এর নিজের memory (<code>anon</code> — heap, stack) ছাড়াও ওই process-দের পড়া-লেখা file-এর page cache-ও (<code>file</code>) গোনা হয়। 256 MB সীমার একটা container-এ আগে 600 MB পড়ব, তারপর লিখব:</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT (Linux / Docker) — ২৫৬ MB-এর খাঁচায় ৬০০ MB</div>
-    <div class="codewrap"><pre><code>docker volume create c23vol
+    <div class="codewrap"><pre class="cmd"><code>docker volume create c23vol
 # ১) 600 MB file বানাও (সীমাহীন container-এ), তারপর তার cache ফেলে দাও
 docker run --rm -v c23vol:/data debian:bookworm-slim sh -c '
   dd if=/dev/urandom of=/data/big.bin bs=1M count=600 status=none; sync
@@ -207,11 +207,11 @@ docker run --rm --memory 256m -v c23vol:/data debian:bookworm-slim bash -c '
   cat /data/big.bin &gt; /dev/null
   echo current=$(( $(cat /sys/fs/cgroup/memory.current)/1048576 )) MB
   grep -E "^(anon|file) " /sys/fs/cgroup/memory.stat'</code></pre></div>
-    <div class="codewrap"><pre><code>current=255 MB
+    <div class="codewrap"><pre class="out"><code>current=255 MB
 anon 135168
 file 265814016</code></pre></div>
     <p>এবার লেখা। bigwrite.js 600 MB লেখে; <code>sync</code> argument দিলে প্রতি 32 MB পরপর <code>fdatasync</code> (fsync-এর ছোট ভাই: data নামায়, দরকার না হলে metadata না — Chapter 24):</p>
-    <div class="codewrap"><pre><code>// bigwrite.js — 600 MB লেখো; "sync" দিলে প্রতি 32 MB পরপর fdatasync
+    <div class="codewrap"><pre class="lang-js"><code>// bigwrite.js — 600 MB লেখো; "sync" দিলে প্রতি 32 MB পরপর fdatasync
 const fs = require('fs');
 const every = process.argv[2] === 'sync' ? 32 : Infinity;
 const fd = fs.openSync('/data/new.bin', 'w');
@@ -222,14 +222,14 @@ for (let mb = 1; mb &lt;= 600; mb++) {
 }
 fs.closeSync(fd);
 console.log('done');</code></pre></div>
-    <div class="codewrap"><pre><code>for m in plain sync; do
+    <div class="codewrap"><pre class="cmd"><code>for m in plain sync; do
   docker run --name writer --memory 256m -v c23vol:/data -v "$PWD":/w:ro \
     node:22-bookworm-slim node /w/bigwrite.js $m
   echo "$m → $(docker inspect -f '{{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}' writer)"
   docker rm writer
 done
 docker volume rm c23vol</code></pre></div>
-    <div class="codewrap"><pre><code>plain → 137 OOMKilled=true
+    <div class="codewrap"><pre class="out"><code>plain → 137 OOMKilled=true
 done
 sync → 0 OOMKilled=false</code></pre></div>
   </div>
