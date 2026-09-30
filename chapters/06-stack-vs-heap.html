@@ -152,6 +152,11 @@ const timer = setInterval(() =&gt; {
   <div class="codewrap"><pre class="cmd"><code>node --max-old-space-size=50 -e "const a = []; while (true) a.push({ data: new Array(1000).fill(0) })"</code></pre></div>
   <p>কয়েক মুহূর্ত পরে: <code>FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory</code>। এটা JS error না যে <code>catch</code> করবে — পুরো process মারা যায়।</p>
 
+  <div class="sim" data-sim="gcreach">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Garbage collection — root থেকে কে reachable?</span></div>
+    <p class="sim-desc">কয়েক লাইন JS ধাপে ধাপে চালাও আর দেখো stack আর global থেকে কোন object-এ পৌঁছানো যায়। GC চালালে কে বাঁচে, কে যায় — আর cache-এ রাখা object কেন কখনো যায় না।</p>
+  </div>
+
   <h3>আসল দাম কোথায়: allocation, locality, fragmentation</h3>
   <p>"Stack fast, heap slow" — কথাটা শুনতে সুবিধার, কিন্তু আধা-সত্য। দামটা তিন জায়গায়, আলাদা করে দেখা দরকার।</p>
   <h4>১. Allocation-এর দাম</h4>
@@ -207,6 +212,11 @@ time('objects, shuffled order',    () =&gt; { let s = 0; for (let i = 0; i &lt; 
   </figure>
   <p class="diagram-caption">উপরে: ৫৬ KB খালি, কিন্তু সবচেয়ে বড় একটানা ফাঁক ১৬ KB, তাই ৩২ KB-র অনুরোধ মেটে না। নিচে: V8-এর collector জীবিত object গুলো এক পাশে সরিয়ে আনলে (compaction) সব খালি জায়গা এক টুকরো হয়ে যায়।</p>
   <p>V8 এটা কমাতে পারে একটা সুবিধার জোরে: collector জানে প্রতিটা reference কোথায় আছে, তাই সে জীবিত object গুলো সরিয়ে এক পাশে জড়ো করতে পারে আর সব reference-এ নতুন address বসিয়ে দিতে পারে — এর নাম <strong>compaction</strong>। C-র <code>malloc</code> এটা পারে না: program-এর কোন variable-এ কোন raw address লুকিয়ে আছে, allocator জানে না, তাই কিছু সরাতে গেলে সেই pointer গুলো ভুল জায়গা দেখাবে।</p>
+  <div class="sim" data-sim="heapalloc">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Heap allocator — malloc, free, fragmentation</span></div>
+    <p class="sim-desc">১২৮ KB-র একটা heap: নানা মাপে malloc করো, block-এ click করে free করো। খালি জায়গা টুকরো টুকরো হলে বড় অনুরোধ কেন মেটে না, আর compaction কী করে — নিজে ঘটাও।</p>
+  </div>
+
   <p>এর সাথে জড়ানো আরেকটা বাস্তবতা: <code>free</code> করা বা GC হওয়া মানেই memory OS-এর কাছে ফেরত যাওয়া না। Kernel memory দেয় আর ফেরত নেয় নির্দিষ্ট মাপের পুরো টুকরো ধরে — এর নাম <strong>page</strong> (সাধারণত ৪ KB, Apple Silicon-এ ১৬ KB; Chapter 9)। একটা page-এর ভেতরে একটাও জীবিত object থাকলে পুরো page আটকে থাকে। তার উপর allocator ভবিষ্যতের জন্য খালি জায়গা হাতে রাখতে পছন্দ করে। নিজে দেখো — <strong>RSS</strong> (resident set size) হলো process এই মুহূর্তে আসলে কতটা RAM দখল করে আছে, kernel-এর হিসাবে:</p>
   <div class="codewrap"><pre class="lang-js"><code>const mb = n =&gt; (n / 2 ** 20).toFixed(1) + ' MB';
 const show = label =&gt; { global.gc(); const m = process.memoryUsage(); console.log(label.padEnd(18), 'heapUsed', mb(m.heapUsed).padStart(9), '| rss', mb(m.rss).padStart(9)); };

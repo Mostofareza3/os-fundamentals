@@ -36,6 +36,11 @@ file $(which node)</code></pre></div>
     <tr><td>একই data center-এর অন্য server</td><td>~০.৫ ms</td><td>প্রায় দেড় ঘণ্টা</td></tr>
     <tr><td>অন্য মহাদেশের server</td><td>~১৫০ ms</td><td>প্রায় ১৭ দিন</td></tr>
   </table></div>
+  <div class="sim" data-sim="latency">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Latency scale — RAM-এর ১০০ ns যদি ১ সেকেন্ড হয়</span></div>
+    <p class="sim-desc">টেবিলটা হাতে নাড়াচাড়া করো: প্রতিটা source-এর সময় log scale-এ, আর N বার পড়লে মোট কত লাগে। SSD আর hard disk-এর ফারাকটা চোখে রাখো।</p>
+  </div>
+
   <p>এই টেবিলটা মাথায় গেঁথে রাখো — "software কেন slow" প্রশ্নের অর্ধেক উত্তর এখানেই। নিজের machine-এ পার্থক্যটা মাপো। নিচের script একই ২০০ লাইন একবার শুধু RAM-এ (array-তে) রাখে, আরেকবার disk-এ লেখে। Disk-এর বেলায় প্রতিটা লেখার পর <code>fsyncSync</code> ডাকা হয়েছে। কারণ সাধারণ write-এ kernel data আগে RAM-এ জমিয়ে রাখে আর পরে সুবিধামতো storage-এ পাঠায় (কেন, সেটা Chapter 23-এ)। আর <code>fsync</code> বললে kernel storage-এ লেখা শেষ হওয়া পর্যন্ত অপেক্ষা করে তারপর ফেরে — মানে আসল storage-এর গতি মাপা হয়।</p>
   <div class="box lab">
     <div class="box-title">EXPERIMENT — disk.js</div>
@@ -169,6 +174,11 @@ lsmod | head</code></pre></div>
     <p>আমার চালানোয় এসেছে <code>38638665</code> আর <code>38640797</code> — প্রায় চুপচাপ বসে থাকা একটা VM-এও এক সেকেন্ডে ২,১০০-এর বেশি interrupt। আসল Linux machine-এ <code>cat /proc/interrupts</code> চালালে device ধরে ধরে আলাদা হিসাব দেখবে (Docker Desktop এই file-টা লুকিয়ে রাখে)।</p>
   </div>
 
+  <div class="sim" data-sim="interrupt">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Polling বনাম interrupt</span></div>
+    <p class="sim-desc">SSD-র ১০০ µs-এর কাজ চলার সময় CPU দুই কৌশলে কী করে — বারবার জিজ্ঞেস করা, নাকি অন্য কাজ করে interrupt-এর অপেক্ষা। দুই লেনে কতটা কাজ হলো, গুনে দেখো।</p>
+  </div>
+
   <h3>Kernel-এর ভেতরের ভাগগুলো</h3>
   <p>Kernel-এর কাজের তালিকা এখন লম্বা: program-দের পালা ঠিক করা, memory ভাগ করা, file-এর নাম থেকে block খোঁজা, network packet সামলানো, শত শত ধরনের device-এর সাথে কথা বলা। সব এক জায়গায় জট পাকালে কেউ এই code maintain করতে পারত না। তাই kernel কয়েকটা ভাগে (<strong>subsystem</strong>) সাজানো, প্রত্যেকের দায়িত্ব আলাদা:</p>
   <div class="table-wrap"><table>
@@ -255,6 +265,11 @@ lsmod | head</code></pre></div>
     </svg>
   </figure>
   <p class="diagram-caption">উপর থেকে নিচে সময় এগোচ্ছে। Amber খাড়া দাগের বাঁয়ে user space, ডানে kernel আর hardware। বাঁয়ের ধূসর বারটা লক্ষ করো: SSD যতক্ষণ কাজ করছে, তোমার process ততক্ষণ ঘুমিয়ে — কিন্তু CPU তখন অন্য process চালাচ্ছে।</p>
+
+  <div class="sim" data-sim="iopath">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">একটা readFileSync-এর পুরো যাত্রা</span></div>
+    <p class="sim-desc">ওপরের ৮টা ধাপ একটা একটা করে: কে কাজ করছে, তোমার process কোন অবস্থায়, CPU কার হাতে। Page cache-এ file আগে থেকে থাকলে পথটা কতটা ছোট হয়, toggle করে দেখো।</p>
+  </div>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>

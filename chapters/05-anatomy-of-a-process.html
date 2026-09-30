@@ -126,6 +126,11 @@ Segmentation fault</code></pre></div>
   <p>দ্বিতীয় <code>printf</code> কখনো চলেনি। macOS এই ঘটনাকে "bus error" নামে দেখায়, Linux "segmentation fault" — নাম আলাদা, ঘটনা এক: <code>r-x</code> region-এ লেখার চেষ্টায় CPU থেমেছে, kernel process মেরেছে।</p>
   <p>Code region-এ কেউ লিখতে পারে না বলে আরেকটা সুবিধা ফাউ পাওয়া যায়: একই program-এর দশটা process চললেও তাদের code-এর জন্য RAM-এ একটাই copy রাখলে চলে — সবাই সেটাই পড়ে, কেউ বদলায় না। Chapter 4-এর shared library (libc) এভাবেই শত শত process-এর মধ্যে ভাগ হয়।</p>
 
+  <div class="sim" data-sim="addrspace">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Process-এর address space — region আর permission</span></div>
+    <p class="sim-desc">ওপরের ছবিটা হাতে: heap-এ জায়গা নাও, function call করো, তারপর নিয়ম ভাঙার চেষ্টা করো — code-এ লেখা, stack-এর data চালানো, kernel-এর address পড়া। CPU কোথায় থামায় দেখো।</p>
+  </div>
+
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>
     <p>"Stack আর heap হলো দুই রকম hardware memory, একটা দ্রুত আরেকটা ধীর।" না। দুটোই একই RAM, একই address space-এর দুইটা অংশ। পার্থক্য শুধু <em>কীভাবে</em> ব্যবহার করা হয় — কে জায়গা দেয়, কখন ফেরত নেয়, কোন দিকে বাড়ে। CPU-র কাছে stack-এর একটা byte আর heap-এর একটা byte পড়ার মধ্যে কোনো পার্থক্য নেই।</p>
@@ -238,6 +243,11 @@ function big() {
 }
 try { big(); } catch (e) { console.log('big frame depth:  ', depth); }</code></pre></div>
     <p>আমার Mac-এ: <code>small frame depth: 9183</code>, <code>big frame depth: 5009</code>। একই ~১ MB stack, কিন্তু <code>big</code>-এর প্রতিটা frame-এ দশটা local variable বেশি, তাই প্রতিটা frame বড়, তাই কম সংখ্যক frame ধরে। (সংখ্যা গুলো Node version আর machine ভেদে বদলাবে, অনুপাতটা মোটামুটি থাকবে।)</p>
+  </div>
+
+  <div class="sim" data-sim="callstack">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Call stack — frame, SP আর stack trace</span></div>
+    <p class="sim-desc">main → foo → bar-এর প্রতিটা call-এ frame push, প্রতিটা return-এ pop; SP-র মান আর console.trace-এর output পাশাপাশি। Recursion mode-এ frame-এর মাপ বদলে দেখো overflow কত গভীরে হয়।</p>
   </div>
 
   <div class="box concept">

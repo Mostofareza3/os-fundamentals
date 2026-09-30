@@ -183,6 +183,11 @@ readelf -lW hello | grep -E "LOAD|interpreter"</code></pre></div>
   </figure>
   <p class="diagram-caption">উপরে child process <code>execve</code> দিয়ে kernel-এ ঢোকে; মাঝের amber সারি loader-এর পাঁচ ধাপ। নিচে একই PID-এ user mode-এ ফেরা — কিন্তু এবার ডান থেকে বাঁয়ে পড়ো: প্রথমে dynamic linker চলে, তারপর <code>main</code>, আর শেষে <code>printf</code> আবার syscall করে terminal-এ লেখে।</p>
 
+  <div class="sim" data-sim="execve">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">execve — file থেকে process, ধাপে ধাপে</span></div>
+    <p class="sim-desc">zsh-এর child-টা কীভাবে ./hello হয়ে ওঠে: loader-এর যাচাই, পুরনো memory ফেলা, segment map, stack, PC — তারপর dynamic linker। PID-এর দিকে নজর রাখো, আর execute permission তুলে দিয়েও একবার চালাও।</p>
+  </div>
+
   <h3>Dynamic linker: প্রথম instruction আসলে তোমার না</h3>
   <p>Dynamic linking-এর ফাঁকটা মনে করো: <code>hello</code>-এর ভেতরে <code>printf</code>-এর ঠিকানা এখনো ফাঁকা। <code>main</code> চালু হওয়ার আগে কাউকে libc খুঁজে map করতে হবে আর ফাঁকটা ভরাট করতে হবে, না হলে <code>printf</code> ডাকার মুহূর্তে CPU অর্থহীন ঠিকানায় লাফ দেবে।</p>
   <p>Kernel এই কাজ নিজে করে না — library খোঁজার নিয়ম (কোন folder-এ, কোন version) কাজের নীতির ব্যাপার, আর kernel-কে যত ছোট রাখা যায় তত নিরাপদ। তাই এই দায়িত্ব দেওয়া হয় একটা user-space program-কে: <strong>dynamic linker</strong> (Linux-এ <code>ld.so</code>, যেমন <code>/lib/ld-linux-aarch64.so.1</code>; macOS-এ <code>dyld</code>)। ওপরের ধাপ ৫-এ kernel PC বসিয়েছিল এরই entry point-এ। Dynamic linker তারপর দরকারি library গুলো একই process-এর address space-এ map করে, ফাঁকা ঠিকানা গুলো ভরাট করে, আর শেষে program-এর entry point-এ লাফ দেয়। মানে তোমার process-এর প্রথম user-space instruction গুলো তোমার না — dynamic linker-এর।</p>
@@ -263,6 +268,11 @@ objdump -d --disassemble=main hello    # Linux</code></pre></div>
     </svg>
   </figure>
   <p class="diagram-caption">বাঁয়ে memory-তে রাখা <code>hello</code>-র কয়েকটা instruction; PC এই মুহূর্তে <code>bl _printf</code>-এর দিকে তাকিয়ে আছে। ডানে CPU-র loop: fetch, decode, execute, তারপর PC সরাও। সাধারণ instruction-এর পরে PC ৪ বাড়ে; <code>bl</code>-এর পরে সে সোজা <code>printf</code>-এর ঠিকানায় চলে যায়।</p>
+
+  <div class="sim" data-sim="cpu">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Fetch–decode–execute — একটা ছোট CPU</span></div>
+    <p class="sim-desc">Chapter-এর main-এর instruction গুলো একটা একটা করে চালাও: PC কোথায়, কোন register বদলাল, bl আর ret PC-কে কোথায় নিয়ে গেল। দ্বিতীয় program-টায় একটা loop আছে — branch কীভাবে PC বদলায় দেখো।</p>
+  </div>
 
   <h3>তাহলে <code>node server.js</code>-এর বেলায়?</h3>
   <p>JavaScript-এ তো compile বা link-এর ধাপ দেখো না। তাহলে এই পুরো গল্প কোথায় খাটে? খাটে, শুধু অন্য জায়গায়। <code>node server.js</code> চালালে kernel যে executable load করে সেটা হলো <code>node</code> — ওপরের সব ধাপ (<code>execve</code>, segment map, dyld/ld.so, <code>main</code>) ঘটে <code>node</code> binary-র জন্য। Kernel-এর কাছে <code>server.js</code> নিছক একটা argument, <code>argv[1]</code>।</p>

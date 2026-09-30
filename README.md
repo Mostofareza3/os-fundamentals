@@ -28,6 +28,7 @@ css/                  Stylesheet modules, index.html-এ order মেনে link
   components.css        Callout box, details, prev/next nav
   search.css            Search overlay
   cover.css             Cover hero + resume banner
+  sim.css               Interactive simulator (frame, controls, stage, SVG helper class)
   print.css             Print stylesheet
 js/                   ES modules (no bundler)
   app.js                Entry point — boot order
@@ -44,6 +45,8 @@ js/                   ES modules (no bundler)
   sidebar.js            Mobile drawer
   keys.js               Keyboard shortcuts
   resume.js             "Last read" banner
+  sims.js               Chapter-এর simulator placeholder mount করে (router থেকে ডাকা হয়)
+  sims/                 এক file = এক simulator; _lib.js হলো shared building block
 chapters/
   manifest.json         Chapter order, id, part, title, filename
   NN-slug.html          একটা chapter-এর ভিতরের markup
@@ -61,6 +64,33 @@ chapters/
 ```
 
 TOC, prev/next, search — সব manifest থেকে আসে, তাই আর কিছু বদলাতে হবে না।
+
+## Simulator
+
+Chapter-এর ভেতরে interactive simulator বসানো যায়। Chapter markup `innerHTML` দিয়ে
+inject হয়, তাই ওখানে `<script>` চলে না — simulator-এর code থাকে `js/sims/<name>.js`-এ,
+আর chapter-এ থাকে শুধু একটা placeholder:
+
+```html
+<div class="sim" data-sim="timeshare">
+  <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Time-sharing</span></div>
+  <p class="sim-desc">এক লাইনে: কী করবে, কী লক্ষ করবে।</p>
+</div>
+```
+
+Chapter প্রথমবার দেখানোর সময় `js/sims.js` ওই নাম ধরে `js/sims/timeshare.js` import করে
+`mount(root)` ডাকে; module নিজের control আর stage placeholder-এর ভেতরে বানায়।
+
+নতুন simulator যোগ করতে:
+
+1. `js/sims/<name>.js` বানাও — `export function mount(root)`; building block-এর জন্য
+   `./_lib.js` (el, svg, ui, button, range, select, stepper, ticker, playButton, logPanel,
+   table, codeList, chips, note …) — প্রতিটা helper-এর মাথায় ব্যবহারের উদাহরণ আছে।
+   দুইটা নমুনা: `timeshare.js` (animation, play/step) আর `syscall.js` (stepper)।
+2. Chapter-এ ওপরের placeholder বসাও, `data-sim` = file-এর নাম।
+3. রং শুধু `css/sim.css`-এর class আর token দিয়ে — তাহলে dark/light দুটোতেই চলে।
+
+Animation `ticker(root, step, ms)` দিয়ে চালাও: chapter লুকিয়ে গেলে সেটা নিজে থামে।
 
 ## Code block
 

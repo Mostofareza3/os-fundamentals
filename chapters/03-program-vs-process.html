@@ -148,10 +148,20 @@ Threads: 7</code></pre></div>
   <div class="codewrap"><pre class="cmd"><code>node -e "const fs = require('fs'); console.log(fs.openSync('/etc/hosts', 'r'), fs.openSync('/etc/hosts', 'r'))"</code></pre></div>
   <p>আমার Mac-এ output <code>14 15</code>। নতুন খোলা file সবচেয়ে ছোট খালি নম্বর পায়; ৩ না পেয়ে ১৪ পেল কারণ Node নিজে চালু হওয়ার সময় ৩ থেকে ১৩ পর্যন্ত নম্বর নিজের কাজে খুলে রেখেছে। একটা চলমান process-এর সব fd দেখতে: macOS-এ <code>lsof -p &lt;PID&gt;</code> (<code>FD</code> column-এ <code>0r</code>, <code>1w</code>, <code>2w</code>… — অক্ষরটা mode: read/write), Linux-এ <code>ls -l /proc/&lt;PID&gt;/fd</code>।</p>
 
+  <div class="sim" data-sim="fdtable">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">File descriptor table</span></div>
+    <p class="sim-desc">একটা process-এর খোলা file-এর তালিকা। File খোলো, পড়ো, বন্ধ করো — কোন নম্বর কে পায়, close-এর পর নম্বরটা কোথায় যায়, আর সীমা পার হলে কী হয়।</p>
+  </div>
+
   <h3>একই program, অনেক process — আর isolation</h3>
   <p>শুরুর ধাঁধার উত্তর এখন দেওয়া যায়। দুই terminal-এ <code>node</code> চালানোয় kernel দুইটা আলাদা process বানিয়েছে: আলাদা PID, আলাদা address space। <code>count</code> variable প্রতিটার নিজের address space-এ আছে, তাই একটার <code>++count</code> অন্যটার কিছুই ছোঁয় না। আর এই আলাদা থাকা শুধু variable-এ সীমাবদ্ধ না — একটা মরে গেলেও অন্যটা বাঁচে। শুরুর দুই loop চলা অবস্থায় তৃতীয় terminal থেকে চালাও (<code>kill</code> command একটা PID-কে থামার সংকেত পাঠায়):</p>
   <div class="codewrap"><pre class="cmd"><code>kill 4101      # তোমার terminal 1-এ যে PID print হচ্ছে, সেটা বসাও</code></pre></div>
   <p>Terminal 1-এর loop থেমে যাবে; terminal 2 নির্বিকারে গুনে চলবে। এটাই Chapter 1-এর <strong>isolation</strong>, এবার process-এর ভাষায়: kernel প্রতিটা process-কে আলাদা খাঁচায় রাখে।</p>
+
+  <div class="sim" data-sim="proctable">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">এক program, অনেক process</span></div>
+    <p class="sim-desc">Disk-এর একটাই node file, terminal থেকে যতবার খুশি চালাও। প্রতিটা process-এর নিজের PID, নিজের count, আর kernel space-এ নিজের PCB — একটাকে kill করে দেখো অন্যটার কী হয়।</p>
+  </div>
 
   <div class="box warn">
     <div class="box-title">COMMON MISCONCEPTION</div>

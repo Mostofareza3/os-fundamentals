@@ -1,0 +1,207 @@
+/* sim.css
+   Interactive simulators. A chapter declares one with a placeholder
+   (<div class="sim" data-sim="name">) holding a title and a one-line
+   description; js/sims.js mounts the controls and the stage into it.
+   Every colour is a token, so a simulator follows the theme switch.
+*/
+
+/* ---------- frame ---------- */
+.sim{
+  position:relative; margin:0 0 24px; padding:16px 19px 17px;
+  border:1px solid var(--border); border-left:3px solid var(--user);
+  border-radius:0 var(--radius) var(--radius) 0;
+  background:var(--panel);
+}
+.sim-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px;}
+.sim-tag{font-size:11.5px; font-weight:800; letter-spacing:.8px; text-transform:uppercase; color:var(--user);
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;}
+.sim-tag::before{content:"▶"; font-size:9px;}
+.sim-title{font-weight:700; color:var(--heading); font-size:15.5px;}
+.sim-desc{font-size:14px; color:var(--muted); line-height:1.65; margin:0 0 12px; max-width:none;}
+.sim-desc:last-child{margin-bottom:0;}
+.sim-body{display:flex; flex-direction:column; gap:12px;}
+.sim-error{font-size:13.5px; color:var(--danger); margin:0;}
+
+/* ---------- controls ---------- */
+.sim-controls{display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;}
+.sim-btn{
+  background:var(--panel-2); border:1px solid var(--border); color:var(--text);
+  border-radius:var(--radius-sm); height:32px; padding:0 12px; font-size:13.5px; font-family:inherit;
+  cursor:pointer; display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+  transition:border-color .15s var(--ease), background .15s var(--ease), color .15s var(--ease);
+}
+.sim-btn:hover{border-color:var(--user); color:var(--heading);}
+.sim-btn:active{transform:translateY(1px);}
+.sim-btn:disabled{opacity:.45; cursor:default; transform:none;}
+.sim-btn:disabled:hover{border-color:var(--border); color:var(--text);}
+.sim-btn.primary{border-color:var(--user); color:var(--user); background:var(--user-dim); font-weight:600;}
+.sim-btn.primary:hover{color:var(--heading);}
+.sim-btn.danger{border-color:var(--danger); color:var(--danger); background:var(--danger-dim);}
+.sim-btn.danger:hover{color:var(--heading);}
+.sim-btn.kern{border-color:var(--kernel); color:var(--kernel); background:var(--kernel-dim);}
+.sim-btn.kern:hover{color:var(--heading);}
+.sim-field{display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--muted); white-space:nowrap; max-width:100%; min-width:0;}
+.sim-field input[type=range]{width:110px; accent-color:var(--user);}
+.sim-field input[type=checkbox]{accent-color:var(--user); width:15px; height:15px;}
+.sim-field select, .sim-field input[type=text], .sim-field input[type=number]{
+  background:var(--panel-2); color:var(--heading); border:1px solid var(--border); border-radius:6px;
+  font-family:inherit; font-size:13px; height:30px; padding:0 8px; max-width:100%; min-width:0; flex:1 1 auto;
+  text-overflow:ellipsis;
+}
+.sim-field input[type=text], .sim-field input[type=number]{font-family:var(--font-mono);}
+.sim-field .val{font-family:var(--font-mono); color:var(--heading); min-width:2.5ch; text-align:right;}
+.sim-sep{flex-basis:100%; height:0;}                /* forces a line break inside the controls row */
+.sim-spacer{flex:1;}
+
+/* ---------- stage ---------- */
+.sim-stage{
+  position:relative; border:1px solid var(--border-soft); border-radius:var(--radius-sm);
+  background:linear-gradient(180deg, var(--bg-soft), var(--panel-2)); padding:14px; overflow-x:auto;
+}
+.sim-stage svg{display:block; width:100%; height:auto; color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size:13px;}
+.sim-stage svg.wide{min-width:560px;}
+.sim-stage svg text{fill:currentColor;}
+/* the same helper classes the chapter figures use (css/code.css), scoped to a simulator */
+.sim .t-h{fill:var(--heading); font-weight:700;}
+.sim .t-m{fill:var(--muted);}
+.sim .t-u{fill:var(--user); font-weight:600;}
+.sim .t-k{fill:var(--kernel); font-weight:600;}
+.sim .t-ok{fill:var(--ok); font-weight:600;}
+.sim .t-d{fill:var(--danger); font-weight:600;}
+.sim .t-s{font-size:11.5px;}
+.sim .mono{font-family:var(--font-mono); font-size:12px;}
+.sim .b{fill:var(--panel); stroke:var(--border); stroke-width:1.5;}
+.sim .b-u{fill:var(--user-dim); stroke:var(--user); stroke-width:1.5;}
+.sim .b-k{fill:var(--kernel-dim); stroke:var(--kernel); stroke-width:1.5;}
+.sim .b-ok{fill:var(--ok-dim); stroke:var(--ok); stroke-width:1.5;}
+.sim .b-d{fill:var(--danger-dim); stroke:var(--danger); stroke-width:1.5;}
+.sim .b-m{fill:var(--bg-soft); stroke:var(--border); stroke-width:1.5; stroke-dasharray:5 4;}
+.sim .f-u{fill:var(--user);} .sim .f-k{fill:var(--kernel);} .sim .f-ok{fill:var(--ok);} .sim .f-d{fill:var(--danger);}
+.sim .f-m{fill:var(--border);} .sim .f-p{fill:var(--panel);}
+.sim .ln{stroke:var(--muted); stroke-width:1.6; fill:none;}
+.sim .ln-u{stroke:var(--user); stroke-width:1.8; fill:none;}
+.sim .ln-k{stroke:var(--kernel); stroke-width:1.8; fill:none;}
+.sim .ln-ok{stroke:var(--ok); stroke-width:1.8; fill:none;}
+.sim .ln-d{stroke:var(--danger); stroke-width:1.8; fill:none;}
+.sim .dash{stroke-dasharray:6 5;}
+.sim .ah{fill:var(--muted);} .sim .ah-u{fill:var(--user);} .sim .ah-k{fill:var(--kernel);} .sim .ah-d{fill:var(--danger);}
+.sim .grid{stroke:var(--border-soft); stroke-width:1;}
+.sim .axis{stroke:var(--border); stroke-width:1;}
+.sim svg .dim{opacity:.35;}
+
+/* ---------- DOM building blocks ---------- */
+.sim-cols{display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start;}
+.sim-cols.w-3{grid-template-columns:1fr 1fr 1fr;}
+.sim-cols.w-21{grid-template-columns:2fr 1fr;}
+.sim-cols.w-12{grid-template-columns:1fr 2fr;}
+@media(max-width:640px){ .sim-cols, .sim-cols.w-3, .sim-cols.w-21, .sim-cols.w-12{grid-template-columns:1fr;} }
+.sim-panel{border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:var(--panel); min-width:0;}
+.sim-panel.u{border-color:color-mix(in srgb, var(--user) 55%, var(--border)); background:var(--user-dim);}
+.sim-panel.k{border-color:color-mix(in srgb, var(--kernel) 55%, var(--border)); background:var(--kernel-dim);}
+.sim-panel.d{border-color:color-mix(in srgb, var(--danger) 55%, var(--border)); background:var(--danger-dim);}
+.sim-panel.ok{border-color:color-mix(in srgb, var(--ok) 55%, var(--border)); background:var(--ok-dim);}
+.sim-panel-title{font-size:11px; font-weight:700; letter-spacing:.7px; text-transform:uppercase; color:var(--muted); margin-bottom:8px;
+  display:flex; align-items:center; justify-content:space-between; gap:8px;}
+.sim-panel.u .sim-panel-title{color:var(--user);}
+.sim-panel.k .sim-panel-title{color:var(--kernel);}
+.sim-panel.d .sim-panel-title{color:var(--danger);}
+.sim-panel.ok .sim-panel-title{color:var(--ok);}
+
+/* stat chips: label + mono value */
+.sim-chips{display:flex; flex-wrap:wrap; gap:8px;}
+.sim-chip{display:inline-flex; align-items:baseline; gap:7px; padding:4px 10px; border:1px solid var(--border);
+  border-radius:999px; background:var(--panel); font-size:12.5px; color:var(--muted); white-space:nowrap;}
+.sim-chip .v{font-family:var(--font-mono); color:var(--heading); font-weight:600;}
+.sim-chip.u .v{color:var(--user);} .sim-chip.k .v{color:var(--kernel);} .sim-chip.ok .v{color:var(--ok);} .sim-chip.d .v{color:var(--danger);}
+
+/* mode badge: USER / KERNEL */
+.sim-mode{display:inline-flex; align-items:center; gap:7px; font-family:var(--font-mono); font-size:12px; font-weight:700;
+  letter-spacing:.6px; padding:3px 10px; border-radius:6px; border:1px solid var(--border); color:var(--muted); background:var(--panel);}
+.sim-mode.user{color:var(--user); border-color:var(--user); background:var(--user-dim);}
+.sim-mode.kernel{color:var(--kernel); border-color:var(--kernel); background:var(--kernel-dim);}
+.sim-mode.dead{color:var(--danger); border-color:var(--danger); background:var(--danger-dim);}
+
+/* mono tables (process table, fd table, registers …) */
+.sim-table{width:100%; border-collapse:collapse; font-family:var(--font-mono); font-size:12.5px; line-height:1.5;}
+.sim-table th{font-family:var(--font-bn); font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase;
+  color:var(--muted); text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); white-space:nowrap; background:none;}
+.sim-table td{padding:4px 8px; border-bottom:1px solid var(--border-soft); color:var(--text); vertical-align:top; white-space:nowrap;}
+.sim-table tr:last-child td{border-bottom:none;}
+.sim-table tr.cur td{background:var(--user-dim); color:var(--heading);}
+.sim-table tr.dead td{color:var(--muted); text-decoration:line-through;}
+.sim-table tr.changed td{color:var(--kernel);}
+.sim-table td.u{color:var(--user); font-weight:600;} .sim-table td.k{color:var(--kernel); font-weight:600;}
+.sim-table td.ok{color:var(--ok);} .sim-table td.d{color:var(--danger);} .sim-table td.m{color:var(--muted);}
+.sim-table tr:hover td{background:color-mix(in srgb, var(--user) 4%, transparent);}
+
+/* code listing with a current line (instructions, source, steps) */
+.sim-code{font-family:var(--font-mono); font-size:12.5px; line-height:1.75; background:var(--code-bg); color:var(--code-text);
+  border:1px solid var(--code-rule); border-radius:8px; padding:8px 0; overflow-x:auto;}
+.sim-code .ln{display:block; padding:0 12px; white-space:pre;}
+.sim-code .ln.cur{background:var(--user-dim); color:var(--heading); box-shadow:inset 3px 0 0 var(--user);}
+.sim-code .ln.done{color:var(--code-dim);}
+.sim-code .ln.bad{background:var(--danger-dim); box-shadow:inset 3px 0 0 var(--danger);}
+.sim-code .ln .c{color:var(--syn-com);}
+.sim-code .ln .k{color:var(--syn-kw);}
+.sim-code .ln .n{color:var(--syn-num);}
+.sim-code .ln .s{color:var(--syn-str);}
+.sim-code .ln .fn{color:var(--syn-fn);}
+
+/* stepper: numbered steps, one active */
+.sim-steps{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; max-width:none;}
+.sim-steps li{display:flex; gap:10px; align-items:baseline; padding:5px 10px; border-radius:7px; font-size:13.5px;
+  color:var(--muted); border:1px solid transparent; margin:0;}
+.sim-steps li .n{font-family:var(--font-mono); font-size:11.5px; min-width:18px; text-align:right; color:var(--muted);}
+.sim-steps li.cur{color:var(--heading); background:var(--user-dim); border-color:color-mix(in srgb, var(--user) 45%, transparent);}
+.sim-steps li.cur .n{color:var(--user); font-weight:700;}
+.sim-steps li.cur.k{background:var(--kernel-dim); border-color:color-mix(in srgb, var(--kernel) 45%, transparent);}
+.sim-steps li.cur.k .n{color:var(--kernel);}
+.sim-steps li.cur.d{background:var(--danger-dim); border-color:color-mix(in srgb, var(--danger) 45%, transparent);}
+.sim-steps li.cur.d .n{color:var(--danger);}
+.sim-steps li.done{color:var(--text);}
+.sim-steps li .d{display:block; font-size:12.5px; color:var(--muted); margin-top:1px;}
+.sim-steps li.cur .d{color:var(--text);}
+
+/* log: one line per event */
+.sim-log{font-family:var(--font-mono); font-size:12px; line-height:1.6; background:var(--code-bg); color:var(--code-text);
+  border:1px solid var(--code-rule); border-radius:8px; padding:8px 12px; min-height:52px; max-height:190px; overflow-y:auto;}
+.sim-log:empty::before{content:"—"; color:var(--code-dim);}
+.sim-log div{white-space:pre-wrap; overflow-wrap:anywhere;}
+.sim-log .u{color:var(--syn-fn);} .sim-log .k{color:var(--syn-num);} .sim-log .ok{color:var(--syn-str);}
+.sim-log .d{color:var(--syn-var);} .sim-log .m{color:var(--code-dim);}
+
+/* the "what to notice" line under a stage */
+.sim-note{font-size:13.5px; color:var(--text); line-height:1.65; margin:0; max-width:none;
+  padding:9px 12px; border-radius:7px; background:var(--bg-soft); border:1px solid var(--border-soft);}
+.sim-note b{color:var(--heading);}
+.sim-note.ok{border-color:color-mix(in srgb, var(--ok) 45%, var(--border-soft)); background:var(--ok-dim);}
+.sim-note.d{border-color:color-mix(in srgb, var(--danger) 45%, var(--border-soft)); background:var(--danger-dim);}
+.sim-note.k{border-color:color-mix(in srgb, var(--kernel) 45%, var(--border-soft)); background:var(--kernel-dim);}
+.sim-note:empty{display:none;}
+
+/* horizontal bar rows (latency scale, memory strips) */
+.sim-bars{display:flex; flex-direction:column; gap:6px;}
+.sim-bar{display:grid; grid-template-columns:minmax(120px, 190px) 1fr auto; align-items:center; gap:10px; font-size:13px;}
+.sim-bar .lbl{color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.sim-bar .track{height:14px; border-radius:4px; background:var(--panel); border:1px solid var(--border-soft); overflow:hidden;}
+.sim-bar .fill{height:100%; background:var(--user); border-radius:3px; transition:width .35s var(--ease);}
+.sim-bar.k .fill{background:var(--kernel);} .sim-bar.d .fill{background:var(--danger);} .sim-bar.ok .fill{background:var(--ok);}
+.sim-bar .v{font-family:var(--font-mono); font-size:12px; color:var(--heading); white-space:nowrap; min-width:7ch; text-align:right;}
+@media(max-width:520px){ .sim-bar{grid-template-columns:1fr auto;} .sim-bar .lbl{grid-column:1 / -1;} }
+
+/* animation hooks */
+@keyframes simFlash{from{opacity:.25;} to{opacity:1;}}
+.sim .flash{animation:simFlash .45s var(--ease);}
+@keyframes simBlink{0%,100%{opacity:1;} 50%{opacity:.25;}}
+.sim .blink{animation:simBlink .9s var(--ease) infinite;}
+@media(prefers-reduced-motion:reduce){ .sim .flash, .sim .blink{animation:none;} .sim-bar .fill{transition:none;} }
+
+@media(max-width:520px){
+  .sim{padding:13px 14px 14px;}
+  .sim-stage{padding:10px;}
+}
+@media print{
+  .sim-body{display:none !important;}
+  .sim::after{content:"(Interactive simulator — browser-এ খোলো)"; font-size:11pt; color:#555;}
+}

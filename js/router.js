@@ -9,6 +9,7 @@ import { setActiveTOC } from './toc.js';
 import { buildRail, updateRailSpy } from './rail.js';
 import { buildChapNav } from './chapnav.js';
 import { enhanceCodeBlocks } from './codeblock.js';
+import { initSims } from './sims.js';
 import { updateProgress } from './progress.js';
 import { closeSidebar } from './sidebar.js';
 import { store, save } from './store.js';
@@ -29,9 +30,12 @@ export async function showChapter(id, scrollTarget) {
   const target = getSection(id);
   if (!target) return;
 
-  // First render for this chapter: wire up its code blocks.
+  // First render for this chapter: wire up its code blocks and mount
+  // its simulators (chapter markup arrives via innerHTML, so nothing in
+  // it can run on its own).
   if (target.dataset.enhanced !== '1') {
     enhanceCodeBlocks(target);
+    initSims(target);
     target.dataset.enhanced = '1';
   }
 

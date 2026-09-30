@@ -69,6 +69,10 @@ pkill -f busyloop</code></pre></div>
     <p><code>top</code>-এ দেখবে প্রতিটা <code>node</code>-এর CPU মোটামুটি ৫০%-এর কাছাকাছি — আমার চালানোয় ৪৬% থেকে ৫৩%-এর মধ্যে ছিল। ২৪ জন দাবিদার, ১২টা core: OS প্রত্যেককে প্রায় সমান ভাগে অর্ধেক সময় দিচ্ছে। আর এর মধ্যেও তোমার terminal, browser দিব্যি সাড়া দিচ্ছে, কারণ তারাও নিয়মিত পালা পাচ্ছে।</p>
   </div>
   <p>সমস্যা ২ সমাধান: কেউ CPU একা দখল করে রাখতে পারে না, কারণ কখন কাকে সরাতে হবে সেই সিদ্ধান্ত program-এর হাতে না, OS-এর হাতে।</p>
+  <div class="sim" data-sim="timeshare">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">Time-sharing — ১২ core, ২৪ process</span></div>
+    <p class="sim-desc">ওপরের experiment-টা ধাপে ধাপে: প্রতিটা tick-এ kernel প্রতিটা core-এ পরের process-কে বসায়। Core আর process-এর সংখ্যা বদলে দেখো প্রতিটা process-এর CPU% কোথায় গিয়ে থামে।</p>
+  </div>
 
   <h4>Isolation: একজনকে আরেকজনের থেকে আলাদা রাখা</h4>
   <p>OS প্রতিটা process-কে আলাদা memory দেয়, আর একটা process অন্যটার memory ছুঁতে চাইলে সেখানেই আটকে দেয় (কীভাবে আটকায়, সেটা Chapter 9-এর virtual memory-র গল্প)। এই আলাদা রাখার নাম <strong>isolation</strong>। এর সবচেয়ে চেনা ফল তুমি Chrome-এ দেখেছ: Chrome প্রতিটা tab-কে আলাদা process-এ চালায়। Chrome-এ একটা নতুন tab খুলে address bar-এ লেখো:</p>
@@ -155,6 +159,10 @@ close(17)                               = 0</code></pre></div>
   <p>Kernel যে সত্যিই যাচাই করে, সেটাও দেখে নাও। macOS-এ পুরো SSD-টা <code>/dev/disk0</code> নামে একটা বিশেষ file হিসেবে দেখা যায়। সেটা সরাসরি খুলতে চাও:</p>
   <div class="codewrap"><pre class="cmd"><code>node -e "require('fs').openSync('/dev/disk0', 'r')"</code></pre></div>
   <p>উত্তর আসবে <code>Error: EPERM: operation not permitted, open '/dev/disk0'</code>। Syscall-টা kernel পর্যন্ত পৌঁছেছিল, আর kernel অনুমতি যাচাই করে "না" বলে দিয়েছে। (Linux-এ একই পরীক্ষা <code>/dev/sda</code> বা <code>/dev/nvme0n1</code> দিয়ে করো; সাধারণ user হিসেবে error আসবে <code>EACCES</code>।)</p>
+  <div class="sim" data-sim="syscall">
+    <div class="sim-head"><span class="sim-tag">Simulator</span><span class="sim-title">System call boundary — ধাপে ধাপে</span></div>
+    <p class="sim-desc">তিনটা scenario: <code>readFileSync</code>-এর চারটা syscall, <code>/dev/disk0</code> খোলার চেষ্টায় kernel-এর "না", আর user mode থেকে সরাসরি hardware ছোঁয়ার চেষ্টা। প্রতিটা ধাপে দেখো CPU কোন mode-এ আছে আর কে সিদ্ধান্ত নিচ্ছে।</p>
+  </div>
 
   <p>এতক্ষণ যা যা দেখলাম, এক ছবিতে:</p>
   <figure class="fig">
